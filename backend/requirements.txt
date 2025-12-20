@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+titiler.core
+titiler.mosaic
+geopandas
+pandas
+pyarrow
+shapely
+requests
+pyproj
+pydantic
