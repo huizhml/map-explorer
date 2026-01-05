@@ -429,7 +429,7 @@ function App() {
       
       // Register with LayerManager
       const qLabelsPred = ['95%', 'median', '5%'];
-      const layerName = `Prediction: ${predictionData.tile_name} (${predictionData.year}) RH${predictionData.rh_index} ${qLabelsPred[predictionData.q_index]}`;
+      const layerName = `${predictionData.tile_name} (${predictionData.year}) RH${predictionData.rh_index} ${qLabelsPred[predictionData.q_index]}`;
       
       // Store extent in metadata for locating
       const metadata: any = {
