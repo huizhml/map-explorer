@@ -1,6 +1,6 @@
-import React, { useCallback, useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import './App.css';
-import { MapComponent, type Map, type WebGLTileLayer } from './components/Map';
+import { MapComponent, type Map } from './components/Map';
 import { SidebarContainer } from './containers/SidebarContainer';
 import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
 import { LayerControl, type Layer } from './components/LayerControl';
@@ -16,6 +16,7 @@ import GeoTIFF from 'ol/source/GeoTIFF';
 import WebGLTile from 'ol/layer/WebGLTile';
 import { transformExtent, transform } from 'ol/proj';
 import { LayerManager } from './utils/LayerManager';
+import { useMapStore } from './stores/mapStore';
 
 const theme = createTheme({
   palette: {
@@ -27,63 +28,69 @@ const theme = createTheme({
 });
 
 function App() {
-  const [map, setMap] = useState<Map | null>(null);
-  const [cogLayer, setCogLayer] = useState<WebGLTileLayer | null>(null);
-  const [fgbLayer, setFgbLayer] = useState<VectorLayer<VectorSource> | null>(null);
-  const [layers, setLayers] = useState<Layer[]>([]);
-  const [fgbInfo, setFgbInfo] = useState<any>(null);
-  const [fgbStyleOptions, setFgbStyleOptions] = useState<any>(null);
-  const [conditionalStyles, setConditionalStyles] = useState<any[]>([]);
-  const [enableConditionalRendering, setEnableConditionalRendering] = useState(false);
-  
-  // Popup state
-  const [popupProperties, setPopupProperties] = useState<Record<string, any> | null>(null);
-  const [popupPosition, setPopupPosition] = useState<{ x: number; y: number } | null>(null);
-  const [popupGeometry, setPopupGeometry] = useState<Geometry | null>(null);
-  const [popupCoordinates, setPopupCoordinates] = useState<{ lon: number; lat: number } | null>(null);
-  
-  // Highlight layer state
-  const [highlightLayer, setHighlightLayer] = useState<VectorLayer<any> | null>(null);
-  
-  // Sentinel-2 image layers state - store with metadata for layer control
-  const [sentinel2Layers, setSentinel2Layers] = useState<Array<{
-    layer: WebGLTileLayer;
-    id: string;
-    imageId: string;
-    tileName?: string;
-    datetime?: string;
-  }>>([]);
+  // Zustand store
+  const {
+    map,
+    setMap,
+    cogLayer,
+    setCogLayer,
+    fgbLayer,
+    setFgbLayer,
+    layers,
+    setLayers,
+    popupProperties,
+    setPopupProperties,
+    popupPosition,
+    setPopupPosition,
+    popupGeometry,
+    setPopupGeometry,
+    popupCoordinates,
+    setPopupCoordinates,
+    highlightLayer,
+    setHighlightLayer,
+    setSentinel2Layers,
+    setPredictionLayers,
+    layerManager,
+    setLayerManager,
+    closePopup,
+  } = useMapStore();
 
-  // Prediction COG layers state (using base Layer type to support different layer types)
-  const [predictionLayers, setPredictionLayers] = useState<Array<{
-    layer: any; // Can be TileLayer or WebGLTileLayer
-    id: string;
-    tileName: string;
-    rhIndex: number;
-    qIndex: number;
-    year: number;
-    url: string;
-  }>>([]);
-
-  // Layer manager instance
-  const [layerManager] = useState(() => new LayerManager(null));
+  // Initialize layer manager
+  useEffect(() => {
+    if (!layerManager) {
+      const manager = new LayerManager(null);
+      setLayerManager(manager);
+      // If map is already initialized, set it on the manager
+      const currentMap = useMapStore.getState().map;
+      if (currentMap) {
+        manager.setMap(currentMap);
+      }
+    }
+  }, [layerManager, setLayerManager]);
 
   const handleMapInit = useCallback((mapInstance: Map) => {
     setMap(mapInstance);
-    layerManager.setMap(mapInstance);
-  }, [layerManager]);
+    const currentManager = useMapStore.getState().layerManager;
+    if (currentManager) {
+      currentManager.setMap(mapInstance);
+    } else {
+      // Create manager if it doesn't exist yet
+      const manager = new LayerManager(mapInstance);
+      setLayerManager(manager);
+    }
+  }, [setMap, setLayerManager]);
 
   // Update layers list when map or layers change - sync with LayerManager
   // This must be defined before handlers that use it
   const updateLayersList = useCallback(() => {
-    if (!map) return;
+    if (!map || !layerManager) return;
 
     // Sync all properties from actual layers
     layerManager.syncAllProperties();
 
     // Get all managed layers and convert to Layer format for UI
     const managedLayers = layerManager.getAllLayers();
-    const layersList: Layer[] = managedLayers.map(managed => ({
+    const layersList: Layer[] = managedLayers.map((managed: any) => ({
       id: managed.id,
       name: managed.name,
       visible: managed.visible,
@@ -196,7 +203,7 @@ function App() {
 
       // Add to map
       map.addLayer(newLayer);
-      setSentinel2Layers(prev => [...prev, layerMetadata]);
+      setSentinel2Layers((prev: any[]) => [...prev, layerMetadata]);
       
       // Register with LayerManager
       const dateStr = image.datetime ? new Date(image.datetime).toISOString().split('T')[0] : '';
@@ -214,7 +221,9 @@ function App() {
         metadata.bbox = bbox;
       }
       
-      layerManager.addLayer(layerId, layerName, 'sentinel2', newLayer, metadata);
+      if (layerManager) {
+        layerManager.addLayer(layerId, layerName, 'sentinel2', newLayer, metadata);
+      }
 
       // Fit view to image extent using bbox
       if (bbox && Array.isArray(bbox) && bbox.length === 4) {
@@ -367,7 +376,7 @@ function App() {
 
       // Use TiTiler's tile endpoint to serve tiles (this avoids CORS issues)
       // TiTiler will fetch the COG server-side and serve tiles
-      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&rescale=0,50&colormap_name=viridis`;
+      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&rescale=0,500&colormap_name=inferno`;
       
       // Create XYZ tile source using TiTiler
       const { default: XYZ } = await import('ol/source/XYZ');
@@ -385,7 +394,7 @@ function App() {
       // Only set extent if it's valid, otherwise let tiles load without constraint
       const layerOptions: any = {
         source: tileSource,
-        opacity: 0.7,
+        opacity: 1,
         zIndex: 600, // Higher than Sentinel-2 layers
       };
       
@@ -416,7 +425,7 @@ function App() {
 
       // Add to map AFTER zooming
       map.addLayer(newLayer);
-      setPredictionLayers(prev => [...prev, layerMetadata]);
+      setPredictionLayers((prev: any[]) => [...prev, layerMetadata]);
       
       // Register with LayerManager
       const qLabelsPred = ['95%', 'median', '5%'];
@@ -434,7 +443,9 @@ function App() {
         metadata.extent = extent;
       }
       
-      layerManager.addLayer(layerId, layerName, 'prediction', newLayer, metadata);
+      if (layerManager) {
+        layerManager.addLayer(layerId, layerName, 'prediction', newLayer, metadata);
+      }
 
       // Update layers list to include the new layer
       updateLayersList();
@@ -448,6 +459,8 @@ function App() {
 
   // Register COG layer with LayerManager when it changes
   useEffect(() => {
+    if (!layerManager) return;
+    
     if (cogLayer && map) {
       // Get extent from layer if available
       const layerExtent = cogLayer.getExtent();
@@ -465,6 +478,8 @@ function App() {
 
   // Register FlatGeobuf layer with LayerManager when it changes
   useEffect(() => {
+    if (!layerManager) return;
+    
     if (fgbLayer && map) {
       // Get extent from source if available
       const metadata: any = {};
@@ -506,7 +521,7 @@ function App() {
           width: 4, // Increased width for better visibility
         }),
         fill: new Fill({
-          color: 'rgba(255, 0, 0, 0.4)', // More visible semi-transparent red fill
+          color: '#ff000000', // More visible semi-transparent red fill
         }),
         image: new CircleStyle({
           radius: 10,
@@ -644,7 +659,8 @@ function App() {
             // For Point geometries, check distance
             const geomType = geometry.getType();
             if (geomType === 'Point') {
-              const coords = geometry.getCoordinates();
+              const pointGeom = geometry as Point;
+              const coords = pointGeom.getCoordinates();
               const dist = Math.sqrt(
                 Math.pow(coordinate[0] - coords[0], 2) + 
                 Math.pow(coordinate[1] - coords[1], 2)
@@ -792,7 +808,8 @@ function App() {
           // So check distance manually
           const geomType = geometry.getType();
           if (geomType === 'Point') {
-            const coords = geometry.getCoordinates();
+            const pointGeom = geometry as Point;
+            const coords = pointGeom.getCoordinates();
             const dist = Math.sqrt(
               Math.pow(coordinate[0] - coords[0], 2) + 
               Math.pow(coordinate[1] - coords[1], 2)
@@ -902,7 +919,7 @@ function App() {
 
   const handleToggleVisibility = (layerId: string) => {
     // Use LayerManager for unified visibility control
-    if (layerManager.getLayer(layerId)) {
+    if (layerManager && layerManager.getLayer(layerId)) {
       layerManager.toggleVisibility(layerId);
       updateLayersList();
     }
@@ -910,7 +927,7 @@ function App() {
 
   const handleChangeOpacity = (layerId: string, opacity: number) => {
     // Use LayerManager for unified opacity control
-    if (layerManager.getLayer(layerId)) {
+    if (layerManager && layerManager.getLayer(layerId)) {
       layerManager.setOpacity(layerId, opacity);
       updateLayersList();
     }
@@ -918,7 +935,7 @@ function App() {
 
   const handleChangeZIndex = (layerId: string, zIndex: number) => {
     // Use LayerManager for unified z-index control
-    if (layerManager.getLayer(layerId)) {
+    if (layerManager && layerManager.getLayer(layerId)) {
       layerManager.setZIndex(layerId, zIndex);
       updateLayersList();
     }
@@ -926,13 +943,13 @@ function App() {
 
   const handleReorderLayers = (fromIndex: number, toIndex: number) => {
     // Use LayerManager for unified reordering
-    if (layerManager.reorderLayers(fromIndex, toIndex)) {
+    if (layerManager && layerManager.reorderLayers(fromIndex, toIndex)) {
       updateLayersList();
     }
   };
 
   const handleRemoveLayer = (layerId: string) => {
-    if (!map) return;
+    if (!map || !layerManager) return;
 
     // Use LayerManager to remove layer
     if (layerManager.removeLayer(layerId)) {
@@ -942,16 +959,16 @@ function App() {
       } else if (layerId === 'fgb') {
         setFgbLayer(null);
       } else if (layerId.startsWith('sentinel2-')) {
-        setSentinel2Layers(prev => prev.filter(l => l.id !== layerId));
+        setSentinel2Layers((prev: any[]) => prev.filter((l: any) => l.id !== layerId));
       } else if (layerId.startsWith('prediction-')) {
-        setPredictionLayers(prev => prev.filter(l => l.id !== layerId));
+        setPredictionLayers((prev: any[]) => prev.filter((l: any) => l.id !== layerId));
       }
       updateLayersList();
     }
   };
 
   const handleLocateLayer = (layerId: string) => {
-    if (!map) return;
+    if (!map || !layerManager) return;
 
     // Get extent from LayerManager (handles all the logic)
     // Check if method exists (handles hot-reload edge cases)
@@ -987,17 +1004,7 @@ function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
-        <SidebarContainer 
-          map={map} 
-          cogLayer={cogLayer} 
-          setCogLayer={setCogLayer}
-          fgbLayer={fgbLayer}
-          setFgbLayer={setFgbLayer}
-          setFgbInfo={setFgbInfo}
-          setFgbStyleOptions={setFgbStyleOptions}
-          setConditionalStyles={setConditionalStyles}
-          setEnableConditionalRendering={setEnableConditionalRendering}
-        />
+        <SidebarContainer />
         <LayerControl
           layers={layers}
           onToggleVisibility={handleToggleVisibility}
@@ -1006,32 +1013,6 @@ function App() {
           onReorderLayers={handleReorderLayers}
           onRemoveLayer={handleRemoveLayer}
           onLocateLayer={handleLocateLayer}
-          fgbInfo={fgbInfo}
-          fgbStyleOptions={fgbStyleOptions || {}}
-          onFgbStyleChange={(prop, value) => {
-            if (fgbStyleOptions) {
-              setFgbStyleOptions({ ...fgbStyleOptions, [prop]: value });
-            }
-          }}
-          conditionalStyles={conditionalStyles}
-          enableConditionalRendering={enableConditionalRendering}
-          onEnableConditionalRendering={setEnableConditionalRendering}
-          onAddConditionalStyle={() => {
-            setConditionalStyles([...conditionalStyles, {
-              property: '',
-              operator: 'equals',
-              value: '',
-              style: { fillColor: '#00ff00', strokeColor: '#000000', strokeWidth: 2, pointRadius: 5, opacity: 0.8 }
-            }]);
-          }}
-          onUpdateConditionalStyle={(index, field, value) => {
-            const updated = [...conditionalStyles];
-            updated[index] = { ...updated[index], [field]: value };
-            setConditionalStyles(updated);
-          }}
-          onRemoveConditionalStyle={(index) => {
-            setConditionalStyles(conditionalStyles.filter((_, i) => i !== index));
-          }}
         />
         {/* <GEEContainer map={map} /> */}
         {/* <RHContainer map={map} /> */}
@@ -1052,12 +1033,7 @@ function App() {
           coordinates={popupCoordinates}
           onLoadSentinel2Image={handleLoadSentinel2Image}
           onLoadPredictionCOG={handleLoadPredictionCOG}
-          onClose={() => {
-            setPopupProperties(null);
-            setPopupPosition(null);
-            setPopupGeometry(null);
-            setPopupCoordinates(null);
-          }}
+          onClose={closePopup}
         />
       </div>
     </ThemeProvider>

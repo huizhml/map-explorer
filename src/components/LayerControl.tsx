@@ -35,6 +35,7 @@ import {
   DragIndicator as DragIndicatorIcon,
   MyLocation as MyLocationIcon,
 } from '@mui/icons-material';
+import { useMapStore, type ConditionalStyle } from '../stores/mapStore';
 
 interface Layer {
   id: string;
@@ -45,30 +46,6 @@ interface Layer {
   type: 'cog' | 'fgb' | 'sentinel2' | 'prediction';
 }
 
-interface FgbInfo {
-  type: string;
-  featureCount: number;
-  geometryTypes: string[];
-  properties: string[];
-  sampleProperties: Record<string, any>;
-}
-
-interface StyleOptions {
-  fillColor: string;
-  strokeColor: string;
-  strokeWidth: number;
-  pointRadius: number;
-  opacity: number;
-  zIndex: number;
-}
-
-interface ConditionalStyle {
-  property: string;
-  operator: 'equals' | 'not_equals' | 'greater_than' | 'less_than' | 'contains' | 'starts_with';
-  value: string | number;
-  style: Partial<StyleOptions>;
-}
-
 interface LayerControlProps {
   layers: Layer[];
   onToggleVisibility: (layerId: string) => void;
@@ -77,35 +54,28 @@ interface LayerControlProps {
   onReorderLayers: (fromIndex: number, toIndex: number) => void;
   onRemoveLayer?: (layerId: string) => void;
   onLocateLayer?: (layerId: string) => void;
-  fgbInfo: FgbInfo | null;
-  fgbStyleOptions: StyleOptions;
-  onFgbStyleChange: (property: keyof StyleOptions, value: any) => void;
-  conditionalStyles: ConditionalStyle[];
-  enableConditionalRendering: boolean;
-  onEnableConditionalRendering: (enabled: boolean) => void;
-  onAddConditionalStyle: () => void;
-  onUpdateConditionalStyle: (index: number, field: keyof ConditionalStyle, value: any) => void;
-  onRemoveConditionalStyle: (index: number) => void;
 }
 
 export function LayerControl({
   layers,
   onToggleVisibility,
   onChangeOpacity,
-  onChangeZIndex,
   onReorderLayers,
   onRemoveLayer,
   onLocateLayer,
-  fgbInfo,
-  fgbStyleOptions,
-  onFgbStyleChange,
-  conditionalStyles,
-  enableConditionalRendering,
-  onEnableConditionalRendering,
-  onAddConditionalStyle,
-  onUpdateConditionalStyle,
-  onRemoveConditionalStyle,
 }: LayerControlProps) {
+  // Zustand store
+  const {
+    fgbInfo,
+    fgbStyleOptions,
+    conditionalStyles,
+    enableConditionalRendering,
+    updateFgbStyleOption,
+    setEnableConditionalRendering,
+    addConditionalStyle,
+    updateConditionalStyle,
+    removeConditionalStyle,
+  } = useMapStore();
   const [expanded, setExpanded] = useState(true);
   const [selectedLayer, setSelectedLayer] = useState<string | null>(null);
   const [showInfo, setShowInfo] = useState(false);
@@ -135,6 +105,7 @@ export function LayerControl({
   const handleDragLeave = () => {
     setDragOverIndex(null);
   };
+  console.log('--------------------------------fgbInfo', fgbInfo);
 
   return (
     <Paper
@@ -497,7 +468,7 @@ export function LayerControl({
                                     label="Fill"
                                     type="color"
                                     value={fgbStyleOptions.fillColor}
-                                    onChange={(e) => onFgbStyleChange('fillColor', e.target.value)}
+                                    onChange={(e) => updateFgbStyleOption('fillColor', e.target.value)}
                                     size="small"
                                     sx={{ width: '50%' }}
                                   />
@@ -505,7 +476,7 @@ export function LayerControl({
                                     label="Stroke"
                                     type="color"
                                     value={fgbStyleOptions.strokeColor}
-                                    onChange={(e) => onFgbStyleChange('strokeColor', e.target.value)}
+                                    onChange={(e) => updateFgbStyleOption('strokeColor', e.target.value)}
                                     size="small"
                                     sx={{ width: '50%' }}
                                   />
@@ -515,7 +486,7 @@ export function LayerControl({
                                     label="Stroke Width"
                                     type="number"
                                     value={fgbStyleOptions.strokeWidth}
-                                    onChange={(e) => onFgbStyleChange('strokeWidth', parseInt(e.target.value))}
+                                    onChange={(e) => updateFgbStyleOption('strokeWidth', parseInt(e.target.value))}
                                     size="small"
                                     inputProps={{ min: 1, max: 10 }}
                                     sx={{ width: '50%' }}
@@ -524,7 +495,7 @@ export function LayerControl({
                                     label="Point Radius"
                                     type="number"
                                     value={fgbStyleOptions.pointRadius}
-                                    onChange={(e) => onFgbStyleChange('pointRadius', parseInt(e.target.value))}
+                                    onChange={(e) => updateFgbStyleOption('pointRadius', parseInt(e.target.value))}
                                     size="small"
                                     inputProps={{ min: 1, max: 20 }}
                                     sx={{ width: '50%' }}
@@ -547,7 +518,7 @@ export function LayerControl({
                                   control={
                                     <Switch
                                       checked={enableConditionalRendering}
-                                      onChange={(e) => onEnableConditionalRendering(e.target.checked)}
+                                      onChange={(e) => setEnableConditionalRendering(e.target.checked)}
                                       size="small"
                                     />
                                   }
@@ -560,7 +531,7 @@ export function LayerControl({
                                   <Button
                                     variant="outlined"
                                     size="small"
-                                    onClick={onAddConditionalStyle}
+                                    onClick={addConditionalStyle}
                                     startIcon={<AddIcon />}
                                     fullWidth
                                     sx={{ mb: 1 }}
@@ -568,7 +539,7 @@ export function LayerControl({
                                     Add Condition
                                   </Button>
 
-                                  {conditionalStyles.map((style, index) => (
+                                  {conditionalStyles.map((style: ConditionalStyle, index: number) => (
                                     <Paper key={index} sx={{ p: 1, mb: 1, border: '1px solid #ddd' }}>
                                       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
                                         <Typography variant="caption" sx={{ fontWeight: 500 }}>
@@ -576,7 +547,7 @@ export function LayerControl({
                                         </Typography>
                                         <IconButton
                                           size="small"
-                                          onClick={() => onRemoveConditionalStyle(index)}
+                                          onClick={() => removeConditionalStyle(index)}
                                         >
                                           <DeleteIcon fontSize="small" />
                                         </IconButton>
@@ -587,7 +558,7 @@ export function LayerControl({
                                           <InputLabel>Property</InputLabel>
                                           <Select
                                             value={style.property}
-                                            onChange={(e) => onUpdateConditionalStyle(index, 'property', e.target.value)}
+                                            onChange={(e) => updateConditionalStyle(index, 'property', e.target.value)}
                                             label="Property"
                                           >
                                             {fgbInfo && fgbInfo.properties?.map((prop: string) => (
@@ -603,7 +574,7 @@ export function LayerControl({
                                             <InputLabel>Operator</InputLabel>
                                             <Select
                                               value={style.operator}
-                                              onChange={(e) => onUpdateConditionalStyle(index, 'operator', e.target.value)}
+                                              onChange={(e) => updateConditionalStyle(index, 'operator', e.target.value)}
                                               label="Operator"
                                             >
                                               <MenuItem value="equals">=</MenuItem>
@@ -618,7 +589,7 @@ export function LayerControl({
                                           <TextField
                                             label="Value"
                                             value={style.value}
-                                            onChange={(e) => onUpdateConditionalStyle(index, 'value', e.target.value)}
+                                            onChange={(e) => updateConditionalStyle(index, 'value', e.target.value)}
                                             size="small"
                                             sx={{ width: '50%' }}
                                           />
@@ -629,7 +600,7 @@ export function LayerControl({
                                             label="Fill"
                                             type="color"
                                             value={style.style.fillColor || '#00ff00'}
-                                            onChange={(e) => onUpdateConditionalStyle(index, 'style', {
+                                            onChange={(e) => updateConditionalStyle(index, 'style', {
                                               ...style.style,
                                               fillColor: e.target.value
                                             })}
@@ -640,7 +611,7 @@ export function LayerControl({
                                             label="Stroke"
                                             type="color"
                                             value={style.style.strokeColor || '#000000'}
-                                            onChange={(e) => onUpdateConditionalStyle(index, 'style', {
+                                            onChange={(e) => updateConditionalStyle(index, 'style', {
                                               ...style.style,
                                               strokeColor: e.target.value
                                             })}
