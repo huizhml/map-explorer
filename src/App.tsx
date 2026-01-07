@@ -97,6 +97,7 @@ function App() {
       opacity: managed.opacity,
       zIndex: managed.zIndex,
       type: managed.type,
+      metadata: managed.metadata,
     }));
 
     setLayers(layersList);
@@ -374,8 +375,14 @@ function App() {
         console.warn('Skipping map fit - invalid extent');
       }
 
-      // Use TiTiler's tile endpoint to serve tiles (this avoids CORS issues)
-      // TiTiler will fetch the COG server-side and serve tiles
+      // Use server-side transformation (TiTiler) for best overall performance
+      // This approach:
+      // - Provides faster initial load (smaller pre-rendered tiles)
+      // - Lower bandwidth usage (compressed PNG/JPEG)
+      // - Works on all devices (no GPU requirements)
+      // - Better for static visualizations
+      // Trade-off: Changing min/max requires tile reload (but this is acceptable for most use cases)
+      
       const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&rescale=0,500&colormap_name=inferno`;
       
       // Create XYZ tile source using TiTiler
@@ -386,12 +393,9 @@ function App() {
         url: tileUrl,
         crossOrigin: 'anonymous',
         maxZoom: 18,
-        // Add extent to prevent loading tiles outside COG bounds
-        // extent: extent,
       });
 
       // Create tile layer
-      // Only set extent if it's valid, otherwise let tiles load without constraint
       const layerOptions: any = {
         source: tileSource,
         opacity: 1,
@@ -407,6 +411,7 @@ function App() {
       }
       
       const newLayer = new TileLayer(layerOptions);
+      const useClientSideTransform = false; // Using server-side for better performance
 
       // Generate unique ID for this layer
       const qLabels = ['95%', 'median', '5%'];
@@ -421,6 +426,7 @@ function App() {
         qIndex: predictionData.q_index,
         year: predictionData.year,
         url: predictionData.url,
+        useClientSideTransform: useClientSideTransform,
       };
 
       // Add to map AFTER zooming
@@ -438,6 +444,9 @@ function App() {
         qIndex: predictionData.q_index,
         year: predictionData.year,
         url: predictionData.url,
+        rescaleMin: 0,
+        rescaleMax: 500,
+        useClientSideTransform: useClientSideTransform,
       };
       if (extent && extent.length === 4 && extent.every((val: number) => isFinite(val))) {
         metadata.extent = extent;
@@ -941,6 +950,60 @@ function App() {
     }
   };
 
+  const handleChangePredictionRescale = (layerId: string, min: number, max: number) => {
+    // Update rescale values for prediction layers (server-side transformation)
+    // This approach provides best overall performance:
+    // - Smaller tile sizes (compressed images)
+    // - Lower client-side processing
+    // - Works on all devices
+    // Trade-off: Requires tile reload when min/max changes
+    if (!layerManager) return;
+    
+    const managedLayer = layerManager.getLayer(layerId);
+    if (!managedLayer || managedLayer.type !== 'prediction' || !managedLayer.metadata) return;
+    
+    // Update metadata
+    managedLayer.metadata.rescaleMin = min;
+    managedLayer.metadata.rescaleMax = max;
+    
+    // Update the tile source URL (server-side transformation)
+    const layer = managedLayer.layer as any;
+    const source = layer.getSource?.();
+    if (source && source.getUrls) {
+      const urls = source.getUrls();
+      if (urls && urls.length > 0) {
+        const oldUrl = urls[0];
+        try {
+          // Parse the URL template: http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=...&rescale=0,500&colormap_name=inferno
+          const urlParts = oldUrl.split('?');
+          if (urlParts.length === 2) {
+            const basePath = urlParts[0]; // Contains the template part
+            const queryString = urlParts[1];
+            const params = new URLSearchParams(queryString);
+            
+            // Update rescale parameter
+            params.set('rescale', `${min},${max}`);
+            
+            // Create new URL template
+            const newUrl = `${basePath}?${params.toString()}`;
+            
+            // Update the source URL - this will trigger tile reload
+            source.setUrl(newUrl);
+            
+            // Explicitly refresh to ensure tiles reload immediately
+            if (source.refresh) {
+              source.refresh();
+            }
+          }
+        } catch (error) {
+          console.error('Error updating prediction rescale URL:', error);
+        }
+      }
+    }
+    
+    updateLayersList();
+  };
+
   const handleReorderLayers = (fromIndex: number, toIndex: number) => {
     // Use LayerManager for unified reordering
     if (layerManager && layerManager.reorderLayers(fromIndex, toIndex)) {
@@ -1013,6 +1076,7 @@ function App() {
           onReorderLayers={handleReorderLayers}
           onRemoveLayer={handleRemoveLayer}
           onLocateLayer={handleLocateLayer}
+          onChangePredictionRescale={handleChangePredictionRescale}
         />
         {/* <GEEContainer map={map} /> */}
         {/* <RHContainer map={map} /> */}

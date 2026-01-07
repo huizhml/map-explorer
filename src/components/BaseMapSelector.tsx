@@ -47,6 +47,11 @@ const createBaseMapSources = (): Record<string, XYZ | OSM> => {
       attributions: '© Esri',
       maxZoom: 19,
     }),
+    esriTerrain: new XYZ({
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}',
+      attributions: '© Esri',
+      maxZoom: 19,
+    }),
     openTopoMap: new XYZ({
       url: 'https://{a-c}.tile.opentopomap.org/{z}/{x}/{y}.png',
       attributions: '© OpenTopoMap',
@@ -86,6 +91,12 @@ const BASE_MAP_OPTIONS: Array<{
   {
     id: 'esriWorldTopo',
     name: 'Esri World Topo',
+    icon: <TerrainIcon />,
+    category: 'terrain',
+  },
+  {
+    id: 'esriTerrain',
+    name: 'Esri Terrain',
     icon: <TerrainIcon />,
     category: 'terrain',
   },
@@ -205,6 +216,8 @@ export function BaseMapSelector({ map, onBaseMapChange }: BaseMapSelectorProps) 
             setSelectedBaseMap('esriWorldImagery');
           } else if (url.includes('arcgisonline.com') && url.includes('World_Topo_Map')) {
             setSelectedBaseMap('esriWorldTopo');
+          } else if (url.includes('arcgisonline.com') && url.includes('World_Terrain_Base')) {
+            setSelectedBaseMap('esriTerrain');
           } else if (url.includes('opentopomap.org')) {
             setSelectedBaseMap('openTopoMap');
           } else if (url.includes('cartocdn.com') && url.includes('light_all')) {

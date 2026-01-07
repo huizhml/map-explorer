@@ -27,9 +27,16 @@ export interface StyleOptions {
 
 export interface ConditionalStyle {
   property: string;
-  operator: 'equals' | 'not_equals' | 'greater_than' | 'less_than' | 'contains' | 'starts_with';
+  operator: 'equals' | 'not_equals' | 'greater_than' | 'less_than' | 'contains' | 'starts_with' | 'between' | 'color_gradient';
   value: string | number;
+  value2?: string | number; // For 'between' operator
   style: Partial<StyleOptions>;
+  // For color gradient
+  minValue?: number;
+  maxValue?: number;
+  colorPalette?: string; // Palette name (e.g., 'Viridis', 'Magma', etc.)
+  minColor?: string; // Deprecated - kept for backward compatibility
+  maxColor?: string; // Deprecated - kept for backward compatibility
 }
 
 export interface Sentinel2Layer {
@@ -117,7 +124,7 @@ interface MapStore {
 
   // Actions
   closePopup: () => void;
-  updateFgbStyleOption: (property: keyof StyleOptions, value: any) => void;
+  updateFgbStyleOption: (newStyle: Partial<StyleOptions>) => void;
   addConditionalStyle: () => void;
   updateConditionalStyle: (index: number, field: keyof ConditionalStyle, value: any) => void;
   removeConditionalStyle: (index: number) => void;
@@ -218,23 +225,11 @@ export const useMapStore = create<MapStore>((set, get) => ({
       popupCoordinates: null,
     }),
 
-  updateFgbStyleOption: (property, value) => {
+  updateFgbStyleOption: (newStyle: Partial<StyleOptions>) => {
     const state = get();
-    let normalizedValue = value;
-    
-    // Normalize color values to 6-character hex format
-    if ((property === 'fillColor' || property === 'strokeColor') && typeof value === 'string') {
-      if (value.length === 9 && value.startsWith('#')) {
-        normalizedValue = value.slice(0, 7);
-      }
-      if (value.length === 7 && value.startsWith('#')) {
-        normalizedValue = value;
-      }
-    }
-    
     state.setFgbStyleOptions({
       ...state.fgbStyleOptions,
-      [property]: normalizedValue,
+      ...newStyle,
     });
   },
 

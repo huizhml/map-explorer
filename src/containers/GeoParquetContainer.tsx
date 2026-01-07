@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getApiUrl } from '../config';
 import { Map } from 'ol';
 import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
@@ -38,7 +39,7 @@ export function GeoParquetContainer({ map }: GeoParquetContainerProps) {
       const filePath = `/tmp/${file.name}`;
       
       // Get file info
-      const infoResponse = await fetch('http://localhost:8000/geoparquet/info', {
+      const infoResponse = await fetch(getApiUrl('geoparquet/info'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -54,7 +55,7 @@ export function GeoParquetContainer({ map }: GeoParquetContainerProps) {
       setFileInfo(info);
 
       // Get GeoJSON data (limited for performance)
-      const geojsonResponse = await fetch('http://localhost:8000/geoparquet/geojson', {
+      const geojsonResponse = await fetch(getApiUrl('geoparquet/geojson'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
