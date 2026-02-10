@@ -18,6 +18,7 @@ from datetime import datetime
 from pyproj import Transformer
 import re
 import time
+import os
 
 origins = [
     "http://localhost:9020",
@@ -55,6 +56,20 @@ app = FastAPI(title="Canopy Height – TiTiler with Mosaic + Viewer")
 
 # Add custom CORS middleware FIRST to ensure all responses get CORS headers
 app.add_middleware(CustomCORSMiddleware)
+
+# --- Log prediction env vars at startup ---
+PREDICTIONS_LOCAL_BASE_PATH = os.environ.get('PREDICTIONS_LOCAL_BASE_PATH', '')
+PREDICTIONS_LOCAL_PATH_TEMPLATE = os.environ.get('PREDICTIONS_LOCAL_PATH_TEMPLATE', '{tile}/RH{rh}_Q{q}.tif')
+PREDICTIONS_BASE_URL = os.environ.get('PREDICTIONS_BASE_URL', '')
+PREDICTIONS_REMOTE_PATH_TEMPLATE = os.environ.get('PREDICTIONS_REMOTE_PATH_TEMPLATE', '{zone}-{year}/{tile}/RH{rh}_Q{q}.tif')
+PREDICTIONS_MOSAIC_LOCAL_PATH = os.environ.get('PREDICTIONS_MOSAIC_LOCAL_PATH', '')
+print("=== Prediction env vars ===")
+print(f"  PREDICTIONS_LOCAL_BASE_PATH  = {PREDICTIONS_LOCAL_BASE_PATH}")
+print(f"  PREDICTIONS_LOCAL_PATH_TEMPLATE = {PREDICTIONS_LOCAL_PATH_TEMPLATE}")
+print(f"  PREDICTIONS_MOSAIC_LOCAL_PATH = {PREDICTIONS_MOSAIC_LOCAL_PATH}")
+print(f"  PREDICTIONS_BASE_URL         = {PREDICTIONS_BASE_URL}")
+print(f"  PREDICTIONS_REMOTE_PATH_TEMPLATE = {PREDICTIONS_REMOTE_PATH_TEMPLATE}")
+print("===========================")
 
 # COG tiler with a simple HTML viewer at /cog/viewer
 cog = TilerFactory(extensions=[cogViewerExtension()])
@@ -920,8 +935,6 @@ async def query_sentinel2(request: Sentinel2QueryRequest):
 @app.get("/sentinel2/test-connection")
 async def test_planetary_computer_connection():
     """Test connectivity to Microsoft Planetary Computer API with detailed diagnostics"""
-    import os
-    import socket
     
     try:
         stac_url = "https://planetarycomputer.microsoft.com/api/stac/v1"
@@ -1282,6 +1295,43 @@ async def tile_offset_options():
     """Handle CORS preflight for tile/offset endpoint"""
     return {"message": "OK"}
 
+# -------------------- Mosaic (low-res overview) --------------------
+@app.get("/predictions/mosaic-url")
+async def get_mosaic_url(year: int, rh_index: int = 98, q_index: int = 1):
+    """Return the mosaic JSON URL for a given year/RH/Q combination.
+
+    Env vars:
+      - PREDICTIONS_MOSAIC_LOCAL_PATH : path template for local mosaic JSON files
+        Placeholders: {year}, {rh}, {q}
+        Example: /data/mosaic_{year}/rh{rh}_q{q}.mosaic.json
+      - PREDICTIONS_MOSAIC_REMOTE_URL : URL template for remote mosaic JSON files
+        Placeholders: {year}, {rh}, {q}
+    """
+    import os
+
+    fmt = dict(year=year, rh=rh_index, q=q_index)
+
+    if year == 2020:
+        template = os.environ.get("PREDICTIONS_MOSAIC_LOCAL_PATH", "")
+        if not template:
+            return {"success": False, "error": "PREDICTIONS_MOSAIC_LOCAL_PATH env var is not set"}
+        try:
+            path = template.format(**fmt)
+        except Exception as e:
+            return {"success": False, "error": f"Invalid PREDICTIONS_MOSAIC_LOCAL_PATH: {e}"}
+        if not os.path.isfile(path):
+            return {"success": False, "error": f"Mosaic file not found: {path}"}
+        return {"success": True, "url": path, "year": year, "source": "local"}
+    else:
+        template = os.environ.get("PREDICTIONS_MOSAIC_REMOTE_URL", "")
+        if not template:
+            return {"success": False, "error": "PREDICTIONS_MOSAIC_REMOTE_URL env var is not set"}
+        try:
+            url = template.format(**fmt)
+        except Exception as e:
+            return {"success": False, "error": f"Invalid PREDICTIONS_MOSAIC_REMOTE_URL: {e}"}
+        return {"success": True, "url": url, "year": year, "source": "remote"}
+
 # -------------------- Predictions (S3-like storage) --------------------
 class PredictionsRequest(BaseModel):
     year: int
@@ -1305,20 +1355,23 @@ async def load_predictions(request: PredictionsRequest):
 
     Returns a URL (local path or remote URL) for TiTiler to serve the COG file.
     """
-    import os
 
     zone = request.tile_name[:3].lower()
     fmt = dict(zone=zone, year=request.year, tile=request.tile_name,
                rh=request.rh_index, q=request.q_index)
 
-    # --- Try local file ---
-    local_base = os.environ.get("PREDICTIONS_LOCAL_BASE_PATH", "")
-    is_local = request.year == 2020
-    if is_local:
-        local_template = os.environ.get(
-            "PREDICTIONS_LOCAL_PATH_TEMPLATE",
-            "{tile}/RH{rh}_Q{q}.tif",
-        )
+    # Debug: log request and env vars at request time
+    print(f"[predictions/load] year={request.year} (type={type(request.year).__name__}), tile={request.tile_name}")
+    print(f"[predictions/load] PREDICTIONS_LOCAL_BASE_PATH = '{os.environ.get('PREDICTIONS_LOCAL_BASE_PATH', '')}'")
+
+    # --- Route by year: 2020 → local disk, 2024 → remote URL ---
+    if request.year == 2020:
+        # LOCAL ONLY for 2020
+        local_base = PREDICTIONS_LOCAL_BASE_PATH
+        print(f"local_base: {PREDICTIONS_LOCAL_BASE_PATH}")
+        if not local_base:
+            return {"success": False, "error": "PREDICTIONS_LOCAL_BASE_PATH env var is not set. Cannot load local 2020 data."}
+        local_template = PREDICTIONS_LOCAL_PATH_TEMPLATE
         try:
             local_rel = local_template.format(**fmt)
         except Exception as e:
@@ -1335,42 +1388,41 @@ async def load_predictions(request: PredictionsRequest):
                 "year": request.year,
                 "source": "local",
             }
+        else:
+            return {"success": False, "error": f"Local file not found: {local_path}"}
+    else:
+        # REMOTE ONLY for 2024 (and any other year)
+        base_url = PREDICTIONS_BASE_URL
+        if not base_url:
+            return {"success": False, "error": "PREDICTIONS_BASE_URL env var is not set. Cannot load remote data."}
 
-    # --- Try remote URL ---
-    base_url = os.environ.get("PREDICTIONS_BASE_URL", "https://465001846.lumidata.eu/")
-    if not base_url:
-        return {"success": False, "error": "No local file found and PREDICTIONS_BASE_URL is not set"}
+        remote_template = PREDICTIONS_REMOTE_PATH_TEMPLATE
+        try:
+            remote_rel = remote_template.format(**fmt)
+        except Exception as e:
+            return {"success": False, "error": f"Invalid PREDICTIONS_REMOTE_PATH_TEMPLATE: {e}"}
 
-    remote_template = os.environ.get(
-        "PREDICTIONS_REMOTE_PATH_TEMPLATE",
-        "{zone}-{year}/{tile}/RH{rh}_Q{q}.tif",
-    )
-    try:
-        remote_rel = remote_template.format(**fmt)
-    except Exception as e:
-        return {"success": False, "error": f"Invalid PREDICTIONS_REMOTE_PATH_TEMPLATE: {e}"}
+        cog_url = base_url.rstrip("/") + "/" + remote_rel.lstrip("/")
 
-    cog_url = base_url.rstrip("/") + "/" + remote_rel.lstrip("/")
+        try:
+            resp = requests.head(cog_url, timeout=10)
+            resp.raise_for_status()
 
-    try:
-        resp = requests.head(cog_url, timeout=10)
-        resp.raise_for_status()
-
-        return {
-            "success": True,
-            "url": cog_url,
-            "tile_name": request.tile_name,
-            "rh_index": request.rh_index,
-            "q_index": request.q_index,
-            "year": request.year,
-            "source": "remote",
-            "content_type": resp.headers.get("Content-Type", ""),
-            "content_length": resp.headers.get("Content-Length", ""),
-        }
-    except requests.exceptions.RequestException as e:
-        return {"success": False, "error": f"COG file not accessible: {str(e)}", "url": cog_url}
-    except Exception as e:
-        return {"success": False, "error": f"Unexpected error: {str(e)}", "url": cog_url}
+            return {
+                "success": True,
+                "url": cog_url,
+                "tile_name": request.tile_name,
+                "rh_index": request.rh_index,
+                "q_index": request.q_index,
+                "year": request.year,
+                "source": "remote",
+                "content_type": resp.headers.get("Content-Type", ""),
+                "content_length": resp.headers.get("Content-Length", ""),
+            }
+        except requests.exceptions.RequestException as e:
+            return {"success": False, "error": f"COG file not accessible: {str(e)}", "url": cog_url}
+        except Exception as e:
+            return {"success": False, "error": f"Unexpected error: {str(e)}", "url": cog_url}
 
 @app.options("/predictions/load")
 async def predictions_load_options():

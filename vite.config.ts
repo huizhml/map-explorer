@@ -5,6 +5,11 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 9020,
+    port: 9030,
+    watch: {
+      // Use polling so Vite detects SFTP file changes (no inotify events)
+      usePolling: true,
+      interval: 1000,
+    },
   },
 })

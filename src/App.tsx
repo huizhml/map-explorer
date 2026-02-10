@@ -54,6 +54,7 @@ function App() {
     layerManager,
     setLayerManager,
     closePopup,
+    activeVSM,
   } = useMapStore();
 
   // Initialize layer manager
@@ -523,10 +524,9 @@ function App() {
   const globalLayerRegisteredRef = useRef(false);
   const [showZoomMessage, setShowZoomMessage] = useState(false);
 
-  const { activeVSM } = useMapStore();
-
   useEffect(() => {
     // When activeVSM is null, hide zoom message and skip
+    console.log('[auto-load effect] map=', !!map, 'fgbLayer=', !!fgbLayer, 'activeVSM=', activeVSM);
     if (!map || !fgbLayer || !activeVSM) {
       setShowZoomMessage(false);
       return;
@@ -559,10 +559,48 @@ function App() {
     globalLayerRegisteredRef.current = false;
     autoLoadingTilesRef.current.clear();
 
-    // Create fresh LayerGroup
-    const group = new LayerGroup({ layers: [], zIndex: 600 });
+    // Create fresh LayerGroup for per-tile detail – visible at zoom >= MIN_ZOOM
+    const group = new LayerGroup({ layers: [], zIndex: 600, minZoom: MIN_ZOOM - 1 });
     map.addLayer(group);
     globalPredGroupRef.current = group;
+
+    // --- Load low-res mosaic layer (visible when zoomed out, below MIN_ZOOM) ---
+    let mosaicLayer: any = null;
+    (async () => {
+      try {
+        const mosaicResp = await fetch(
+          `http://localhost:8000/predictions/mosaic-url?year=${AUTO_YEAR}&rh_index=${AUTO_RH_INDEX}&q_index=${AUTO_Q_INDEX}`
+        );
+        const mosaicData = await mosaicResp.json();
+        if (cancelled || !mosaicData.success) {
+          console.warn('[mosaic] Could not load mosaic:', mosaicData.error);
+          return;
+        }
+        console.log('[mosaic] Loaded mosaic URL:', mosaicData.url);
+
+        const mosaicTileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=0,500&colormap_name=inferno`;
+
+        const { default: XYZSource } = await import('ol/source/XYZ');
+        const { default: TileLayerCls } = await import('ol/layer/Tile');
+
+        mosaicLayer = new TileLayerCls({
+          source: new XYZSource({
+            url: mosaicTileUrl,
+            crossOrigin: 'anonymous',
+            maxZoom: 14,
+          }),
+          zIndex: 599, // Just below per-tile detail
+          maxZoom: MIN_ZOOM, // Visible only when zoom < MIN_ZOOM (exclusive upper bound)
+        });
+
+        if (!cancelled) {
+          map.addLayer(mosaicLayer);
+          console.log('[mosaic] Added mosaic layer to map (maxZoom:', MIN_ZOOM, ')');
+        }
+      } catch (err) {
+        console.warn('[mosaic] Error loading mosaic layer:', err);
+      }
+    })();
 
     const autoLoadVisiblePredictions = async () => {
       if (cancelled) return;
@@ -667,6 +705,7 @@ function App() {
               const tileLayer = new TileLayer({
                 source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
                 extent,
+                minZoom: MIN_ZOOM - 1,
               });
 
               if (!cancelled) {
@@ -700,20 +739,34 @@ function App() {
     };
 
     const onMoveEnd = () => {
-      const zoom = map.getView().getZoom();
-      setShowZoomMessage(zoom !== undefined && zoom < MIN_ZOOM);
-
+      // Visibility is handled by onZoomChange (fires immediately).
+      // onMoveEnd only triggers tile loading after pan/zoom animation settles.
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(autoLoadVisiblePredictions, DEBOUNCE_MS);
     };
 
+    // Handle zoom message immediately (not debounced)
+    const onZoomChange = () => {
+      const zoom = map.getView().getZoom();
+      const belowMinZoom = zoom !== undefined && zoom < MIN_ZOOM;
+      setShowZoomMessage(belowMinZoom);
+    };
+
     onMoveEnd();
     map.on('moveend', onMoveEnd);
+    // change:resolution fires immediately during zoom (wheel, pinch, etc.)
+    map.getView().on('change:resolution', onZoomChange);
 
     return () => {
       cancelled = true;
       map.un('moveend', onMoveEnd);
+      map.getView().un('change:resolution', onZoomChange);
       if (debounceTimer) clearTimeout(debounceTimer);
+      // Remove mosaic layer on cleanup
+      if (mosaicLayer) {
+        map.removeLayer(mosaicLayer);
+        mosaicLayer = null;
+      }
       // Remove group from map on cleanup (when activeVSM changes or component unmounts)
       if (globalPredGroupRef.current) {
         map.removeLayer(globalPredGroupRef.current);
@@ -904,15 +957,12 @@ function App() {
             if (geometry && highlightLayer) {
               const highlightSource = highlightLayer.getSource();
               if (highlightSource) {
-                console.log('Click: Attempting to create highlight geometry');
                 const newGeometry = createHighlightGeometry(geometry);
                 if (newGeometry) {
-                  console.log('Click: Created highlight geometry, adding feature');
                   const highlightFeature = new Feature({
                     geometry: newGeometry,
                   });
                   highlightSource.addFeature(highlightFeature);
-                  console.log('Click: Highlight feature added, total features:', highlightSource.getFeatures().length);
                 } else {
                   console.warn('Click: Could not create highlight geometry');
                 }

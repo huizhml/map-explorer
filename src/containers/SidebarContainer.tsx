@@ -366,14 +366,14 @@ export function SidebarContainer() {
             sampleProperties: sampleProperties
           };
           
-          // Only log if properties changed or it's the first extraction
-          const propertiesChanged = !existingInfo || 
-            existingInfo.properties.length !== properties.size ||
-            !existingInfo.properties.every(p => properties.has(p));
+          // // Only log if properties changed or it's the first extraction
+          // const propertiesChanged = !existingInfo || 
+          //   existingInfo.properties.length !== properties.size ||
+          //   !existingInfo.properties.every(p => properties.has(p));
           
-          if (propertiesChanged || !updateExisting) {
-            console.log('Extracted FGB info:', info, `(${properties.size} properties found)`);
-          }
+          // if (propertiesChanged || !updateExisting) {
+          //   console.log('Extracted FGB info:', info, `(${properties.size} properties found)`);
+          // }
           setFgbInfo(info);
           
           // Only fit to extent on first extraction
