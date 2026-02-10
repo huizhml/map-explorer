@@ -692,6 +692,13 @@ export function SidebarContainer() {
     fgbLayer.changed();
   }, [fgbLayer, enableConditionalRendering, conditionalStyles, fgbStyleOptions, map]);
 
+  const { activeVSM, setActiveVSM } = useMapStore();
+
+  const handleToggleVSM = (year: '2020' | '2024') => {
+    // Toggle: clicking the active button turns it off, otherwise switch to it
+    setActiveVSM(activeVSM === year ? null : year);
+  };
+
   return (
     <Sidebar
       onFileChange={handleFileChange}
@@ -701,6 +708,8 @@ export function SidebarContainer() {
       onRemoveFGBLayer={handleRemoveFGBLayer}
       fgbLoading={fgbLoading}
       fgbError={fgbError}
+      activeVSM={activeVSM}
+      onToggleVSM={handleToggleVSM}
     />
   );
 } 

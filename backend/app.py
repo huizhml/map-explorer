@@ -1291,47 +1291,79 @@ class PredictionsRequest(BaseModel):
 
 @app.post("/predictions/load")
 async def load_predictions(request: PredictionsRequest):
-    """Load prediction data from S3-like storage using env-configured base URL and path template.
-    Returns URL for TiTiler to serve the COG file.
+    """Load prediction data. Auto-selects local or remote based on the year.
 
-    Env vars:
-      - PREDICTIONS_BASE_URL: required, e.g., https://my-bucket.s3.amazonaws.com/predictions
-      - PREDICTIONS_PATH_TEMPLATE: optional, default "{tile}/RH{rh}_Q{q}.tif"
+    Local data (env vars):
+      - PREDICTIONS_LOCAL_BASE_PATH : root directory on disk (e.g. /data/predictions)
+      - PREDICTIONS_LOCAL_PATH_TEMPLATE : path under base, default "{tile}/RH{rh}_Q{q}.tif"
+        Available placeholders: {zone}, {year}, {tile}, {rh}, {q}
+
+    Remote data (env vars):
+      - PREDICTIONS_BASE_URL : bucket / CDN URL (e.g. https://465001846.lumidata.eu/)
+      - PREDICTIONS_REMOTE_PATH_TEMPLATE : path under base, default "{zone}-{year}/{tile}/RH{rh}_Q{q}.tif"
+        Available placeholders: {zone}, {year}, {tile}, {rh}, {q}
+
+    Returns a URL (local path or remote URL) for TiTiler to serve the COG file.
     """
     import os
-    base_url = os.environ.get("PREDICTIONS_BASE_URL", 'https://465001846.lumidata.eu/')
-    path_template = os.environ.get("PREDICTIONS_PATH_TEMPLATE", "{zone}-{year}/{tile}/RH{rh}_Q{q}.tif")
 
+    zone = request.tile_name[:3].lower()
+    fmt = dict(zone=zone, year=request.year, tile=request.tile_name,
+               rh=request.rh_index, q=request.q_index)
+
+    # --- Try local file ---
+    local_base = os.environ.get("PREDICTIONS_LOCAL_BASE_PATH", "")
+    is_local = request.year == 2020
+    if is_local:
+        local_template = os.environ.get(
+            "PREDICTIONS_LOCAL_PATH_TEMPLATE",
+            "{tile}/RH{rh}_Q{q}.tif",
+        )
+        try:
+            local_rel = local_template.format(**fmt)
+        except Exception as e:
+            return {"success": False, "error": f"Invalid PREDICTIONS_LOCAL_PATH_TEMPLATE: {e}"}
+
+        local_path = os.path.join(local_base, local_rel)
+        if os.path.isfile(local_path):
+            return {
+                "success": True,
+                "url": local_path,
+                "tile_name": request.tile_name,
+                "rh_index": request.rh_index,
+                "q_index": request.q_index,
+                "year": request.year,
+                "source": "local",
+            }
+
+    # --- Try remote URL ---
+    base_url = os.environ.get("PREDICTIONS_BASE_URL", "https://465001846.lumidata.eu/")
     if not base_url:
-        return {"success": False, "error": "PREDICTIONS_BASE_URL is not set on the server"}
+        return {"success": False, "error": "No local file found and PREDICTIONS_BASE_URL is not set"}
 
-    # Build URL
+    remote_template = os.environ.get(
+        "PREDICTIONS_REMOTE_PATH_TEMPLATE",
+        "{zone}-{year}/{tile}/RH{rh}_Q{q}.tif",
+    )
     try:
-        zone = request.tile_name[:3].lower()
-        path = path_template.format(zone=zone, year=request.year, tile=request.tile_name, rh=request.rh_index, q=request.q_index)
+        remote_rel = remote_template.format(**fmt)
     except Exception as e:
-        return {"success": False, "error": f"Invalid PREDICTIONS_PATH_TEMPLATE: {str(e)}"}
+        return {"success": False, "error": f"Invalid PREDICTIONS_REMOTE_PATH_TEMPLATE: {e}"}
 
-    cog_url = base_url.rstrip("/") + "/" + path.lstrip("/")
+    cog_url = base_url.rstrip("/") + "/" + remote_rel.lstrip("/")
 
-    # Instead of fetching content, return the URL for TiTiler to serve
-    # The frontend can use this with TiTiler endpoints like:
-    # /cog/tiles/{z}/{x}/{y}?url={cog_url}
-    # /cog/info?url={cog_url}
-    # /cog/statistics?url={cog_url}
-    
     try:
-        # Verify the COG exists with a HEAD request (lightweight check)
         resp = requests.head(cog_url, timeout=10)
         resp.raise_for_status()
-        
+
         return {
-            "success": True, 
+            "success": True,
             "url": cog_url,
             "tile_name": request.tile_name,
             "rh_index": request.rh_index,
             "q_index": request.q_index,
             "year": request.year,
+            "source": "remote",
             "content_type": resp.headers.get("Content-Type", ""),
             "content_length": resp.headers.get("Content-Length", ""),
         }

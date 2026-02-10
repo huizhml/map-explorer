@@ -108,6 +108,10 @@ interface MapStore {
   predictionLayers: PredictionLayer[];
   setPredictionLayers: (layers: PredictionLayer[] | ((prev: PredictionLayer[]) => PredictionLayer[])) => void;
 
+  // Active VSM auto-load mode
+  activeVSM: '2020' | '2024' | null;
+  setActiveVSM: (vsm: '2020' | '2024' | null) => void;
+
   // Popup state
   popupProperties: Record<string, any> | null;
   setPopupProperties: (properties: Record<string, any> | null) => void;
@@ -201,6 +205,10 @@ export const useMapStore = create<MapStore>((set, get) => ({
     set((state) => ({
       predictionLayers: typeof layers === 'function' ? layers(state.predictionLayers) : layers,
     })),
+
+  // Active VSM auto-load mode
+  activeVSM: null,
+  setActiveVSM: (vsm) => set({ activeVSM: vsm }),
 
   // Popup state
   popupProperties: null,

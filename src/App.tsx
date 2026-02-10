@@ -517,34 +517,52 @@ function App() {
     updateLayersList();
   }, [updateLayersList]);
 
-  // --- Auto-load RH98_Q1 predictions for 2024 (single "Global" layer) ---
+  // --- Auto-load VSM predictions (single "Global" layer, driven by activeVSM) ---
   const autoLoadingTilesRef = useRef<Set<string>>(new Set());
   const globalPredGroupRef = useRef<LayerGroup | null>(null);
   const globalLayerRegisteredRef = useRef(false);
   const [showZoomMessage, setShowZoomMessage] = useState(false);
 
+  const { activeVSM } = useMapStore();
+
   useEffect(() => {
-    if (!map || !fgbLayer) return;
+    // When activeVSM is null, hide zoom message and skip
+    if (!map || !fgbLayer || !activeVSM) {
+      setShowZoomMessage(false);
+      return;
+    }
 
     const AUTO_RH_INDEX = 98;
     const AUTO_Q_INDEX = 1;   // Q1 = median
-    const AUTO_YEAR = 2024;
+    const AUTO_YEAR = parseInt(activeVSM); // '2020' | '2024' → number
     const DEBOUNCE_MS = 1500;
     const MAX_CONCURRENT = 3;
-    const MIN_ZOOM = 8; // Only auto-load when zoom level >= 8
+    const MIN_ZOOM = 8;
+    const GLOBAL_LAYER_ID = `prediction-global-RH98-Q1-${activeVSM}`;
 
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
 
-    // Lazily create the LayerGroup and add it to the map once
-    const ensureGroup = (): LayerGroup => {
-      if (!globalPredGroupRef.current) {
-        const group = new LayerGroup({ layers: [], zIndex: 600 });
-        map.addLayer(group);
-        globalPredGroupRef.current = group;
+    // --- Clean up previous auto-load group (if switching years) ---
+    if (globalPredGroupRef.current) {
+      map.removeLayer(globalPredGroupRef.current);
+      globalPredGroupRef.current = null;
+    }
+    // Unregister old global layer from LayerManager (any previous year)
+    const mgr = useMapStore.getState().layerManager;
+    if (mgr) {
+      // Remove any previously registered global prediction layers
+      for (const id of ['prediction-global-RH98-Q1-2020', 'prediction-global-RH98-Q1-2024', 'prediction-global-RH98-median-2024']) {
+        if (mgr.getLayer(id)) mgr.removeLayer(id);
       }
-      return globalPredGroupRef.current;
-    };
+    }
+    globalLayerRegisteredRef.current = false;
+    autoLoadingTilesRef.current.clear();
+
+    // Create fresh LayerGroup
+    const group = new LayerGroup({ layers: [], zIndex: 600 });
+    map.addLayer(group);
+    globalPredGroupRef.current = group;
 
     const autoLoadVisiblePredictions = async () => {
       if (cancelled) return;
@@ -573,22 +591,18 @@ function App() {
 
       if (visibleTiles.size === 0) return;
 
-      // Filter to tiles not yet attempted (loaded or failed)
+      // Filter to tiles not yet attempted
       const allTilesToLoad = [...visibleTiles].filter(
         (t) => !autoLoadingTilesRef.current.has(t),
       );
 
       if (allTilesToLoad.length === 0) return;
 
-      console.log(`[Auto-load] Loading RH98_Q1 (2024) for ${allTilesToLoad.length} visible tiles`);
+      console.log(`[Auto-load] Loading RH98_Q1 (${AUTO_YEAR}) for ${allTilesToLoad.length} visible tiles`);
 
-      const group = ensureGroup();
-
-      // Dynamic imports (same pattern used elsewhere in the codebase)
       const { default: XYZ } = await import('ol/source/XYZ');
       const { default: TileLayer } = await import('ol/layer/Tile');
 
-      // Process ALL visible tiles in sequential batches of MAX_CONCURRENT
       for (let i = 0; i < allTilesToLoad.length; i += MAX_CONCURRENT) {
         if (cancelled) return;
 
@@ -597,12 +611,10 @@ function App() {
         await Promise.allSettled(
           batch.map(async (tileName) => {
             if (cancelled) return;
-            // Mark as attempted immediately — won't be retried even if it fails
-            // (the tile simply doesn't have a prediction available)
             autoLoadingTilesRef.current.add(tileName);
 
             try {
-              // Step 1: Verify COG exists and get URL
+              // Step 1: Get prediction COG URL (backend handles remote vs local)
               const resp = await fetch('http://localhost:8000/predictions/load', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -631,7 +643,6 @@ function App() {
               const bbox = infoData.bounds;
               if (!bbox || bbox.length !== 4) return;
 
-              // Determine source CRS
               let sourceCRS = 'EPSG:4326';
               if (infoData.crs) {
                 if (typeof infoData.crs === 'string') sourceCRS = infoData.crs;
@@ -639,7 +650,6 @@ function App() {
                 else if (infoData.crs.code) sourceCRS = `EPSG:${infoData.crs.code}`;
               }
 
-              // Transform bounds to EPSG:3857
               let extent: number[];
               if (sourceCRS === 'EPSG:3857' || sourceCRS === 'EPSG:900913') {
                 extent = bbox;
@@ -651,7 +661,7 @@ function App() {
 
               if (cancelled) return;
 
-              // Step 3: Create TileLayer and add it to the shared group
+              // Step 3: Create TileLayer and add to group
               const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=0,500&colormap_name=inferno`;
 
               const tileLayer = new TileLayer({
@@ -664,19 +674,17 @@ function App() {
               }
             } catch (err) {
               console.warn(`[Auto-load] Failed for tile ${tileName}:`, err);
-              // Tile stays in autoLoadingTilesRef — won't retry endlessly
             }
           }),
         );
       }
 
-      // Register the group as a single "Global" entry in LayerManager (once)
+      // Register the group once in LayerManager
       if (!globalLayerRegisteredRef.current && group.getLayers().getLength() > 0) {
         const mgr = useMapStore.getState().layerManager;
         if (mgr) {
-          const layerId = 'prediction-global-RH98-median-2024';
-          const layerName = 'Global (RH98 Q1 2024)';
-          mgr.addLayer(layerId, layerName, 'prediction', group as any, {
+          const layerName = `Global (RH98 Q1 ${AUTO_YEAR})`;
+          mgr.addLayer(GLOBAL_LAYER_ID, layerName, 'prediction', group as any, {
             tileName: 'Global',
             rhIndex: AUTO_RH_INDEX,
             qIndex: AUTO_Q_INDEX,
@@ -692,7 +700,6 @@ function App() {
     };
 
     const onMoveEnd = () => {
-      // Update zoom message immediately (no debounce)
       const zoom = map.getView().getZoom();
       setShowZoomMessage(zoom !== undefined && zoom < MIN_ZOOM);
 
@@ -700,7 +707,6 @@ function App() {
       debounceTimer = setTimeout(autoLoadVisiblePredictions, DEBOUNCE_MS);
     };
 
-    // Trigger on mount (for tiles already visible) and on every view change
     onMoveEnd();
     map.on('moveend', onMoveEnd);
 
@@ -708,8 +714,21 @@ function App() {
       cancelled = true;
       map.un('moveend', onMoveEnd);
       if (debounceTimer) clearTimeout(debounceTimer);
+      // Remove group from map on cleanup (when activeVSM changes or component unmounts)
+      if (globalPredGroupRef.current) {
+        map.removeLayer(globalPredGroupRef.current);
+        globalPredGroupRef.current = null;
+      }
+      // Unregister from LayerManager
+      const mgr = useMapStore.getState().layerManager;
+      if (mgr && mgr.getLayer(GLOBAL_LAYER_ID)) {
+        mgr.removeLayer(GLOBAL_LAYER_ID);
+      }
+      globalLayerRegisteredRef.current = false;
+      autoLoadingTilesRef.current.clear();
+      updateLayersList();
     };
-  }, [map, fgbLayer, updateLayersList]);
+  }, [map, fgbLayer, activeVSM, updateLayersList]);
 
   // Initialize highlight layer
   useEffect(() => {
@@ -1211,11 +1230,12 @@ function App() {
         setFgbLayer(null);
       } else if (layerId.startsWith('sentinel2-')) {
         setSentinel2Layers((prev: any[]) => prev.filter((l: any) => l.id !== layerId));
-      } else if (layerId === 'prediction-global-RH98-median-2024') {
-        // Reset auto-load state so tiles can be re-loaded if the user re-enables
+      } else if (layerId.startsWith('prediction-global-')) {
+        // Reset auto-load state and deactivate VSM
         globalPredGroupRef.current = null;
         globalLayerRegisteredRef.current = false;
         autoLoadingTilesRef.current.clear();
+        useMapStore.getState().setActiveVSM(null);
       } else if (layerId.startsWith('prediction-')) {
         setPredictionLayers((prev: any[]) => prev.filter((l: any) => l.id !== layerId));
       }

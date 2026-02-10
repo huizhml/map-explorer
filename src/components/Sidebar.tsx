@@ -19,6 +19,9 @@ interface SidebarProps {
   onRemoveFGBLayer: () => void;
   fgbLoading: boolean;
   fgbError: string | null;
+  // VSM auto-load props
+  activeVSM: '2020' | '2024' | null;
+  onToggleVSM: (year: '2020' | '2024') => void;
 }
 
 // Common palettes for visualization
@@ -58,6 +61,8 @@ export function Sidebar({
   onLoadFGB,
   fgbLoading,
   fgbError,
+  activeVSM,
+  onToggleVSM,
 }: SidebarProps) {
   return (
     <SidebarContainer>
@@ -133,6 +138,36 @@ export function Sidebar({
             <Alert severity="error" sx={{ mb: 2 }}>
               {fgbError}
             </Alert>
+          )}
+        </Box>
+
+        {/* VSM Predictions Section */}
+        <Box sx={{ mt: 3 }}>
+          <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <LayersIcon /> VSM Predictions
+          </Typography>
+          <Box sx={{ mt: 2, display: 'flex', gap: 1 }}>
+            <Button
+              variant={activeVSM === '2020' ? 'contained' : 'outlined'}
+              color={activeVSM === '2020' ? 'success' : 'primary'}
+              onClick={() => onToggleVSM('2020')}
+              sx={{ flex: 1 }}
+            >
+              {activeVSM === '2020' ? 'VSM 2020 ✓' : 'Load VSM 2020'}
+            </Button>
+            <Button
+              variant={activeVSM === '2024' ? 'contained' : 'outlined'}
+              color={activeVSM === '2024' ? 'success' : 'primary'}
+              onClick={() => onToggleVSM('2024')}
+              sx={{ flex: 1 }}
+            >
+              {activeVSM === '2024' ? 'VSM 2024 ✓' : 'Load VSM 2024'}
+            </Button>
+          </Box>
+          {activeVSM && (
+            <Typography variant="caption" sx={{ mt: 1, display: 'block', color: 'text.secondary' }}>
+              Auto-loading RH98 Q1 ({activeVSM}) for visible tiles{activeVSM === '2020' ? ' (local)' : ' (remote)'}
+            </Typography>
           )}
         </Box>
       </Box>
