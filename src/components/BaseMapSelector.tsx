@@ -42,6 +42,16 @@ const createBaseMapSources = (): Record<string, XYZ | OSM> => {
       attributions: '© Esri',
       maxZoom: 19,
     }),
+    googleSatellite: new XYZ({
+      urls: [
+        'https://mt0.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        'https://mt2.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        'https://mt3.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+      ],
+      attributions: '© Google',
+      maxZoom: 20,
+    }),
     esriWorldTopo: new XYZ({
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
       attributions: '© Esri',
@@ -85,6 +95,12 @@ const BASE_MAP_OPTIONS: Array<{
   {
     id: 'esriWorldImagery',
     name: 'Esri World Imagery',
+    icon: <SatelliteIcon />,
+    category: 'satellite',
+  },
+  {
+    id: 'googleSatellite',
+    name: 'Google Satellite',
     icon: <SatelliteIcon />,
     category: 'satellite',
   },
@@ -214,6 +230,8 @@ export function BaseMapSelector({ map, onBaseMapChange }: BaseMapSelectorProps) 
           const url = source.getUrls()?.[0] || '';
           if (url.includes('arcgisonline.com') && url.includes('World_Imagery')) {
             setSelectedBaseMap('esriWorldImagery');
+          } else if (url.includes('google.com') && url.includes('lyrs=s')) {
+            setSelectedBaseMap('googleSatellite');
           } else if (url.includes('arcgisonline.com') && url.includes('World_Topo_Map')) {
             setSelectedBaseMap('esriWorldTopo');
           } else if (url.includes('arcgisonline.com') && url.includes('World_Terrain_Base')) {
