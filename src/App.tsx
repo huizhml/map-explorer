@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
 import { MapComponent, type Map } from './components/Map';
 import { SidebarContainer } from './containers/SidebarContainer';
@@ -9,6 +9,7 @@ import { TileSearch } from './components/TileSearch';
 import { BaseMapSelector } from './components/BaseMapSelector';
 import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
+import LayerGroup from 'ol/layer/Group';
 import { Feature } from 'ol';
 import { Geometry, Point, Polygon, LineString, MultiPolygon, MultiLineString } from 'ol/geom';
 import { Style, Stroke, Fill, Circle as CircleStyle } from 'ol/style';
@@ -251,7 +252,7 @@ function App() {
     rh_index: number;
     q_index: number;
     year: number;
-  }) => {
+  }, skipZoom = false) => {
     if (!map) return;
     console.log('Loading prediction COG via TiTiler:', predictionData);
     
@@ -354,8 +355,8 @@ function App() {
       
       // Zoom to the COG extent FIRST before adding the layer
       // This prevents TileOutsideBounds errors
-      // Only zoom if extent is valid
-      if (extent && extent.length === 4 && extent.every((val: number) => isFinite(val))) {
+      // Only zoom if extent is valid and skipZoom is false
+      if (!skipZoom && extent && extent.length === 4 && extent.every((val: number) => isFinite(val))) {
         try {
       await new Promise<void>((resolve) => {
         map.getView().fit(extent, { 
@@ -371,7 +372,7 @@ function App() {
         } catch (fitError) {
           console.warn('Error fitting map to extent, continuing anyway:', fitError);
         }
-      } else {
+      } else if (!skipZoom) {
         console.warn('Skipping map fit - invalid extent');
       }
 
@@ -383,7 +384,7 @@ function App() {
       // - Better for static visualizations
       // Trade-off: Changing min/max requires tile reload (but this is acceptable for most use cases)
       
-      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&rescale=0,500&colormap_name=inferno`;
+      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=0,500&colormap_name=inferno`;
       
       // Create XYZ tile source using TiTiler
       const { default: XYZ } = await import('ol/source/XYZ');
@@ -515,6 +516,200 @@ function App() {
   React.useEffect(() => {
     updateLayersList();
   }, [updateLayersList]);
+
+  // --- Auto-load RH98_Q1 predictions for 2024 (single "Global" layer) ---
+  const autoLoadingTilesRef = useRef<Set<string>>(new Set());
+  const globalPredGroupRef = useRef<LayerGroup | null>(null);
+  const globalLayerRegisteredRef = useRef(false);
+  const [showZoomMessage, setShowZoomMessage] = useState(false);
+
+  useEffect(() => {
+    if (!map || !fgbLayer) return;
+
+    const AUTO_RH_INDEX = 98;
+    const AUTO_Q_INDEX = 1;   // Q1 = median
+    const AUTO_YEAR = 2024;
+    const DEBOUNCE_MS = 1500;
+    const MAX_CONCURRENT = 3;
+    const MIN_ZOOM = 8; // Only auto-load when zoom level >= 8
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
+    // Lazily create the LayerGroup and add it to the map once
+    const ensureGroup = (): LayerGroup => {
+      if (!globalPredGroupRef.current) {
+        const group = new LayerGroup({ layers: [], zIndex: 600 });
+        map.addLayer(group);
+        globalPredGroupRef.current = group;
+      }
+      return globalPredGroupRef.current;
+    };
+
+    const autoLoadVisiblePredictions = async () => {
+      if (cancelled) return;
+
+      // --- Zoom gate ---
+      const zoom = map.getView().getZoom();
+      if (zoom === undefined || zoom < MIN_ZOOM) return;
+
+      const source = fgbLayer.getSource();
+      if (!source) return;
+
+      const mapSize = map.getSize();
+      if (!mapSize) return;
+
+      const viewExtent = map.getView().calculateExtent(mapSize);
+      const features = source.getFeaturesInExtent(viewExtent);
+
+      // Collect unique tile names from visible features
+      const visibleTiles = new Set<string>();
+      for (const feature of features) {
+        const name = feature.get('Name');
+        if (name && typeof name === 'string') {
+          visibleTiles.add(name);
+        }
+      }
+
+      if (visibleTiles.size === 0) return;
+
+      // Filter to tiles not yet attempted (loaded or failed)
+      const allTilesToLoad = [...visibleTiles].filter(
+        (t) => !autoLoadingTilesRef.current.has(t),
+      );
+
+      if (allTilesToLoad.length === 0) return;
+
+      console.log(`[Auto-load] Loading RH98_Q1 (2024) for ${allTilesToLoad.length} visible tiles`);
+
+      const group = ensureGroup();
+
+      // Dynamic imports (same pattern used elsewhere in the codebase)
+      const { default: XYZ } = await import('ol/source/XYZ');
+      const { default: TileLayer } = await import('ol/layer/Tile');
+
+      // Process ALL visible tiles in sequential batches of MAX_CONCURRENT
+      for (let i = 0; i < allTilesToLoad.length; i += MAX_CONCURRENT) {
+        if (cancelled) return;
+
+        const batch = allTilesToLoad.slice(i, i + MAX_CONCURRENT);
+
+        await Promise.allSettled(
+          batch.map(async (tileName) => {
+            if (cancelled) return;
+            // Mark as attempted immediately — won't be retried even if it fails
+            // (the tile simply doesn't have a prediction available)
+            autoLoadingTilesRef.current.add(tileName);
+
+            try {
+              // Step 1: Verify COG exists and get URL
+              const resp = await fetch('http://localhost:8000/predictions/load', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  year: AUTO_YEAR,
+                  tile_name: tileName,
+                  rh_index: AUTO_RH_INDEX,
+                  q_index: AUTO_Q_INDEX,
+                }),
+              });
+
+              if (!resp.ok) return;
+
+              const data = await resp.json();
+              if (!data.success || !data.url) return;
+
+              if (cancelled) return;
+
+              // Step 2: Get COG info (bounds / CRS) from TiTiler
+              const infoResp = await fetch(
+                `http://localhost:8000/cog/info?url=${encodeURIComponent(data.url)}`,
+              );
+              if (!infoResp.ok) return;
+
+              const infoData = await infoResp.json();
+              const bbox = infoData.bounds;
+              if (!bbox || bbox.length !== 4) return;
+
+              // Determine source CRS
+              let sourceCRS = 'EPSG:4326';
+              if (infoData.crs) {
+                if (typeof infoData.crs === 'string') sourceCRS = infoData.crs;
+                else if (infoData.crs.properties?.name) sourceCRS = infoData.crs.properties.name;
+                else if (infoData.crs.code) sourceCRS = `EPSG:${infoData.crs.code}`;
+              }
+
+              // Transform bounds to EPSG:3857
+              let extent: number[];
+              if (sourceCRS === 'EPSG:3857' || sourceCRS === 'EPSG:900913') {
+                extent = bbox;
+              } else {
+                extent = transformExtent(bbox, sourceCRS, 'EPSG:3857');
+              }
+
+              if (!extent.every((v: number) => isFinite(v) && !isNaN(v))) return;
+
+              if (cancelled) return;
+
+              // Step 3: Create TileLayer and add it to the shared group
+              const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=0,500&colormap_name=inferno`;
+
+              const tileLayer = new TileLayer({
+                source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
+                extent,
+              });
+
+              if (!cancelled) {
+                group.getLayers().push(tileLayer);
+              }
+            } catch (err) {
+              console.warn(`[Auto-load] Failed for tile ${tileName}:`, err);
+              // Tile stays in autoLoadingTilesRef — won't retry endlessly
+            }
+          }),
+        );
+      }
+
+      // Register the group as a single "Global" entry in LayerManager (once)
+      if (!globalLayerRegisteredRef.current && group.getLayers().getLength() > 0) {
+        const mgr = useMapStore.getState().layerManager;
+        if (mgr) {
+          const layerId = 'prediction-global-RH98-median-2024';
+          const layerName = 'Global (RH98 Q1 2024)';
+          mgr.addLayer(layerId, layerName, 'prediction', group as any, {
+            tileName: 'Global',
+            rhIndex: AUTO_RH_INDEX,
+            qIndex: AUTO_Q_INDEX,
+            year: AUTO_YEAR,
+            rescaleMin: 0,
+            rescaleMax: 500,
+            isAutoLoadGroup: true,
+          });
+          globalLayerRegisteredRef.current = true;
+          updateLayersList();
+        }
+      }
+    };
+
+    const onMoveEnd = () => {
+      // Update zoom message immediately (no debounce)
+      const zoom = map.getView().getZoom();
+      setShowZoomMessage(zoom !== undefined && zoom < MIN_ZOOM);
+
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(autoLoadVisiblePredictions, DEBOUNCE_MS);
+    };
+
+    // Trigger on mount (for tiles already visible) and on every view change
+    onMoveEnd();
+    map.on('moveend', onMoveEnd);
+
+    return () => {
+      cancelled = true;
+      map.un('moveend', onMoveEnd);
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  }, [map, fgbLayer, updateLayersList]);
 
   // Initialize highlight layer
   useEffect(() => {
@@ -950,57 +1145,50 @@ function App() {
     }
   };
 
+  // Helper: update rescale on a single XYZ tile source
+  const updateTileSourceRescale = (source: any, min: number, max: number) => {
+    if (!source || !source.getUrls) return;
+    const urls = source.getUrls();
+    if (!urls || urls.length === 0) return;
+    const oldUrl = urls[0];
+    try {
+      const urlParts = oldUrl.split('?');
+      if (urlParts.length === 2) {
+        const basePath = urlParts[0];
+        const params = new URLSearchParams(urlParts[1]);
+        params.set('rescale', `${min},${max}`);
+        source.setUrl(`${basePath}?${params.toString()}`);
+        if (source.refresh) source.refresh();
+      }
+    } catch (error) {
+      console.error('Error updating prediction rescale URL:', error);
+    }
+  };
+
   const handleChangePredictionRescale = (layerId: string, min: number, max: number) => {
-    // Update rescale values for prediction layers (server-side transformation)
-    // This approach provides best overall performance:
-    // - Smaller tile sizes (compressed images)
-    // - Lower client-side processing
-    // - Works on all devices
-    // Trade-off: Requires tile reload when min/max changes
     if (!layerManager) return;
-    
+
     const managedLayer = layerManager.getLayer(layerId);
     if (!managedLayer || managedLayer.type !== 'prediction' || !managedLayer.metadata) return;
-    
+
     // Update metadata
     managedLayer.metadata.rescaleMin = min;
     managedLayer.metadata.rescaleMax = max;
-    
-    // Update the tile source URL (server-side transformation)
+
     const layer = managedLayer.layer as any;
-    const source = layer.getSource?.();
-    if (source && source.getUrls) {
-      const urls = source.getUrls();
-      if (urls && urls.length > 0) {
-        const oldUrl = urls[0];
-        try {
-          // Parse the URL template: http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=...&rescale=0,500&colormap_name=inferno
-          const urlParts = oldUrl.split('?');
-          if (urlParts.length === 2) {
-            const basePath = urlParts[0]; // Contains the template part
-            const queryString = urlParts[1];
-            const params = new URLSearchParams(queryString);
-            
-            // Update rescale parameter
-            params.set('rescale', `${min},${max}`);
-            
-            // Create new URL template
-            const newUrl = `${basePath}?${params.toString()}`;
-            
-            // Update the source URL - this will trigger tile reload
-            source.setUrl(newUrl);
-            
-            // Explicitly refresh to ensure tiles reload immediately
-            if (source.refresh) {
-              source.refresh();
-            }
-          }
-        } catch (error) {
-          console.error('Error updating prediction rescale URL:', error);
-        }
-      }
+
+    // If the layer is a LayerGroup (global auto-load group), update all children
+    if (layer instanceof LayerGroup) {
+      layer.getLayers().forEach((child: any) => {
+        const childSource = child.getSource?.();
+        updateTileSourceRescale(childSource, min, max);
+      });
+    } else {
+      // Single tile layer
+      const source = layer.getSource?.();
+      updateTileSourceRescale(source, min, max);
     }
-    
+
     updateLayersList();
   };
 
@@ -1023,6 +1211,11 @@ function App() {
         setFgbLayer(null);
       } else if (layerId.startsWith('sentinel2-')) {
         setSentinel2Layers((prev: any[]) => prev.filter((l: any) => l.id !== layerId));
+      } else if (layerId === 'prediction-global-RH98-median-2024') {
+        // Reset auto-load state so tiles can be re-loaded if the user re-enables
+        globalPredGroupRef.current = null;
+        globalLayerRegisteredRef.current = false;
+        autoLoadingTilesRef.current.clear();
       } else if (layerId.startsWith('prediction-')) {
         setPredictionLayers((prev: any[]) => prev.filter((l: any) => l.id !== layerId));
       }
@@ -1082,6 +1275,30 @@ function App() {
         {/* <RHContainer map={map} /> */}
         {/* <XarrayContainer map={map} /> */}
         <MapComponent onMapInit={handleMapInit} />
+
+        {/* Zoom-in message */}
+        {showZoomMessage && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 75,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 1000,
+              backgroundColor: 'rgba(25, 118, 210, 0.9)',
+              color: '#fff',
+              padding: '6px 20px',
+              borderRadius: 20,
+              fontSize: '0.85rem',
+              fontWeight: 500,
+              pointerEvents: 'none',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Zoom in to see the predictions
+          </div>
+        )}
         
         {/* Tile Search */}
         <TileSearch map={map} />
