@@ -50,7 +50,7 @@ interface Layer {
   visible: boolean;
   opacity: number;
   zIndex: number;
-  type: 'cog' | 'fgb' | 'sentinel2' | 'prediction';
+  type: 'cog' | 'fgb' | 'sentinel2' | 'prediction' | 'vector';
   metadata?: Record<string, any>;
 }
 
@@ -63,6 +63,9 @@ interface LayerControlProps {
   onRemoveLayer?: (layerId: string) => void;
   onLocateLayer?: (layerId: string) => void;
   onChangePredictionRescale?: (layerId: string, min: number, max: number) => void;
+  onHighlightFeature?: (layerId: string, featureIndex: number | null) => void;
+  onRemoveFeature?: (layerId: string, featureIndex: number) => void;
+  vectorFeatures?: Record<string, { name: string; index: number }[]>;
 }
 
 export function LayerControl({
@@ -73,6 +76,9 @@ export function LayerControl({
   onRemoveLayer,
   onLocateLayer,
   onChangePredictionRescale,
+  onHighlightFeature,
+  onRemoveFeature,
+  vectorFeatures,
 }: LayerControlProps) {
   // Zustand store
   const {
@@ -94,6 +100,7 @@ export function LayerControl({
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [featureListLayerId, setFeatureListLayerId] = useState<string | null>(null);
 
   // Extract RH index from prediction layer ID
   // Format: prediction-${tile_name}-RH${rh_index}-${qLabel}-${year}-${timestamp}
@@ -108,10 +115,12 @@ export function LayerControl({
       other: Layer[];
       sentinel2: Layer[];
       predictions: Record<number, Layer[]>;
+      vector: Layer[];
     } = {
       other: [],
       sentinel2: [],
       predictions: {},
+      vector: [],
     };
 
     layers.forEach((layer) => {
@@ -123,11 +132,12 @@ export function LayerControl({
           }
           groups.predictions[rhIndex].push(layer);
         } else {
-          // If we can't extract RH index, put in other
           groups.other.push(layer);
         }
       } else if (layer.type === 'sentinel2') {
         groups.sentinel2.push(layer);
+      } else if (layer.type === 'vector') {
+        groups.vector.push(layer);
       } else {
         groups.other.push(layer);
       }
@@ -986,6 +996,110 @@ export function LayerControl({
                         </Accordion>
                       );
                     })}
+                </>
+              )}
+
+              {/* Vector Layers Group */}
+              {groupedLayers.vector.length > 0 && (
+                <>
+                  {(groupedLayers.other.length > 0 || groupedLayers.sentinel2.length > 0 || Object.keys(groupedLayers.predictions).length > 0) && (
+                    <Divider sx={{ my: 1 }} />
+                  )}
+                  <Accordion
+                    expanded={expandedGroups['vector'] !== false}
+                    onChange={() => handleGroupToggle('vector')}
+                    sx={{ boxShadow: 'none', '&:before': { display: 'none' }, mb: 0.5 }}
+                  >
+                    <AccordionSummary
+                      expandIcon={<ExpandMoreIcon />}
+                      sx={{
+                        minHeight: 48,
+                        '&.Mui-expanded': { minHeight: 48 },
+                        bgcolor: 'grey.100',
+                        px: 1.5,
+                      }}
+                    >
+                      <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                        Vector Layers ({groupedLayers.vector.length})
+                      </Typography>
+                    </AccordionSummary>
+                    <AccordionDetails sx={{ p: 0 }}>
+                      {groupedLayers.vector.map((layer, index) => {
+                        const globalIndex = layers.findIndex((l) => l.id === layer.id);
+                        const features = vectorFeatures?.[layer.id] || [];
+                        return (
+                          <React.Fragment key={layer.id}>
+                            {index > 0 && <Divider />}
+                            {renderLayerItem(layer, globalIndex)}
+                            {/* Clickable feature count to open feature list */}
+                            <Box
+                              sx={{
+                                px: 2,
+                                pb: 1,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 1,
+                                cursor: 'pointer',
+                                '&:hover': { bgcolor: 'action.hover' },
+                              }}
+                              onClick={() => setFeatureListLayerId(
+                                featureListLayerId === layer.id ? null : layer.id
+                              )}
+                            >
+                              <FilterListIcon fontSize="small" color="action" />
+                              <Typography variant="body2" color="primary" sx={{ fontWeight: 500 }}>
+                                {features.length} features
+                              </Typography>
+                              {featureListLayerId === layer.id ? (
+                                <ExpandLessIcon fontSize="small" />
+                              ) : (
+                                <ExpandMoreIcon fontSize="small" />
+                              )}
+                            </Box>
+                            {/* Feature list slide-in panel */}
+                            <Collapse in={featureListLayerId === layer.id}>
+                              <Box sx={{ maxHeight: 300, overflowY: 'auto', bgcolor: 'grey.50' }}>
+                                <List dense disablePadding>
+                                  {features.map((feat) => (
+                                    <ListItem
+                                      key={feat.index}
+                                      sx={{
+                                        py: 0.5,
+                                        px: 2,
+                                        '&:hover': { bgcolor: 'action.hover' },
+                                        cursor: 'pointer',
+                                      }}
+                                      onMouseEnter={() => onHighlightFeature?.(layer.id, feat.index)}
+                                      onMouseLeave={() => onHighlightFeature?.(layer.id, null)}
+                                    >
+                                      <ListItemText
+                                        primary={feat.name}
+                                        primaryTypographyProps={{
+                                          variant: 'body2',
+                                          fontFamily: 'monospace',
+                                          fontWeight: 500,
+                                        }}
+                                      />
+                                      <IconButton
+                                        size="small"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onRemoveFeature?.(layer.id, feat.index);
+                                        }}
+                                        sx={{ ml: 1 }}
+                                      >
+                                        <DeleteIcon fontSize="small" />
+                                      </IconButton>
+                                    </ListItem>
+                                  ))}
+                                </List>
+                              </Box>
+                            </Collapse>
+                          </React.Fragment>
+                        );
+                      })}
+                    </AccordionDetails>
+                  </Accordion>
                 </>
               )}
             </Box>

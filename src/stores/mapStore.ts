@@ -112,6 +112,12 @@ interface MapStore {
   activeVSM: '2020' | '2024' | null;
   setActiveVSM: (vsm: '2020' | '2024' | null) => void;
 
+  // Drawing tools
+  drawingActive: boolean;
+  setDrawingActive: (active: boolean) => void;
+  selectedTiles: string[];
+  setSelectedTiles: (tiles: string[]) => void;
+
   // Popup state
   popupProperties: Record<string, any> | null;
   setPopupProperties: (properties: Record<string, any> | null) => void;
@@ -209,6 +215,12 @@ export const useMapStore = create<MapStore>((set, get) => ({
   // Active VSM auto-load mode
   activeVSM: null,
   setActiveVSM: (vsm) => set({ activeVSM: vsm }),
+
+  // Drawing tools
+  drawingActive: false,
+  setDrawingActive: (active) => set({ drawingActive: active }),
+  selectedTiles: [],
+  setSelectedTiles: (tiles) => set({ selectedTiles: tiles }),
 
   // Popup state
   popupProperties: null,

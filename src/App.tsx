@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { MapComponent, type Map } from './components/Map';
 import { SidebarContainer } from './containers/SidebarContainer';
@@ -12,7 +12,8 @@ import VectorSource from 'ol/source/Vector';
 import LayerGroup from 'ol/layer/Group';
 import { Feature } from 'ol';
 import { Geometry, Point, Polygon, LineString, MultiPolygon, MultiLineString } from 'ol/geom';
-import { Style, Stroke, Fill, Circle as CircleStyle } from 'ol/style';
+import { Style, Stroke, Fill, Circle as CircleStyle, Text as TextStyle } from 'ol/style';
+import Draw, { createBox } from 'ol/interaction/Draw';
 import GeoTIFF from 'ol/source/GeoTIFF';
 import WebGLTile from 'ol/layer/WebGLTile';
 import { transformExtent, transform } from 'ol/proj';
@@ -783,6 +784,319 @@ function App() {
     };
   }, [map, fgbLayer, activeVSM, updateLayersList]);
 
+  // --- Drawing tool: "Get Tiles" rectangle draw ---
+  const { drawingActive, setDrawingActive, setSelectedTiles } = useMapStore();
+  const drawLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
+  const labelLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
+
+  useEffect(() => {
+    if (!map) return;
+
+    // Always clean up previous draw interaction and layers
+    let drawInteraction: any = null;
+
+    if (!drawingActive) {
+      return;
+    }
+
+    // Starting a new draw session — remove previous highlight/label layers
+    if (drawLayerRef.current) {
+      map.removeLayer(drawLayerRef.current);
+      drawLayerRef.current = null;
+    }
+    if (labelLayerRef.current) {
+      map.removeLayer(labelLayerRef.current);
+      labelLayerRef.current = null;
+    }
+
+    // Set up Draw interaction for rectangle selection
+    const drawSource = new VectorSource();
+
+    drawInteraction = new Draw({
+      source: drawSource,
+      type: 'Circle',
+      geometryFunction: createBox(),
+    });
+
+    map.addInteraction(drawInteraction);
+
+    // Change cursor to crosshair while drawing
+    const mapEl = map.getTargetElement();
+    if (mapEl) (mapEl as HTMLElement).style.cursor = 'crosshair';
+
+    drawInteraction.on('drawend', (event: any) => {
+        const drawnGeometry = event.feature.getGeometry();
+        if (!drawnGeometry) return;
+
+        const drawnExtent = drawnGeometry.getExtent();
+
+        // Find FGB features intersecting the drawn rectangle
+        const fgbLayerCurrent = useMapStore.getState().fgbLayer;
+        if (!fgbLayerCurrent) {
+          console.warn('[draw] No FGB layer loaded');
+          setDrawingActive(false);
+          return;
+        }
+
+        const fgbSource = fgbLayerCurrent.getSource();
+        if (!fgbSource) return;
+
+        const intersectingFeatures = fgbSource.getFeaturesInExtent(drawnExtent);
+        const tileNames: string[] = [];
+        const highlightFeatures: Feature<Geometry>[] = [];
+        const labelFeatures: Feature<Geometry>[] = [];
+
+        for (const feature of intersectingFeatures) {
+          const name = feature.get('Name');
+          if (name && typeof name === 'string') {
+            tileNames.push(name);
+
+            // Clone feature for highlight
+            const cloned = feature.clone();
+            highlightFeatures.push(cloned);
+
+            // Create a label point at the center of the feature
+            const geom = feature.getGeometry();
+            if (geom) {
+              const extent = geom.getExtent();
+              const centerX = (extent[0] + extent[2]) / 2;
+              const centerY = (extent[1] + extent[3]) / 2;
+              const labelFeature = new Feature({
+                geometry: new Point([centerX, centerY]),
+                tileName: name,
+              });
+              labelFeatures.push(labelFeature);
+            }
+          }
+        }
+
+        tileNames.sort();
+        setSelectedTiles(tileNames);
+
+        // Remove previous draw highlight/label layers
+        if (drawLayerRef.current) {
+          map.removeLayer(drawLayerRef.current);
+          drawLayerRef.current = null;
+        }
+        if (labelLayerRef.current) {
+          map.removeLayer(labelLayerRef.current);
+          labelLayerRef.current = null;
+        }
+
+        // Create label layer with tile names
+        const lblSource = new VectorSource({ features: labelFeatures });
+        const lblLayer = new VectorLayer({
+          source: lblSource,
+          style: (feature: any) => {
+            return new Style({
+              text: new TextStyle({
+                text: feature.get('tileName') || '',
+                font: 'bold 16px sans-serif',
+                fill: new Fill({ color: '#FFD700' }),
+                stroke: new Stroke({ color: '#000000', width: 3 }),
+                overflow: true,
+              }),
+            });
+          },
+          zIndex: 9001,
+        });
+        map.addLayer(lblLayer);
+        labelLayerRef.current = lblLayer;
+
+        // Register with LayerManager
+        const mgr = useMapStore.getState().layerManager;
+        const labelLayerId = `vector-tiles-${Date.now()}`;
+        (lblLayer as any).__vectorLayerId = labelLayerId;
+        if (mgr) {
+          mgr.addLayer(labelLayerId, `Selected Tiles (${tileNames.length})`, 'vector', lblLayer, {
+            featureNames: tileNames,
+          });
+          updateLayersList();
+        }
+
+        // Done drawing — remove interaction
+        map.removeInteraction(drawInteraction);
+        if (mapEl) (mapEl as HTMLElement).style.cursor = '';
+        setDrawingActive(false);
+
+        console.log('[draw] Selected tiles:', tileNames);
+    });
+
+    return () => {
+      // Cleanup on deactivate
+      if (drawInteraction) {
+        map.removeInteraction(drawInteraction);
+      }
+      const mapEl = map.getTargetElement();
+      if (mapEl) (mapEl as HTMLElement).style.cursor = '';
+    };
+  }, [map, drawingActive]);
+
+  // --- Hover highlight + delete button on label features ---
+  useEffect(() => {
+    if (!map) return;
+
+    // Create overlay element for delete button
+    const deleteEl = document.createElement('div');
+    deleteEl.innerHTML = '✕';
+    deleteEl.style.cssText = `
+      background: #ff4444; color: white; border-radius: 50%;
+      width: 22px; height: 22px; display: flex; align-items: center;
+      justify-content: center; font-size: 14px; font-weight: bold;
+      cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+      display: none; user-select: none;
+    `;
+
+    let overlay: any = null;
+    let hoveredFeature: Feature<Geometry> | null = null;
+    let hoveredLayerId: string | null = null;
+
+    const setupOverlay = async () => {
+      const { default: OlOverlay } = await import('ol/Overlay');
+
+      overlay = new OlOverlay({
+        element: deleteEl,
+        positioning: 'bottom-left',
+        offset: [5, -5],
+        stopEvent: true,
+      });
+      map.addOverlay(overlay);
+
+      deleteEl.style.display = 'none';
+
+      // Delete button click handler
+      deleteEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!hoveredFeature || !hoveredLayerId) return;
+
+        const mgr = useMapStore.getState().layerManager;
+        if (!mgr) return;
+
+        const managed = mgr.getLayer(hoveredLayerId);
+        if (!managed) return;
+
+        const source = (managed.layer as any).getSource?.();
+        if (!source) return;
+
+        const tileName = hoveredFeature.get('tileName');
+        source.removeFeature(hoveredFeature);
+
+        // Update selectedTiles in store
+        const currentTiles = useMapStore.getState().selectedTiles;
+        useMapStore.getState().setSelectedTiles(currentTiles.filter((t: string) => t !== tileName));
+
+        // Update layer name or remove if empty
+        const remaining = source.getFeatures().length;
+        if (remaining === 0) {
+          mgr.removeLayer(hoveredLayerId);
+          map.removeLayer(managed.layer);
+        } else {
+          (managed as any).name = `Selected Tiles (${remaining})`;
+        }
+        updateLayersList();
+
+        // Hide overlay
+        deleteEl.style.display = 'none';
+        overlay.setPosition(undefined);
+        hoveredFeature = null;
+        hoveredLayerId = null;
+      });
+
+      // Pointermove handler to detect label features
+      const onPointerMove = (evt: any) => {
+        if (evt.dragging) return;
+
+        const mgr = useMapStore.getState().layerManager;
+        if (!mgr) return;
+
+        const vectorLayers = mgr.getLayersByType('vector');
+        if (vectorLayers.length === 0) {
+          if (hoveredFeature) {
+            hoveredFeature.setStyle(undefined);
+            hoveredFeature = null;
+            hoveredLayerId = null;
+            deleteEl.style.display = 'none';
+            overlay.setPosition(undefined);
+          }
+          return;
+        }
+
+        // Check if pointer is over any vector layer feature
+        let found = false;
+        map.forEachFeatureAtPixel(evt.pixel, (feature: any) => {
+          if (found) return;
+
+          // Check if this feature belongs to a vector layer
+          for (const managed of vectorLayers) {
+            const source = (managed.layer as any).getSource?.();
+            if (source && source.getFeatures().includes(feature)) {
+              found = true;
+
+              if (hoveredFeature !== feature) {
+                // Unhighlight previous
+                if (hoveredFeature) {
+                  hoveredFeature.setStyle(undefined);
+                }
+
+                // Highlight new feature
+                feature.setStyle(new Style({
+                  text: new TextStyle({
+                    text: feature.get('tileName') || '',
+                    font: 'bold 22px sans-serif',
+                    fill: new Fill({ color: '#FFFFFF' }),
+                    stroke: new Stroke({ color: '#FF0000', width: 4 }),
+                    overflow: true,
+                  }),
+                }));
+
+                hoveredFeature = feature;
+                hoveredLayerId = managed.id;
+
+                // Position delete button at feature coordinate
+                const geom = feature.getGeometry();
+                if (geom) {
+                  const coords = (geom as any).getCoordinates();
+                  overlay.setPosition(coords);
+                  deleteEl.style.display = 'flex';
+                }
+              }
+              return;
+            }
+          }
+        }, { hitTolerance: 10 });
+
+        if (!found && hoveredFeature) {
+          hoveredFeature.setStyle(undefined);
+          hoveredFeature = null;
+          hoveredLayerId = null;
+          deleteEl.style.display = 'none';
+          overlay.setPosition(undefined);
+        }
+      };
+
+      map.on('pointermove', onPointerMove);
+
+      // Store cleanup refs
+      (deleteEl as any).__onPointerMove = onPointerMove;
+    };
+
+    setupOverlay();
+
+    return () => {
+      if (overlay) {
+        map.removeOverlay(overlay);
+      }
+      const onPointerMove = (deleteEl as any).__onPointerMove;
+      if (onPointerMove) {
+        map.un('pointermove', onPointerMove);
+      }
+      if (hoveredFeature) {
+        hoveredFeature.setStyle(undefined);
+      }
+      deleteEl.remove();
+    };
+  }, [map, updateLayersList]);
+
   // Initialize highlight layer
   useEffect(() => {
     if (!map) return;
@@ -1326,6 +1640,93 @@ function App() {
     }
   };
 
+  // --- Vector layer feature interaction handlers ---
+  const highlightFeatureRef = useRef<Feature<Geometry> | null>(null);
+
+  // Build vectorFeatures map from layers for the LayerControl
+  const vectorFeatures = useMemo(() => {
+    const result: Record<string, { name: string; index: number }[]> = {};
+    if (!layerManager) return result;
+
+    const vectorLayers = layerManager.getLayersByType('vector');
+    for (const managed of vectorLayers) {
+      const source = (managed.layer as any).getSource?.();
+      if (!source) continue;
+      const features = source.getFeatures?.() || [];
+      result[managed.id] = features.map((f: any, i: number) => ({
+        name: f.get('tileName') || f.get('name') || `Feature ${i}`,
+        index: i,
+      }));
+    }
+    return result;
+  }, [layerManager, layers]); // layers dependency ensures re-compute on changes
+
+  const handleHighlightFeature = useCallback((layerId: string, featureIndex: number | null) => {
+    if (!layerManager) return;
+
+    const managed = layerManager.getLayer(layerId);
+    if (!managed) return;
+
+    const source = (managed.layer as any).getSource?.();
+    if (!source) return;
+
+    // Reset previous highlight
+    if (highlightFeatureRef.current) {
+      highlightFeatureRef.current.setStyle(undefined); // revert to layer default
+      highlightFeatureRef.current = null;
+    }
+
+    if (featureIndex === null) return;
+
+    const features = source.getFeatures?.() || [];
+    const feature = features[featureIndex];
+    if (!feature) return;
+
+    // Set highlighted style: bigger text, white color with red stroke
+    feature.setStyle(new Style({
+      text: new TextStyle({
+        text: feature.get('tileName') || '',
+        font: 'bold 24px sans-serif',
+        fill: new Fill({ color: '#FFFFFF' }),
+        stroke: new Stroke({ color: '#FF0000', width: 4 }),
+        overflow: true,
+      }),
+    }));
+    highlightFeatureRef.current = feature;
+  }, [layerManager]);
+
+  const handleRemoveFeature = useCallback((layerId: string, featureIndex: number) => {
+    if (!layerManager) return;
+
+    const managed = layerManager.getLayer(layerId);
+    if (!managed) return;
+
+    const source = (managed.layer as any).getSource?.();
+    if (!source) return;
+
+    const features = source.getFeatures?.() || [];
+    const feature = features[featureIndex];
+    if (!feature) return;
+
+    const tileName = feature.get('tileName');
+    source.removeFeature(feature);
+
+    // Update selectedTiles in store
+    const currentTiles = useMapStore.getState().selectedTiles;
+    useMapStore.getState().setSelectedTiles(currentTiles.filter((t: string) => t !== tileName));
+
+    // Update layer name with new count
+    const remaining = source.getFeatures().length;
+    if (remaining === 0) {
+      // Remove entire layer if no features left
+      layerManager.removeLayer(layerId);
+      if (map) map.removeLayer(managed.layer);
+    } else {
+      (managed as any).name = `Selected Tiles (${remaining})`;
+    }
+    updateLayersList();
+  }, [layerManager, map, updateLayersList]);
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -1340,6 +1741,9 @@ function App() {
           onRemoveLayer={handleRemoveLayer}
           onLocateLayer={handleLocateLayer}
           onChangePredictionRescale={handleChangePredictionRescale}
+          onHighlightFeature={handleHighlightFeature}
+          onRemoveFeature={handleRemoveFeature}
+          vectorFeatures={vectorFeatures}
         />
         {/* <GEEContainer map={map} /> */}
         {/* <RHContainer map={map} /> */}

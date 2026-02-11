@@ -692,11 +692,16 @@ export function SidebarContainer() {
     fgbLayer.changed();
   }, [fgbLayer, enableConditionalRendering, conditionalStyles, fgbStyleOptions, map]);
 
-  const { activeVSM, setActiveVSM } = useMapStore();
+  const { activeVSM, setActiveVSM, drawingActive, setDrawingActive, selectedTiles } = useMapStore();
 
   const handleToggleVSM = (year: '2020' | '2024') => {
     // Toggle: clicking the active button turns it off, otherwise switch to it
     setActiveVSM(activeVSM === year ? null : year);
+  };
+
+  const handleGetTiles = () => {
+    // Toggle drawing mode
+    setDrawingActive(!drawingActive);
   };
 
   return (
@@ -710,6 +715,9 @@ export function SidebarContainer() {
       fgbError={fgbError}
       activeVSM={activeVSM}
       onToggleVSM={handleToggleVSM}
+      drawingActive={drawingActive}
+      onGetTiles={handleGetTiles}
+      selectedTiles={selectedTiles}
     />
   );
 } 

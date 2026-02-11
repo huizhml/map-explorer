@@ -7,8 +7,11 @@ import {
   TextField,
   Alert,
   CircularProgress,
+  List,
+  ListItem,
+  ListItemText,
 } from '@mui/material';
-import { Layers as LayersIcon, Link as LinkIcon } from '@mui/icons-material';
+import { Layers as LayersIcon, Link as LinkIcon, CropFree as CropFreeIcon } from '@mui/icons-material';
 
 interface SidebarProps {
   onFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -22,6 +25,10 @@ interface SidebarProps {
   // VSM auto-load props
   activeVSM: '2020' | '2024' | null;
   onToggleVSM: (year: '2020' | '2024') => void;
+  // Drawing tools props
+  drawingActive: boolean;
+  onGetTiles: () => void;
+  selectedTiles: string[];
 }
 
 // Common palettes for visualization
@@ -63,6 +70,9 @@ export function Sidebar({
   fgbError,
   activeVSM,
   onToggleVSM,
+  drawingActive,
+  onGetTiles,
+  selectedTiles,
 }: SidebarProps) {
   return (
     <SidebarContainer>
@@ -168,6 +178,48 @@ export function Sidebar({
             <Typography variant="caption" sx={{ mt: 1, display: 'block', color: 'text.secondary' }}>
               Auto-loading RH98 Q1 ({activeVSM}) for visible tiles{activeVSM === '2020' ? ' (local)' : ' (remote)'}
             </Typography>
+          )}
+        </Box>
+
+        {/* Drawing Tools Section */}
+        <Box sx={{ mt: 3 }}>
+          <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <CropFreeIcon /> Drawing Tools
+          </Typography>
+          <Box sx={{ mt: 2 }}>
+            <Button
+              variant={drawingActive ? 'contained' : 'outlined'}
+              color={drawingActive ? 'warning' : 'primary'}
+              onClick={onGetTiles}
+              fullWidth
+              startIcon={<CropFreeIcon />}
+            >
+              {drawingActive ? 'Drawing... (click to cancel)' : 'Get Tiles'}
+            </Button>
+            {drawingActive && (
+              <Typography variant="caption" sx={{ mt: 1, display: 'block', color: 'text.secondary' }}>
+                Draw a rectangle on the map to select tiles
+              </Typography>
+            )}
+          </Box>
+          {selectedTiles.length > 0 && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="body2" sx={{ fontWeight: 500, mb: 1 }}>
+                Selected tiles ({selectedTiles.length}):
+              </Typography>
+              <Box sx={{ maxHeight: 200, overflowY: 'auto' }}>
+                <List dense disablePadding>
+                  {selectedTiles.map((tile) => (
+                    <ListItem key={tile} disablePadding sx={{ py: 0.25 }}>
+                      <ListItemText
+                        primary={tile}
+                        primaryTypographyProps={{ variant: 'body2', fontFamily: 'monospace' }}
+                      />
+                    </ListItem>
+                  ))}
+                </List>
+              </Box>
+            </Box>
           )}
         </Box>
       </Box>
