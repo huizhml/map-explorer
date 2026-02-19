@@ -6,7 +6,7 @@ import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
 import { Style, Fill, Stroke, Circle as CircleStyle } from 'ol/style';
 import { transformExtent } from 'ol/proj';
-import { bbox as bboxStrategy } from 'ol/loadingstrategy';
+
 import { unByKey } from 'ol/Observable';
 import { deserialize } from 'flatgeobuf/lib/mjs/ol';
 import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore';
@@ -144,54 +144,37 @@ export function SidebarContainer() {
       };
 
       // Use proxy for cross-origin FlatGeobuf files to handle CORS
+      // Skip proxy when URL already points to our backend
       let fgbFileUrl = fgbUrl;
+      const isBackendUrl = fgbUrl.startsWith('http://localhost:8000/');
       const isCrossOriginUrl = isCrossOrigin(fgbUrl);
       
-      if (isCrossOriginUrl) {
-        // Use the backend proxy endpoint for FlatGeobuf files
+      if (isCrossOriginUrl && !isBackendUrl) {
         fgbFileUrl = `http://localhost:8000/fgb/proxy?url=${encodeURIComponent(fgbUrl)}`;
         console.log('Cross-origin FlatGeobuf detected, using proxy:', {
           original: fgbUrl,
           proxy: fgbFileUrl
         });
       } else {
-        console.log('Same-origin FlatGeobuf, using direct URL:', fgbFileUrl);
+        console.log('Using direct URL:', fgbFileUrl);
       }
 
-      // Create FlatGeobuf vector source with bbox strategy
-      const source = new VectorSource({
-        strategy: bboxStrategy,
-        loader: async function (extent, _resolution, projection) {
-          const sourceInstance = this as VectorSource;
-          try {
-            // Convert extent array [minX, minY, maxX, maxY] to Rect object
-            // Extent is in the map projection (usually EPSG:3857)
-            // Transform to EPSG:4326 for FlatGeobuf (which uses WGS84)
-            const extent4326 = transformExtent(extent, projection, 'EPSG:4326');
-            const rect = {
-              minX: extent4326[0],
-              minY: extent4326[1],
-              maxX: extent4326[2],
-              maxY: extent4326[3]
-            };
-            
-            // The deserialize function only downloads bytes needed for the current extent
-            // Pass dataProjection='EPSG:4326' and featureProjection=projection code for automatic transformation
-            const projectionCode = projection.getCode();
-            const iter = deserialize(fgbFileUrl, rect, undefined, false, {}, false, 'EPSG:4326', projectionCode);
-            
-            for await (const feature of iter) {
-              // Features are already transformed by deserialize based on dataProjection and featureProjection
-              // addFeature accepts FeatureLike (which includes both Feature and RenderFeature)
-              // Type assertion needed because TypeScript doesn't recognize FeatureLike as valid
-              sourceInstance.addFeature(feature as any);
-            }
-          } catch (error) {
-            console.error('Error loading FlatGeobuf features:', error);
-            setFgbError(`Failed to load features: ${error instanceof Error ? error.message : String(error)}`);
-          }
-        },
-      });
+      // Fetch entire file as buffer then deserialize — avoids spatial-index
+      // and range-request issues; fine for files up to ~50 MB.
+      const source = new VectorSource();
+      try {
+        const resp = await fetch(fgbFileUrl);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        const buffer = new Uint8Array(await resp.arrayBuffer());
+        const iter = deserialize(buffer, undefined, undefined, false, {}, false, 'EPSG:4326', 'EPSG:3857');
+        for await (const feature of iter) {
+          source.addFeature(feature as any);
+        }
+        console.log(`Loaded ${source.getFeatures().length} features from FlatGeobuf`);
+      } catch (error) {
+        console.error('Error loading FlatGeobuf features:', error);
+        setFgbError(`Failed to load features: ${error instanceof Error ? error.message : String(error)}`);
+      }
 
       // Helper function to evaluate conditional style
       const evaluateCondition = (feature: any, condition: any): boolean => {

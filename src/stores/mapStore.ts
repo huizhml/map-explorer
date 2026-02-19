@@ -169,7 +169,7 @@ export const useMapStore = create<MapStore>((set, get) => ({
   // FlatGeobuf Layer
   fgbLayer: null,
   setFgbLayer: (layer) => set({ fgbLayer: layer }),
-  fgbUrl: 'https://sid.erda.dk/share_redirect/GuGVefn81j/deploy_status.fgb',
+  fgbUrl: 'http://localhost:8000/fgb/local',
   setFgbUrl: (url) => set({ fgbUrl: url }),
   fgbLoading: false,
   setFgbLoading: (loading) => set({ fgbLoading: loading }),

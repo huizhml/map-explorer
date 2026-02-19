@@ -64,6 +64,8 @@ PREDICTIONS_LOCAL_PATH_TEMPLATE = os.environ.get('PREDICTIONS_LOCAL_PATH_TEMPLAT
 PREDICTIONS_BASE_URL = os.environ.get('PREDICTIONS_BASE_URL', '')
 PREDICTIONS_REMOTE_PATH_TEMPLATE = os.environ.get('PREDICTIONS_REMOTE_PATH_TEMPLATE', '{zone}-{year}/{tile}/RH{rh}_Q{q}.tif')
 PREDICTIONS_MOSAIC_LOCAL_PATH = os.environ.get('PREDICTIONS_MOSAIC_LOCAL_PATH', '')
+DISTANCE_MAPS_LOCAL_BASE_PATH = os.environ.get('DISTANCE_MAPS_LOCAL_BASE_PATH', '')
+S2_GRID_LOCAL_PATH = os.environ.get('S2_GRID_LOCAL_PATH', '')
 print("=== Prediction env vars ===")
 print(f"  PREDICTIONS_LOCAL_BASE_PATH  = {PREDICTIONS_LOCAL_BASE_PATH}")
 print(f"  PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH = {PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH}")
@@ -71,6 +73,8 @@ print(f"  PREDICTIONS_LOCAL_PATH_TEMPLATE = {PREDICTIONS_LOCAL_PATH_TEMPLATE}")
 print(f"  PREDICTIONS_MOSAIC_LOCAL_PATH = {PREDICTIONS_MOSAIC_LOCAL_PATH}")
 print(f"  PREDICTIONS_BASE_URL         = {PREDICTIONS_BASE_URL}")
 print(f"  PREDICTIONS_REMOTE_PATH_TEMPLATE = {PREDICTIONS_REMOTE_PATH_TEMPLATE}")
+print(f"  DISTANCE_MAPS_LOCAL_BASE_PATH = {DISTANCE_MAPS_LOCAL_BASE_PATH}")
+print(f"  S2_GRID_LOCAL_PATH           = {S2_GRID_LOCAL_PATH}")
 print("===========================")
 
 # COG tiler with a simple HTML viewer at /cog/viewer
@@ -477,6 +481,100 @@ async def proxy_fgb(url: str, request: Request):
 @app.options("/fgb/proxy")
 async def proxy_fgb_options():
     """Handle preflight requests for the FlatGeobuf proxy endpoint"""
+    return Response(
+        headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+            'Access-Control-Allow-Headers': 'Range, Content-Range, Content-Length',
+            'Access-Control-Max-Age': '3600',
+        }
+    )
+
+@app.get("/fgb/local")
+async def serve_local_fgb(request: Request):
+    """Serve the local FlatGeobuf file with HTTP range request support."""
+    from fastapi.responses import StreamingResponse
+
+    if not S2_GRID_LOCAL_PATH:
+        return Response(
+            content=json.dumps({"error": "S2_GRID_LOCAL_PATH env var is not set"}).encode(),
+            media_type='application/json', status_code=500,
+        )
+    if not os.path.isfile(S2_GRID_LOCAL_PATH):
+        return Response(
+            content=json.dumps({"error": f"File not found: {S2_GRID_LOCAL_PATH}"}).encode(),
+            media_type='application/json', status_code=404,
+        )
+
+    file_size = os.path.getsize(S2_GRID_LOCAL_PATH)
+    range_header = request.headers.get('range')
+
+    cors_headers = {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+        'Accept-Ranges': 'bytes',
+    }
+
+    if range_header:
+        # Parse "bytes=start-end"
+        range_spec = range_header.replace('bytes=', '')
+        parts = range_spec.split('-')
+        start = int(parts[0]) if parts[0] else 0
+        end = int(parts[1]) if parts[1] else file_size - 1
+        end = min(end, file_size - 1)
+        length = end - start + 1
+
+        def generate():
+            with open(S2_GRID_LOCAL_PATH, 'rb') as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk_size = min(8192, remaining)
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            generate(), status_code=206, media_type='application/octet-stream',
+            headers={**cors_headers,
+                     'Content-Length': str(length),
+                     'Content-Range': f'bytes {start}-{end}/{file_size}'},
+        )
+    else:
+        def generate():
+            with open(S2_GRID_LOCAL_PATH, 'rb') as f:
+                while True:
+                    data = f.read(8192)
+                    if not data:
+                        break
+                    yield data
+
+        return StreamingResponse(
+            generate(), status_code=200, media_type='application/octet-stream',
+            headers={**cors_headers, 'Content-Length': str(file_size)},
+        )
+
+@app.head("/fgb/local")
+async def head_local_fgb():
+    """HEAD request for the local FlatGeobuf file (needed by flatgeobuf library)."""
+    if not S2_GRID_LOCAL_PATH or not os.path.isfile(S2_GRID_LOCAL_PATH):
+        return Response(status_code=404)
+    file_size = os.path.getsize(S2_GRID_LOCAL_PATH)
+    return Response(
+        status_code=200,
+        headers={
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+            'Accept-Ranges': 'bytes',
+            'Content-Length': str(file_size),
+            'Content-Type': 'application/octet-stream',
+        },
+    )
+
+@app.options("/fgb/local")
+async def local_fgb_options():
     return Response(
         headers={
             'Access-Control-Allow-Origin': '*',
@@ -1435,6 +1533,36 @@ async def load_predictions(request: PredictionsRequest):
 @app.options("/predictions/load")
 async def predictions_load_options():
     """Handle CORS preflight for predictions/load endpoint"""
+    return {"message": "OK"}
+
+# -------------------- Auxiliary data --------------------
+class AuxiliaryTileRequest(BaseModel):
+    tile_name: str
+
+@app.post("/auxiliary/distance-map")
+async def load_distance_map(request: AuxiliaryTileRequest):
+    """Load a distance map GeoTIFF for a given MGRS tile.
+
+    Env vars:
+      - DISTANCE_MAPS_LOCAL_BASE_PATH : root directory containing {tile}.tif files
+    """
+    if not DISTANCE_MAPS_LOCAL_BASE_PATH:
+        return {"success": False, "error": "DISTANCE_MAPS_LOCAL_BASE_PATH env var is not set."}
+
+    local_path = os.path.join(DISTANCE_MAPS_LOCAL_BASE_PATH, f"{request.tile_name}.tif")
+    print(f"[auxiliary/distance-map] tile={request.tile_name}, path={local_path}")
+
+    if os.path.isfile(local_path):
+        return {
+            "success": True,
+            "url": local_path,
+            "tile_name": request.tile_name,
+            "layer_type": "distance_map",
+        }
+    return {"success": False, "error": f"Distance map not found: {local_path}"}
+
+@app.options("/auxiliary/distance-map")
+async def auxiliary_distance_map_options():
     return {"message": "OK"}
 
 @app.get("/predictions/info")

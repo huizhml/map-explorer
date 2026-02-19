@@ -469,6 +469,83 @@ function App() {
     }
   }, [map, layerManager, updateLayersList]);
 
+  const handleLoadAuxiliaryLayer = useCallback(async (data: {
+    url: string;
+    tile_name: string;
+    layer_type: string;
+  }) => {
+    if (!map) return;
+    console.log('Loading auxiliary layer via TiTiler:', data);
+
+    try {
+      const infoUrl = `http://localhost:8000/cog/info?url=${encodeURIComponent(data.url)}`;
+      const infoResponse = await fetch(infoUrl);
+      if (!infoResponse.ok) {
+        throw new Error(`Failed to get GeoTIFF info: ${await infoResponse.text()}`);
+      }
+      const infoData = await infoResponse.json();
+      if (!infoData.bounds || infoData.bounds.length !== 4) {
+        throw new Error('GeoTIFF bounds information not available');
+      }
+
+      const bbox = infoData.bounds;
+      let sourceCRS = 'EPSG:4326';
+      if (infoData.crs) {
+        if (typeof infoData.crs === 'string') sourceCRS = infoData.crs;
+        else if (infoData.crs.properties?.name) sourceCRS = infoData.crs.properties.name;
+        else if (infoData.crs.code) sourceCRS = `EPSG:${infoData.crs.code}`;
+      }
+
+      let extent: number[];
+      if (sourceCRS === 'EPSG:3857' || sourceCRS === 'EPSG:900913') {
+        extent = bbox;
+      } else {
+        extent = transformExtent(bbox, sourceCRS, 'EPSG:3857');
+      }
+      if (!extent.every((v: number) => isFinite(v) && !isNaN(v))) {
+        throw new Error('Transformed extent contains invalid values');
+      }
+
+      if (extent.every((v: number) => isFinite(v))) {
+        await new Promise<void>((resolve) => {
+          map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 18, callback: () => resolve() });
+          setTimeout(resolve, 1100);
+        });
+      }
+
+      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=0,5490`;
+
+      const { default: XYZ } = await import('ol/source/XYZ');
+      const { default: TileLayer } = await import('ol/layer/Tile');
+
+      const newLayer = new TileLayer({
+        source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
+        extent,
+        opacity: 1,
+        zIndex: 600,
+      });
+
+      const layerId = `auxiliary-${data.layer_type}-${data.tile_name}-${Date.now()}`;
+      const layerName = `${data.tile_name} (${data.layer_type.replace('_', ' ')})`;
+
+      map.addLayer(newLayer);
+
+      if (layerManager) {
+        layerManager.addLayer(layerId, layerName, 'prediction', newLayer, {
+          tileName: data.tile_name,
+          url: data.url,
+          layerType: data.layer_type,
+          extent,
+        });
+      }
+      updateLayersList();
+      console.log('Successfully loaded auxiliary layer:', layerId);
+    } catch (error) {
+      console.error('Error loading auxiliary layer:', error);
+      alert(`Failed to load auxiliary layer: ${error instanceof Error ? error.message : error}`);
+    }
+  }, [map, layerManager, updateLayersList]);
+
   // Register COG layer with LayerManager when it changes
   useEffect(() => {
     if (!layerManager) return;
@@ -1223,83 +1300,39 @@ function App() {
       // Clear previous highlight
       highlightLayer.getSource()?.clear();
 
-      // Check if we clicked on a feature in the FlatGeobuf layer using geometry-based detection
+      // Check if we clicked on a feature in the FlatGeobuf layer
       if (fgbLayer) {
-        const coordinate = evt.coordinate; // Already in EPSG:3857
-        
-        // For VectorLayer (FlatGeobuf), use geometry-based detection
         const source = fgbLayer.getSource();
-        if (source) {
-          // Get features in viewport and check which one intersects with the coordinate
-          const viewExtent = map.getView().calculateExtent(map.getSize());
-          const features = source.getFeaturesInExtent(viewExtent);
-          let clickedFeature: Feature<Geometry> | null = null;
-          
-          // Check features in reverse order (top-most first)
-          for (let i = features.length - 1; i >= 0; i--) {
-            const feature = features[i];
-            const geometry = feature.getGeometry();
-            if (!geometry) continue;
-            
-            if (geometry.intersectsCoordinate(coordinate)) {
-              clickedFeature = feature as Feature<Geometry>;
-              break;
-            }
-            
-            // For Point geometries, check distance
-            const geomType = geometry.getType();
-            if (geomType === 'Point') {
-              const pointGeom = geometry as Point;
-              const coords = pointGeom.getCoordinates();
-              const dist = Math.sqrt(
-                Math.pow(coordinate[0] - coords[0], 2) + 
-                Math.pow(coordinate[1] - coords[1], 2)
-              );
-              // Use a reasonable tolerance for clicking (about 5 meters)
-              if (dist < 5) {
-                clickedFeature = feature as Feature<Geometry>;
-                break;
+        const hits = source ? source.getFeaturesAtCoordinate(evt.coordinate) : [];
+        const clickedFeature = (hits[0] as Feature<Geometry>) ?? null;
+
+        if (clickedFeature) {
+          const properties = clickedFeature.getProperties();
+          const geometry = clickedFeature.getGeometry();
+
+          // Try to highlight the clicked feature
+          if (geometry && highlightLayer) {
+            const highlightSource = highlightLayer.getSource();
+            if (highlightSource) {
+              const newGeometry = createHighlightGeometry(geometry);
+              if (newGeometry) {
+                const highlightFeature = new Feature({
+                  geometry: newGeometry,
+                });
+                highlightSource.addFeature(highlightFeature);
               }
             }
           }
-          
-          if (clickedFeature) {
-            const properties = clickedFeature.getProperties();
-            const geometry = clickedFeature.getGeometry();
-            
-            // Try to highlight the clicked feature
-            if (geometry && highlightLayer) {
-              const highlightSource = highlightLayer.getSource();
-              if (highlightSource) {
-                const newGeometry = createHighlightGeometry(geometry);
-                if (newGeometry) {
-                  const highlightFeature = new Feature({
-                    geometry: newGeometry,
-                  });
-                  highlightSource.addFeature(highlightFeature);
-                } else {
-                  console.warn('Click: Could not create highlight geometry');
-                }
-              } else {
-                console.warn('Click: No highlight source available');
-              }
-            } else {
-              console.warn('Click: No geometry or highlight layer');
-            }
-            
-            // Get the click position in pixels
-            const pixel = evt.originalEvent;
-            const [x, y] = [pixel.offsetX, pixel.offsetY];
-            
-            // Get geographic coordinates (transform from EPSG:3857 to EPSG:4326)
-            const [lon, lat] = transform(coordinate, 'EPSG:3857', 'EPSG:4326');
-            
-            setPopupProperties(properties);
-            setPopupPosition({ x, y });
-            setPopupGeometry(geometry || null);
-            setPopupCoordinates({ lon, lat });
-            return; // Don't clear popup if we clicked on a feature
-          }
+
+          const pixel = evt.originalEvent;
+          const [x, y] = [pixel.offsetX, pixel.offsetY];
+          const [lon, lat] = transform(evt.coordinate, 'EPSG:3857', 'EPSG:4326');
+
+          setPopupProperties(properties);
+          setPopupPosition({ x, y });
+          setPopupGeometry(geometry || null);
+          setPopupCoordinates({ lon, lat });
+          return;
         }
       }
       
@@ -1316,7 +1349,7 @@ function App() {
     let lastCursorState: string | null = null;
     let lastHoveredFeature: Feature<Geometry> | null = null;
     let pendingCheck: number | null = null;
-    const THROTTLE_MS = 300; // Check at most every 300ms (~3 times per second) to minimize performance impact
+    const THROTTLE_MS = 50; // getFeaturesAtCoordinate is O(log n) via R-tree, safe at high frequency
     
     const handlePointerMove = (evt: any) => {
       if (!fgbLayer) return;
@@ -1350,93 +1383,33 @@ function App() {
       pendingCheck = null;
       
       try {
-        // Use geometry-based intersection instead of pixel-based to avoid canvas readback
-        const coordinate = evt.coordinate; // Already in EPSG:3857
-        
-        // For VectorLayer (FlatGeobuf), use geometry-based detection
         const source = fgbLayer.getSource();
-        
-        if (!source) {
-          if (lastCursorState !== '') {
-            map.getTargetElement().style.cursor = '';
-            lastCursorState = '';
-          }
-          // Clear highlight if no source
-          highlightLayer.getSource()?.clear();
-          lastHoveredFeature = null;
-          return;
-        }
-        
-        // Check if any feature's geometry intersects with this coordinate
-        // This avoids canvas readback operations entirely
-        // Use getFeaturesInExtent to limit checks to features near the coordinate
-        const viewExtent = map.getView().calculateExtent(map.getSize());
-        const features = source.getFeaturesInExtent(viewExtent);
-        let hoveredFeature: Feature<Geometry> | null = null;
-        
-        // Use a small tolerance in map units (approximately 10 meters)
-        // EPSG:3857 uses meters as units
-        const tolerance = 10; // 10 meters
-        
-        // Check features in reverse order (top-most first) for better UX
-        for (let i = features.length - 1; i >= 0; i--) {
-          const feature = features[i];
-          const geometry = feature.getGeometry();
-          if (!geometry) continue;
-          
-          // Check if coordinate intersects with geometry
-          // For polygons/lines, intersectsCoordinate works well
-          if (geometry.intersectsCoordinate(coordinate)) {
-            hoveredFeature = feature as Feature<Geometry>;
-            break;
-          }
-          
-          // For Point geometries, intersectsCoordinate might not work well
-          // So check distance manually
-          const geomType = geometry.getType();
-          if (geomType === 'Point') {
-            const pointGeom = geometry as Point;
-            const coords = pointGeom.getCoordinates();
-            const dist = Math.sqrt(
-              Math.pow(coordinate[0] - coords[0], 2) + 
-              Math.pow(coordinate[1] - coords[1], 2)
-            );
-            if (dist < tolerance) {
-              hoveredFeature = feature as Feature<Geometry>;
-              break;
-            }
-          }
-        }  
-        
+        const hits = source ? source.getFeaturesAtCoordinate(evt.coordinate) : [];
+        const hoveredFeature = (hits[0] as Feature<Geometry>) ?? null;
+
         // Update cursor
         const newCursor = hoveredFeature ? 'pointer' : '';
         if (newCursor !== lastCursorState) {
           map.getTargetElement().style.cursor = newCursor;
           lastCursorState = newCursor;
         }
-        
+
         // Update highlight
         const highlightSource = highlightLayer.getSource();
         if (highlightSource) {
-          // Use feature reference as identifier (more reliable than ID)
-          const currentFeature = hoveredFeature;
-          
-          // Only update highlight if feature changed
-          if (currentFeature !== lastHoveredFeature) {
+          if (hoveredFeature !== lastHoveredFeature) {
             highlightSource.clear();
-            lastHoveredFeature = currentFeature;
-            
-                if (hoveredFeature) {
-                  const geometry = hoveredFeature.getGeometry();
-                  if (geometry) {
-                    const newGeometry = createHighlightGeometry(geometry);
-                    if (newGeometry) {
-                      const highlightFeature = new Feature({
-                        geometry: newGeometry,
-                      });
-                      highlightSource.addFeature(highlightFeature);
-                    } 
-                }}
+            lastHoveredFeature = hoveredFeature;
+
+            if (hoveredFeature) {
+              const geometry = hoveredFeature.getGeometry();
+              if (geometry) {
+                const newGeometry = createHighlightGeometry(geometry);
+                if (newGeometry) {
+                  highlightSource.addFeature(new Feature({ geometry: newGeometry }));
+                }
+              }
+            }
           }
         }
       } catch (error) {
@@ -1788,6 +1761,7 @@ function App() {
           coordinates={popupCoordinates}
           onLoadSentinel2Image={handleLoadSentinel2Image}
           onLoadPredictionCOG={handleLoadPredictionCOG}
+          onLoadAuxiliaryLayer={handleLoadAuxiliaryLayer}
           onClose={closePopup}
         />
       </div>

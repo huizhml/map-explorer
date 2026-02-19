@@ -55,9 +55,14 @@ interface FeaturePopupProps {
     q_index: number;
     year: number;
   }) => void;
+  onLoadAuxiliaryLayer?: (data: {
+    url: string;
+    tile_name: string;
+    layer_type: string;
+  }) => void;
 }
 
-export function FeaturePopup({ properties, onClose, position, geometry, coordinates, onLoadSentinel2Image, onLoadPredictionCOG }: FeaturePopupProps) {
+export function FeaturePopup({ properties, onClose, position, geometry, coordinates, onLoadSentinel2Image, onLoadPredictionCOG, onLoadAuxiliaryLayer }: FeaturePopupProps) {
   const [year, setYear] = useState<string>(new Date().getFullYear().toString());
   const [maxCloudCover, setMaxCloudCover] = useState<string>('50');
   const [loading, setLoading] = useState(false);
@@ -76,6 +81,9 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [offsetLoading, setOffsetLoading] = useState(false);
   const [offsetResult, setOffsetResult] = useState<any | null>(null);
   const [offsetError, setOffsetError] = useState<string | null>(null);
+  const [distMapLoading, setDistMapLoading] = useState(false);
+  const [distMapError, setDistMapError] = useState<string | null>(null);
+  const [distMapResult, setDistMapResult] = useState<any | null>(null);
   
   // Draggable state
   const [isDragging, setIsDragging] = useState(false);
@@ -503,6 +511,43 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     }
   };
 
+  const handleLoadDistanceMap = async () => {
+    if (!properties?.Name) {
+      setDistMapError('No tile name available');
+      return;
+    }
+    setDistMapLoading(true);
+    setDistMapError(null);
+    setDistMapResult(null);
+    try {
+      const response = await fetch('http://localhost:8000/auxiliary/distance-map', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tile_name: properties.Name }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      if (data.success === false || data.error) {
+        throw new Error(data.error || 'Failed to load distance map');
+      }
+      setDistMapResult(data);
+      if (onLoadAuxiliaryLayer && data.url) {
+        onLoadAuxiliaryLayer({
+          url: data.url,
+          tile_name: properties.Name,
+          layer_type: data.layer_type,
+        });
+      }
+    } catch (err: any) {
+      setDistMapError(err.message || 'Failed to load distance map');
+      console.error('Error loading distance map:', err);
+    } finally {
+      setDistMapLoading(false);
+    }
+  };
+
   const handleGetXYOffset = async () => {
     if (!properties?.Name) {
       setOffsetError('No tile name (Name property) available in FlatGeobuf feature');
@@ -736,94 +781,26 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
         )}
       </Box>
 
-      {/* Check Predictions Section */}
-      <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0' }}>
-        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
-          Check predictions
-        </Typography>
-        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-          <FormControl size="small" sx={{ minWidth: 110 }}>
-            <InputLabel>Source</InputLabel>
-            <Select
-              value={predSource}
-              label="Source"
-              onChange={(e) => setPredSource(e.target.value as 'blended' | 'original')}
-              MenuProps={{ sx: { zIndex: 2100 } }}
-            >
-              <MenuItem value="blended">blended</MenuItem>
-              <MenuItem value="original">original</MenuItem>
-            </Select>
-          </FormControl>
-          <TextField
-            label="RH index"
-            type="number"
-            value={rhIndex}
-            onChange={(e) => setRhIndex(e.target.value)}
-            size="small"
-            sx={{ width: 100 }}
-          />
-          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-            <FormControlLabel
-              control={<Checkbox size="small" checked={qChoice === '5%'} onChange={() => setQChoice('5%')} />}
-              label={<Typography variant="caption">5%</Typography>}
-            />
-            <FormControlLabel
-              control={<Checkbox size="small" checked={qChoice === 'median'} onChange={() => setQChoice('median')} />}
-              label={<Typography variant="caption">median</Typography>}
-            />
-            <FormControlLabel
-              control={<Checkbox size="small" checked={qChoice === '95%'} onChange={() => setQChoice('95%')} />}
-              label={<Typography variant="caption">95%</Typography>}
-            />
-          </Box>
-          <Button
-            variant="contained"
-            size="small"
-            onClick={handleLoadPrediction}
-            disabled={predLoading}
-          >
-            {predLoading ? 'Loading...' : 'Load'}
-          </Button>
-        </Box>
-        {predError && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-            {predError}
-          </Typography>
-        )}
-        {predResult && (
-          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
-            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
-              ✓ Prediction COG loaded successfully
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
-              Tile: {predResult.tile_name} | Year: {predResult.year || year}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
-              URL: {predResult.url}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#999', fontSize: '0.7rem', mt: 0.5, fontStyle: 'italic' }}>
-              Layer added to map - use Layer Control to manage visibility
-            </Typography>
-          </Box>
-        )}
+      {/* Year Selection */}
+      <Box sx={{ px: 2, pt: 2, borderTop: '1px solid #e0e0e0' }}>
+        <TextField
+          label="Year"
+          type="number"
+          value={year}
+          onChange={(e) => setYear(e.target.value)}
+          size="small"
+          sx={{ width: 100 }}
+          inputProps={{ min: 2015, max: new Date().getFullYear() }}
+        />
       </Box>
 
       {/* Sentinel-2 Query Section */}
-      <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0' }}>
+      <Box sx={{ p: 2 }}>
         <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
           Query Sentinel-2 Images
         </Typography>
         
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <TextField
-            label="Year"
-            type="number"
-            value={year}
-            onChange={(e) => setYear(e.target.value)}
-            size="small"
-            sx={{ width: 100 }}
-            inputProps={{ min: 2015, max: new Date().getFullYear() }}
-          />
           <TextField
             label="Max Cloud %"
             type="number"
@@ -917,6 +894,113 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
                 })()
             }
           </Typography>
+        )}
+      </Box>
+
+      {/* Check Predictions Section */}
+      <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0' }}>
+        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+          Check predictions
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+          <FormControl size="small" sx={{ minWidth: 110 }}>
+            <InputLabel>Source</InputLabel>
+            <Select
+              value={predSource}
+              label="Source"
+              onChange={(e) => setPredSource(e.target.value as 'blended' | 'original')}
+              MenuProps={{ sx: { zIndex: 2100 } }}
+            >
+              <MenuItem value="blended">blended</MenuItem>
+              <MenuItem value="original">original</MenuItem>
+            </Select>
+          </FormControl>
+          <TextField
+            label="RH index"
+            type="number"
+            value={rhIndex}
+            onChange={(e) => setRhIndex(e.target.value)}
+            size="small"
+            sx={{ width: 100 }}
+          />
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            <FormControlLabel
+              control={<Checkbox size="small" checked={qChoice === '5%'} onChange={() => setQChoice('5%')} />}
+              label={<Typography variant="caption">5%</Typography>}
+            />
+            <FormControlLabel
+              control={<Checkbox size="small" checked={qChoice === 'median'} onChange={() => setQChoice('median')} />}
+              label={<Typography variant="caption">median</Typography>}
+            />
+            <FormControlLabel
+              control={<Checkbox size="small" checked={qChoice === '95%'} onChange={() => setQChoice('95%')} />}
+              label={<Typography variant="caption">95%</Typography>}
+            />
+          </Box>
+          <Button
+            variant="contained"
+            size="small"
+            onClick={handleLoadPrediction}
+            disabled={predLoading}
+          >
+            {predLoading ? 'Loading...' : 'Load'}
+          </Button>
+        </Box>
+        {predError && (
+          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+            {predError}
+          </Typography>
+        )}
+        {predResult && (
+          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
+              ✓ Prediction COG loaded successfully
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
+              Tile: {predResult.tile_name} | Year: {predResult.year || year}
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
+              URL: {predResult.url}
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#999', fontSize: '0.7rem', mt: 0.5, fontStyle: 'italic' }}>
+              Layer added to map - use Layer Control to manage visibility
+            </Typography>
+          </Box>
+        )}
+      </Box>
+
+      {/* Check Auxiliary Data Section */}
+      <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0' }}>
+        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+          Check auxiliary data
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+          <Button
+            variant="contained"
+            size="small"
+            onClick={handleLoadDistanceMap}
+            disabled={distMapLoading}
+          >
+            {distMapLoading ? 'Loading...' : 'Load distance map'}
+          </Button>
+        </Box>
+        {distMapError && (
+          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+            {distMapError}
+          </Typography>
+        )}
+        {distMapResult && (
+          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
+              ✓ Distance map loaded successfully
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
+              Tile: {distMapResult.tile_name}
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
+              URL: {distMapResult.url}
+            </Typography>
+          </Box>
         )}
       </Box>
       </Box>
