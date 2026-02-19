@@ -18,6 +18,9 @@ import {
   Tooltip,
   Menu,
   MenuItem,
+  Select,
+  FormControl,
+  InputLabel,
 } from '@mui/material';
 import { Close as CloseIcon, Search as SearchIcon, MoreVert as MoreVertIcon } from '@mui/icons-material';
 import { Geometry } from 'ol/geom';
@@ -65,6 +68,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [predError, setPredError] = useState<string | null>(null);
   const [predResult, setPredResult] = useState<any | null>(null);
   const [useGrowingMonths, setUseGrowingMonths] = useState(false);
+  const [predSource, setPredSource] = useState<'blended' | 'original'>('blended');
   const [rhIndex, setRhIndex] = useState<string>('98');
   const [qChoice, setQChoice] = useState<'5%' | 'median' | '95%'>('median');
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
@@ -469,6 +473,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
           tile_name: properties.Name,
           rh_index,
           q_index,
+          source: predSource,
         }),
       });
       if (!response.ok) {
@@ -737,6 +742,18 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
           Check predictions
         </Typography>
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+          <FormControl size="small" sx={{ minWidth: 110 }}>
+            <InputLabel>Source</InputLabel>
+            <Select
+              value={predSource}
+              label="Source"
+              onChange={(e) => setPredSource(e.target.value as 'blended' | 'original')}
+              MenuProps={{ sx: { zIndex: 2100 } }}
+            >
+              <MenuItem value="blended">blended</MenuItem>
+              <MenuItem value="original">original</MenuItem>
+            </Select>
+          </FormControl>
           <TextField
             label="RH index"
             type="number"

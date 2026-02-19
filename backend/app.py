@@ -59,12 +59,14 @@ app.add_middleware(CustomCORSMiddleware)
 
 # --- Log prediction env vars at startup ---
 PREDICTIONS_LOCAL_BASE_PATH = os.environ.get('PREDICTIONS_LOCAL_BASE_PATH', '')
+PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH = os.environ.get('PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH', '')
 PREDICTIONS_LOCAL_PATH_TEMPLATE = os.environ.get('PREDICTIONS_LOCAL_PATH_TEMPLATE', '{tile}/RH{rh}_Q{q}.tif')
 PREDICTIONS_BASE_URL = os.environ.get('PREDICTIONS_BASE_URL', '')
 PREDICTIONS_REMOTE_PATH_TEMPLATE = os.environ.get('PREDICTIONS_REMOTE_PATH_TEMPLATE', '{zone}-{year}/{tile}/RH{rh}_Q{q}.tif')
 PREDICTIONS_MOSAIC_LOCAL_PATH = os.environ.get('PREDICTIONS_MOSAIC_LOCAL_PATH', '')
 print("=== Prediction env vars ===")
 print(f"  PREDICTIONS_LOCAL_BASE_PATH  = {PREDICTIONS_LOCAL_BASE_PATH}")
+print(f"  PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH = {PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH}")
 print(f"  PREDICTIONS_LOCAL_PATH_TEMPLATE = {PREDICTIONS_LOCAL_PATH_TEMPLATE}")
 print(f"  PREDICTIONS_MOSAIC_LOCAL_PATH = {PREDICTIONS_MOSAIC_LOCAL_PATH}")
 print(f"  PREDICTIONS_BASE_URL         = {PREDICTIONS_BASE_URL}")
@@ -1338,6 +1340,7 @@ class PredictionsRequest(BaseModel):
     tile_name: str
     rh_index: int
     q_index: int
+    source: str = "blended"
 
 @app.post("/predictions/load")
 async def load_predictions(request: PredictionsRequest):
@@ -1361,16 +1364,21 @@ async def load_predictions(request: PredictionsRequest):
                rh=request.rh_index, q=request.q_index)
 
     # Debug: log request and env vars at request time
-    print(f"[predictions/load] year={request.year} (type={type(request.year).__name__}), tile={request.tile_name}")
+    print(f"[predictions/load] year={request.year} (type={type(request.year).__name__}), tile={request.tile_name}, source={request.source}")
     print(f"[predictions/load] PREDICTIONS_LOCAL_BASE_PATH = '{os.environ.get('PREDICTIONS_LOCAL_BASE_PATH', '')}'")
 
     # --- Route by year: 2020 → local disk, 2024 → remote URL ---
     if request.year == 2020:
         # LOCAL ONLY for 2020
-        local_base = PREDICTIONS_LOCAL_BASE_PATH
-        print(f"local_base: {PREDICTIONS_LOCAL_BASE_PATH}")
-        if not local_base:
-            return {"success": False, "error": "PREDICTIONS_LOCAL_BASE_PATH env var is not set. Cannot load local 2020 data."}
+        if request.source == "original":
+            local_base = PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH
+            if not local_base:
+                return {"success": False, "error": "PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH env var is not set. Cannot load original 2020 data."}
+        else:
+            local_base = PREDICTIONS_LOCAL_BASE_PATH
+            if not local_base:
+                return {"success": False, "error": "PREDICTIONS_LOCAL_BASE_PATH env var is not set. Cannot load local 2020 data."}
+        print(f"local_base: {local_base} (source={request.source})")
         local_template = PREDICTIONS_LOCAL_PATH_TEMPLATE
         try:
             local_rel = local_template.format(**fmt)
