@@ -16,6 +16,8 @@ import { Style, Stroke, Fill, Circle as CircleStyle, Text as TextStyle } from 'o
 import Draw, { createBox } from 'ol/interaction/Draw';
 import GeoTIFF from 'ol/source/GeoTIFF';
 import WebGLTile from 'ol/layer/WebGLTile';
+import XYZ from 'ol/source/XYZ';
+import TileLayer from 'ol/layer/Tile';
 import { transformExtent, transform } from 'ol/proj';
 import { LayerManager } from './utils/LayerManager';
 import { useMapStore } from './stores/mapStore';
@@ -302,6 +304,7 @@ function App() {
       // Transform bounds to Web Mercator (EPSG:3857)
       // TiTiler bounds are always in the COG's native CRS
       let extent: number[];
+      let isAntimeridianTile = false;
       try {
         if (sourceCRS === 'EPSG:3857' || sourceCRS === 'EPSG:900913') {
           // Already in Web Mercator
@@ -321,18 +324,17 @@ function App() {
           throw new Error(`Invalid extent: [${extent.join(', ')}]`);
         }
         
-        // Check if extent is reasonable (not too large - Web Mercator max extent is about ±20037508)
-        const maxExtent = 20037508.34;
-        if (Math.abs(extent[0]) > maxExtent * 2 || Math.abs(extent[2]) > maxExtent * 2 ||
-            Math.abs(extent[1]) > maxExtent * 2 || Math.abs(extent[3]) > maxExtent * 2) {
-          console.warn('Extent values seem unusually large, but proceeding:', extent);
-        }
-        
-        // Check if extent is too small (less than 1 meter)
         const width = extent[2] - extent[0];
         const height = extent[3] - extent[1];
-        if (width < 1 || height < 1) {
-          console.warn('Extent is very small, but proceeding:', extent);
+
+        // Detect antimeridian wrap: an MGRS tile is ~100 km; if the
+        // transformed extent is wider than 1 000 km it almost certainly
+        // wraps around the date line.
+        const ANTIMERIDIAN_THRESHOLD = 1_000_000; // 1 000 km in EPSG:3857 metres
+        isAntimeridianTile = width > ANTIMERIDIAN_THRESHOLD;
+        if (isAntimeridianTile) {
+          console.warn('Antimeridian tile detected – extent wraps the world, skipping zoom and extent constraint');
+          skipZoom = true;
         }
         
         console.log('COG bounds (Web Mercator):', extent, 'Width:', width, 'Height:', height);
@@ -405,12 +407,13 @@ function App() {
         zIndex: 600, // Higher than Sentinel-2 layers
       };
       
-      // Only add extent constraint if extent is valid
-      if (extent && extent.length === 4 && extent.every((val: number) => isFinite(val))) {
+      // Only add extent constraint if valid and not an antimeridian tile
+      // (antimeridian tiles produce a world-spanning extent that breaks rendering)
+      if (!isAntimeridianTile && extent && extent.length === 4 && extent.every((val: number) => isFinite(val))) {
         layerOptions.extent = extent;
         console.log('Layer extent set to:', extent);
       } else {
-        console.warn('Layer extent not set - tiles may load outside COG bounds');
+        console.log('Layer extent not set (antimeridian tile or invalid extent)');
       }
       
       const newLayer = new TileLayer(layerOptions);
@@ -506,7 +509,13 @@ function App() {
         throw new Error('Transformed extent contains invalid values');
       }
 
-      if (extent.every((v: number) => isFinite(v))) {
+      const extentWidth = extent[2] - extent[0];
+      const isAntimeridian = extentWidth > 1_000_000;
+      if (isAntimeridian) {
+        console.warn('Antimeridian tile detected – skipping zoom and extent constraint');
+      }
+
+      if (!isAntimeridian && extent.every((v: number) => isFinite(v))) {
         await new Promise<void>((resolve) => {
           map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 18, callback: () => resolve() });
           setTimeout(resolve, 1100);
@@ -514,16 +523,15 @@ function App() {
       }
 
       const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=0,5490`;
-
-      const { default: XYZ } = await import('ol/source/XYZ');
-      const { default: TileLayer } = await import('ol/layer/Tile');
-
-      const newLayer = new TileLayer({
+      const layerOpts: any = {
         source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
-        extent,
         opacity: 1,
         zIndex: 600,
-      });
+      };
+      if (!isAntimeridian) {
+        layerOpts.extent = extent;
+      }
+      const newLayer = new TileLayer(layerOpts);
 
       const layerId = `auxiliary-${data.layer_type}-${data.tile_name}-${Date.now()}`;
       const layerName = `${data.tile_name} (${data.layer_type.replace('_', ' ')})`;
@@ -658,11 +666,8 @@ function App() {
 
         const mosaicTileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=0,500&colormap_name=inferno`;
 
-        const { default: XYZSource } = await import('ol/source/XYZ');
-        const { default: TileLayerCls } = await import('ol/layer/Tile');
-
-        mosaicLayer = new TileLayerCls({
-          source: new XYZSource({
+        mosaicLayer = new TileLayer({
+          source: new XYZ({
             url: mosaicTileUrl,
             crossOrigin: 'anonymous',
             maxZoom: 14,
@@ -715,9 +720,6 @@ function App() {
       if (allTilesToLoad.length === 0) return;
 
       console.log(`[Auto-load] Loading RH98_Q1 (${AUTO_YEAR}) for ${allTilesToLoad.length} visible tiles`);
-
-      const { default: XYZ } = await import('ol/source/XYZ');
-      const { default: TileLayer } = await import('ol/layer/Tile');
 
       for (let i = 0; i < allTilesToLoad.length; i += MAX_CONCURRENT) {
         if (cancelled) return;
@@ -780,11 +782,18 @@ function App() {
               // Step 3: Create TileLayer and add to group
               const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=0,500&colormap_name=inferno`;
 
-              const tileLayer = new TileLayer({
-                source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
-                extent,
+              const tileOpts: any = {
+                source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18, wrapX: true }),
                 minZoom: MIN_ZOOM - 1,
-              });
+              };
+              // Skip extent constraint for antimeridian-crossing tiles
+              const extentWidth = extent[2] - extent[0];
+              if (extentWidth <= 1_000_000) {
+                tileOpts.extent = extent;
+              } else {
+                console.warn(`[Auto-load] Antimeridian tile ${tileName} – skipping extent constraint`);
+              }
+              const tileLayer = new TileLayer(tileOpts);
 
               if (!cancelled) {
                 group.getLayers().push(tileLayer);
