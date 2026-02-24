@@ -21,6 +21,7 @@ import TileLayer from 'ol/layer/Tile';
 import { transformExtent, transform } from 'ol/proj';
 import { LayerManager } from './utils/LayerManager';
 import { useMapStore } from './stores/mapStore';
+import { getDefaultRescaleForRh } from './constants/predictions';
 
 const theme = createTheme({
   palette: {
@@ -58,6 +59,8 @@ function App() {
     setLayerManager,
     closePopup,
     activeVSM,
+    vsmRhIndex,
+    vsmQChoice,
   } = useMapStore();
 
   // Initialize layer manager
@@ -387,8 +390,8 @@ function App() {
       // - Works on all devices (no GPU requirements)
       // - Better for static visualizations
       // Trade-off: Changing min/max requires tile reload (but this is acceptable for most use cases)
-      
-      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=0,500&colormap_name=inferno`;
+      const defaultRescale = getDefaultRescaleForRh(predictionData.rh_index);
+      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${defaultRescale.min},${defaultRescale.max}&colormap_name=inferno`;
       
       // Create XYZ tile source using TiTiler
       const { default: XYZ } = await import('ol/source/XYZ');
@@ -450,8 +453,8 @@ function App() {
         qIndex: predictionData.q_index,
         year: predictionData.year,
         url: predictionData.url,
-        rescaleMin: 0,
-        rescaleMax: 500,
+        rescaleMin: defaultRescale.min,
+        rescaleMax: defaultRescale.max,
         useClientSideTransform: useClientSideTransform,
       };
       if (extent && extent.length === 4 && extent.every((val: number) => isFinite(val))) {
@@ -608,6 +611,7 @@ function App() {
   const autoLoadingTilesRef = useRef<Set<string>>(new Set());
   const globalPredGroupRef = useRef<LayerGroup | null>(null);
   const globalLayerRegisteredRef = useRef(false);
+  const globalOuterGroupRef = useRef<LayerGroup | null>(null);
   const [showZoomMessage, setShowZoomMessage] = useState(false);
 
   useEffect(() => {
@@ -618,37 +622,53 @@ function App() {
       return;
     }
 
-    const AUTO_RH_INDEX = 98;
-    const AUTO_Q_INDEX = 1;   // Q1 = median
+    const qIndexMap: Record<string, number> = { '5%': 2, 'median': 1, '95%': 0 };
+    const AUTO_RH_INDEX = vsmRhIndex;
+    const AUTO_Q_INDEX = qIndexMap[vsmQChoice];
     const AUTO_YEAR = parseInt(activeVSM); // '2020' | '2024' → number
     const DEBOUNCE_MS = 1500;
     const MAX_CONCURRENT = 3;
     const MIN_ZOOM = 8;
-    const GLOBAL_LAYER_ID = `prediction-global-RH98-Q1-${activeVSM}`;
+    const qLabel = vsmQChoice === 'median' ? 'Q1' : vsmQChoice === '5%' ? 'Q2' : 'Q0';
+    const GLOBAL_LAYER_ID = `prediction-global-RH${AUTO_RH_INDEX}-${qLabel}-${activeVSM}`;
 
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
 
-    // --- Clean up previous auto-load group (if switching years) ---
-    if (globalPredGroupRef.current) {
-      map.removeLayer(globalPredGroupRef.current);
-      globalPredGroupRef.current = null;
-    }
-    // Unregister old global layer from LayerManager (any previous year)
+    // Unregister old global layer from LayerManager (removes outer group from map)
     const mgr = useMapStore.getState().layerManager;
-    if (mgr) {
-      // Remove any previously registered global prediction layers
-      for (const id of ['prediction-global-RH98-Q1-2020', 'prediction-global-RH98-Q1-2024', 'prediction-global-RH98-median-2024']) {
-        if (mgr.getLayer(id)) mgr.removeLayer(id);
-      }
+    if (mgr && typeof mgr.getAllLayers === 'function') {
+      const all = mgr.getAllLayers();
+      all.forEach((managed: { id: string }) => {
+        if (managed.id.startsWith('prediction-global-')) mgr.removeLayer(managed.id);
+      });
     }
     globalLayerRegisteredRef.current = false;
     autoLoadingTilesRef.current.clear();
 
-    // Create fresh LayerGroup for per-tile detail – visible at zoom >= MIN_ZOOM
+    // Zoom-in group (per-tile detail, visible at zoom >= MIN_ZOOM)
     const group = new LayerGroup({ layers: [], zIndex: 600, minZoom: MIN_ZOOM - 1 });
-    map.addLayer(group);
+    // Single outer group: mosaic (when loaded) + zoom-in group, one layer control entry
+    const outerGroup = new LayerGroup({ layers: [group], zIndex: 599 });
+    map.addLayer(outerGroup);
+    globalOuterGroupRef.current = outerGroup;
     globalPredGroupRef.current = group;
+
+    if (mgr) {
+      const defaultRescale = getDefaultRescaleForRh(AUTO_RH_INDEX);
+      const layerName = `Global (RH${AUTO_RH_INDEX} ${vsmQChoice}, ${AUTO_YEAR})`;
+      mgr.addLayer(GLOBAL_LAYER_ID, layerName, 'prediction', outerGroup as any, {
+        tileName: 'Global',
+        rhIndex: AUTO_RH_INDEX,
+        qIndex: AUTO_Q_INDEX,
+        year: AUTO_YEAR,
+        rescaleMin: defaultRescale.min,
+        rescaleMax: defaultRescale.max,
+        isAutoLoadGroup: true,
+      });
+      globalLayerRegisteredRef.current = true;
+      updateLayersList();
+    }
 
     // --- Load low-res mosaic layer (visible when zoomed out, below MIN_ZOOM) ---
     let mosaicLayer: any = null;
@@ -664,7 +684,8 @@ function App() {
         }
         console.log('[mosaic] Loaded mosaic URL:', mosaicData.url);
 
-        const mosaicTileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=0,500&colormap_name=inferno`;
+        const mosaicRescale = getDefaultRescaleForRh(AUTO_RH_INDEX);
+        const mosaicTileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${mosaicRescale.min},${mosaicRescale.max}&colormap_name=inferno`;
 
         mosaicLayer = new TileLayer({
           source: new XYZ({
@@ -672,13 +693,13 @@ function App() {
             crossOrigin: 'anonymous',
             maxZoom: 14,
           }),
-          zIndex: 599, // Just below per-tile detail
-          maxZoom: MIN_ZOOM, // Visible only when zoom < MIN_ZOOM (exclusive upper bound)
+          zIndex: 599,
+          maxZoom: MIN_ZOOM,
         });
 
-        if (!cancelled) {
-          map.addLayer(mosaicLayer);
-          console.log('[mosaic] Added mosaic layer to map (maxZoom:', MIN_ZOOM, ')');
+        if (!cancelled && globalOuterGroupRef.current) {
+          globalOuterGroupRef.current.getLayers().insertAt(0, mosaicLayer);
+          console.log('[mosaic] Added mosaic into global group (maxZoom:', MIN_ZOOM, ')');
         }
       } catch (err) {
         console.warn('[mosaic] Error loading mosaic layer:', err);
@@ -779,8 +800,12 @@ function App() {
 
               if (cancelled) return;
 
-              // Step 3: Create TileLayer and add to group
-              const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=0,500&colormap_name=inferno`;
+              // Step 3: Create TileLayer and add to group (use current global rescale from layer control)
+              const defaultRescaleTile = getDefaultRescaleForRh(AUTO_RH_INDEX);
+              const globalManaged = useMapStore.getState().layerManager?.getLayer(GLOBAL_LAYER_ID);
+              const rescaleMin = globalManaged?.metadata?.rescaleMin ?? defaultRescaleTile.min;
+              const rescaleMax = globalManaged?.metadata?.rescaleMax ?? defaultRescaleTile.max;
+              const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rescaleMin},${rescaleMax}&colormap_name=inferno`;
 
               const tileOpts: any = {
                 source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18, wrapX: true }),
@@ -805,24 +830,6 @@ function App() {
         );
       }
 
-      // Register the group once in LayerManager
-      if (!globalLayerRegisteredRef.current && group.getLayers().getLength() > 0) {
-        const mgr = useMapStore.getState().layerManager;
-        if (mgr) {
-          const layerName = `Global (RH98 Q1 ${AUTO_YEAR})`;
-          mgr.addLayer(GLOBAL_LAYER_ID, layerName, 'prediction', group as any, {
-            tileName: 'Global',
-            rhIndex: AUTO_RH_INDEX,
-            qIndex: AUTO_Q_INDEX,
-            year: AUTO_YEAR,
-            rescaleMin: 0,
-            rescaleMax: 500,
-            isAutoLoadGroup: true,
-          });
-          globalLayerRegisteredRef.current = true;
-          updateLayersList();
-        }
-      }
     };
 
     const onMoveEnd = () => {
@@ -849,26 +856,20 @@ function App() {
       map.un('moveend', onMoveEnd);
       map.getView().un('change:resolution', onZoomChange);
       if (debounceTimer) clearTimeout(debounceTimer);
-      // Remove mosaic layer on cleanup
-      if (mosaicLayer) {
-        map.removeLayer(mosaicLayer);
-        mosaicLayer = null;
-      }
-      // Remove group from map on cleanup (when activeVSM changes or component unmounts)
-      if (globalPredGroupRef.current) {
-        map.removeLayer(globalPredGroupRef.current);
-        globalPredGroupRef.current = null;
-      }
-      // Unregister from LayerManager
       const mgr = useMapStore.getState().layerManager;
       if (mgr && mgr.getLayer(GLOBAL_LAYER_ID)) {
         mgr.removeLayer(GLOBAL_LAYER_ID);
       }
+      if (globalOuterGroupRef.current) {
+        map.removeLayer(globalOuterGroupRef.current);
+        globalOuterGroupRef.current = null;
+      }
+      globalPredGroupRef.current = null;
       globalLayerRegisteredRef.current = false;
       autoLoadingTilesRef.current.clear();
       updateLayersList();
     };
-  }, [map, fgbLayer, activeVSM, updateLayersList]);
+  }, [map, fgbLayer, activeVSM, vsmRhIndex, vsmQChoice, updateLayersList]);
 
   // --- Drawing tool: "Get Tiles" rectangle draw ---
   const { drawingActive, setDrawingActive, setSelectedTiles } = useMapStore();
@@ -1510,6 +1511,7 @@ function App() {
     }
   };
 
+
   // Helper: update rescale on a single XYZ tile source
   const updateTileSourceRescale = (source: any, min: number, max: number) => {
     if (!source || !source.getUrls) return;
@@ -1530,30 +1532,27 @@ function App() {
     }
   };
 
+  // Apply rescale to a layer and recursively to all TileLayers inside any LayerGroup
+  const applyRescaleToLayer = (layer: any, min: number, max: number) => {
+    if (!layer) return;
+    if (layer instanceof LayerGroup) {
+      layer.getLayers().forEach((child: any) => applyRescaleToLayer(child, min, max));
+    } else if (layer.getSource) {
+      const source = layer.getSource();
+      if (source && source.getUrls) updateTileSourceRescale(source, min, max);
+    }
+  };
+
   const handleChangePredictionRescale = (layerId: string, min: number, max: number) => {
     if (!layerManager) return;
 
     const managedLayer = layerManager.getLayer(layerId);
     if (!managedLayer || managedLayer.type !== 'prediction' || !managedLayer.metadata) return;
 
-    // Update metadata
     managedLayer.metadata.rescaleMin = min;
     managedLayer.metadata.rescaleMax = max;
 
-    const layer = managedLayer.layer as any;
-
-    // If the layer is a LayerGroup (global auto-load group), update all children
-    if (layer instanceof LayerGroup) {
-      layer.getLayers().forEach((child: any) => {
-        const childSource = child.getSource?.();
-        updateTileSourceRescale(childSource, min, max);
-      });
-    } else {
-      // Single tile layer
-      const source = layer.getSource?.();
-      updateTileSourceRescale(source, min, max);
-    }
-
+    applyRescaleToLayer(managedLayer.layer, min, max);
     updateLayersList();
   };
 
@@ -1577,7 +1576,7 @@ function App() {
       } else if (layerId.startsWith('sentinel2-')) {
         setSentinel2Layers((prev: any[]) => prev.filter((l: any) => l.id !== layerId));
       } else if (layerId.startsWith('prediction-global-')) {
-        // Reset auto-load state and deactivate VSM
+        globalOuterGroupRef.current = null;
         globalPredGroupRef.current = null;
         globalLayerRegisteredRef.current = false;
         autoLoadingTilesRef.current.clear();

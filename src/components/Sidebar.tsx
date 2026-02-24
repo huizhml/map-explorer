@@ -10,6 +10,8 @@ import {
   List,
   ListItem,
   ListItemText,
+  Checkbox,
+  FormControlLabel,
 } from '@mui/material';
 import { Layers as LayersIcon, Link as LinkIcon, CropFree as CropFreeIcon } from '@mui/icons-material';
 
@@ -25,6 +27,10 @@ interface SidebarProps {
   // VSM auto-load props
   activeVSM: '2020' | '2024' | null;
   onToggleVSM: (year: '2020' | '2024') => void;
+  vsmRhIndex: number;
+  onVsmRhIndexChange: (rh: number) => void;
+  vsmQChoice: '5%' | 'median' | '95%';
+  onVsmQChoiceChange: (q: '5%' | 'median' | '95%') => void;
   // Drawing tools props
   drawingActive: boolean;
   onGetTiles: () => void;
@@ -70,6 +76,10 @@ export function Sidebar({
   fgbError,
   activeVSM,
   onToggleVSM,
+  vsmRhIndex,
+  onVsmRhIndexChange,
+  vsmQChoice,
+  onVsmQChoiceChange,
   drawingActive,
   onGetTiles,
   selectedTiles,
@@ -156,7 +166,32 @@ export function Sidebar({
           <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <LayersIcon /> VSM Predictions
           </Typography>
-          <Box sx={{ mt: 2, display: 'flex', gap: 1 }}>
+          <Box sx={{ mt: 2, display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+            <TextField
+              label="RH index"
+              type="number"
+              value={vsmRhIndex}
+              onChange={(e) => {
+                const v = parseInt(e.target.value);
+                if (!isNaN(v)) onVsmRhIndexChange(v);
+              }}
+              size="small"
+              sx={{ width: 90 }}
+            />
+            <FormControlLabel
+              control={<Checkbox size="small" checked={vsmQChoice === '5%'} onChange={() => onVsmQChoiceChange('5%')} />}
+              label={<Typography variant="caption">5%</Typography>}
+            />
+            <FormControlLabel
+              control={<Checkbox size="small" checked={vsmQChoice === 'median'} onChange={() => onVsmQChoiceChange('median')} />}
+              label={<Typography variant="caption">median</Typography>}
+            />
+            <FormControlLabel
+              control={<Checkbox size="small" checked={vsmQChoice === '95%'} onChange={() => onVsmQChoiceChange('95%')} />}
+              label={<Typography variant="caption">95%</Typography>}
+            />
+          </Box>
+          <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
             <Button
               variant={activeVSM === '2020' ? 'contained' : 'outlined'}
               color={activeVSM === '2020' ? 'success' : 'primary'}
@@ -176,7 +211,7 @@ export function Sidebar({
           </Box>
           {activeVSM && (
             <Typography variant="caption" sx={{ mt: 1, display: 'block', color: 'text.secondary' }}>
-              Auto-loading RH98 Q1 ({activeVSM}) for visible tiles{activeVSM === '2020' ? ' (local)' : ' (remote)'}
+              Auto-loading RH{vsmRhIndex} {vsmQChoice} ({activeVSM}) for visible tiles{activeVSM === '2020' ? ' (local)' : ' (remote)'}
             </Typography>
           )}
         </Box>

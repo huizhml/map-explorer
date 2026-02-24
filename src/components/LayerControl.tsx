@@ -42,6 +42,7 @@ import {
 } from '@mui/icons-material';
 import { useMapStore, type ConditionalStyle } from '../stores/mapStore';
 import { PALETTES, type PaletteName } from './Sidebar';
+import { DEFAULT_RESCALE_MAX_BY_RH } from '../constants/predictions';
 
 type Color = GetProp<ColorPickerProps, 'value'>;
 interface Layer {
@@ -430,36 +431,44 @@ export function LayerControl({
                 </Box>
                 {onChangePredictionRescale && (
                   <Box sx={{ display: 'flex', gap: 1 }}>
-                    <TextField
-                      label="Min"
-                      type="number"
-                      value={layer.metadata?.rescaleMin ?? 0}
-                      onChange={(e) => {
-                        const min = parseFloat(e.target.value);
-                        const max = layer.metadata?.rescaleMax ?? 500;
-                        if (!isNaN(min) && onChangePredictionRescale) {
-                          onChangePredictionRescale(layer.id, min, max);
-                        }
-                      }}
-                      size="small"
-                      inputProps={{ step: 1 }}
-                      sx={{ width: '50%' }}
-                    />
-                    <TextField
-                      label="Max"
-                      type="number"
-                      value={layer.metadata?.rescaleMax ?? 500}
-                      onChange={(e) => {
-                        const max = parseFloat(e.target.value);
-                        const min = layer.metadata?.rescaleMin ?? 0;
-                        if (!isNaN(max) && onChangePredictionRescale) {
-                          onChangePredictionRescale(layer.id, min, max);
-                        }
-                      }}
-                      size="small"
-                      inputProps={{ step: 1 }}
-                      sx={{ width: '50%' }}
-                    />
+                    {(() => {
+                      const rh = layer.metadata?.rhIndex as number | undefined;
+                      const defaultMax = rh != null ? (DEFAULT_RESCALE_MAX_BY_RH[rh] ?? 500) : 500;
+                      return (
+                        <>
+                          <TextField
+                            label="Min"
+                            type="number"
+                            value={layer.metadata?.rescaleMin ?? 0}
+                            onChange={(e) => {
+                              const min = parseFloat(e.target.value);
+                              const max = layer.metadata?.rescaleMax ?? defaultMax;
+                              if (!isNaN(min) && onChangePredictionRescale) {
+                                onChangePredictionRescale(layer.id, min, max);
+                              }
+                            }}
+                            size="small"
+                            inputProps={{ step: 1 }}
+                            sx={{ width: '50%' }}
+                          />
+                          <TextField
+                            label="Max"
+                            type="number"
+                            value={layer.metadata?.rescaleMax ?? defaultMax}
+                            onChange={(e) => {
+                              const max = parseFloat(e.target.value);
+                              const min = layer.metadata?.rescaleMin ?? 0;
+                              if (!isNaN(max) && onChangePredictionRescale) {
+                                onChangePredictionRescale(layer.id, min, max);
+                              }
+                            }}
+                            size="small"
+                            inputProps={{ step: 1 }}
+                            sx={{ width: '50%' }}
+                          />
+                        </>
+                      );
+                    })()}
                   </Box>
                 )}
                               </Box>

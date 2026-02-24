@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from fastapi.responses import StreamingResponse
 import geopandas as gpd
 import pandas as pd
 from pathlib import Path
@@ -306,98 +307,6 @@ async def proxy_geojson_options():
     """Handle preflight requests for the proxy endpoint"""
     return {"message": "OK"}
 
-@app.get("/pmtiles/proxy")
-async def proxy_pmtiles(url: str, request: Request):
-    """Proxy PMTiles files with range request support for ol-pmtiles"""
-    try:
-        # Validate URL
-        parsed_url = urlparse(url)
-        if not parsed_url.scheme or not parsed_url.netloc:
-            return Response(
-                content=json.dumps({"error": "Invalid URL format"}).encode(),
-                media_type='application/json',
-                status_code=400
-            )
-        
-        # Get range header if present (for HTTP range requests)
-        range_header = request.headers.get('range')
-        
-        headers = {}
-        if range_header:
-            headers['Range'] = range_header
-        
-        # Fetch data server-side with streaming for large files
-        response = requests.get(url, timeout=60, stream=True, headers=headers)
-        response.raise_for_status()
-        
-        # Get content length from response
-        content_length = response.headers.get('Content-Length')
-        
-        # Prepare response headers
-        response_headers = {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-            'Access-Control-Allow-Headers': 'Range, Content-Range, Content-Length',
-            'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
-            'Content-Type': 'application/x-protobuf',
-            'Accept-Ranges': 'bytes',
-        }
-        
-        # Always stream the response for efficiency (works for both full and range requests)
-        from fastapi.responses import StreamingResponse
-        
-        # Handle range responses (206 Partial Content)
-        if range_header:
-            content_range = response.headers.get('Content-Range', '')
-            if content_length:
-                response_headers['Content-Length'] = content_length
-            if content_range:
-                response_headers['Content-Range'] = content_range
-            
-            status_code = 206 if response.status_code == 206 else 200
-        else:
-            # Full content response
-            if content_length:
-                response_headers['Content-Length'] = content_length
-            status_code = 200
-        
-        def generate():
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
-        
-        return StreamingResponse(
-            generate(),
-            status_code=status_code,
-            media_type='application/x-protobuf',
-            headers=response_headers
-        )
-        
-    except requests.exceptions.RequestException as e:
-        return Response(
-            content=json.dumps({"error": f"Failed to fetch PMTiles URL: {str(e)}"}).encode(),
-            media_type='application/json',
-            status_code=500
-        )
-    except Exception as e:
-        return Response(
-            content=json.dumps({"error": str(e)}).encode(),
-            media_type='application/json',
-            status_code=500
-        )
-
-@app.options("/pmtiles/proxy")
-async def proxy_pmtiles_options():
-    """Handle preflight requests for the PMTiles proxy endpoint"""
-    return Response(
-        headers={
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-            'Access-Control-Allow-Headers': 'Range, Content-Range, Content-Length',
-            'Access-Control-Max-Age': '3600',
-        }
-    )
-
 @app.get("/fgb/proxy")
 async def proxy_fgb(url: str, request: Request):
     """Proxy FlatGeobuf files with range request support for flatgeobuf library"""
@@ -436,7 +345,6 @@ async def proxy_fgb(url: str, request: Request):
         }
         
         # Always stream the response for efficiency (works for both full and range requests)
-        from fastapi.responses import StreamingResponse
         
         # Handle range responses (206 Partial Content)
         if range_header:
@@ -493,7 +401,7 @@ async def proxy_fgb_options():
 @app.get("/fgb/local")
 async def serve_local_fgb(request: Request):
     """Serve the local FlatGeobuf file with HTTP range request support."""
-    from fastapi.responses import StreamingResponse
+    
 
     if not S2_GRID_LOCAL_PATH:
         return Response(

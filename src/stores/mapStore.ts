@@ -111,6 +111,10 @@ interface MapStore {
   // Active VSM auto-load mode
   activeVSM: '2020' | '2024' | null;
   setActiveVSM: (vsm: '2020' | '2024' | null) => void;
+  vsmRhIndex: number;
+  setVsmRhIndex: (rh: number) => void;
+  vsmQChoice: '5%' | 'median' | '95%';
+  setVsmQChoice: (q: '5%' | 'median' | '95%') => void;
 
   // Drawing tools
   drawingActive: boolean;
@@ -215,6 +219,10 @@ export const useMapStore = create<MapStore>((set, get) => ({
   // Active VSM auto-load mode
   activeVSM: null,
   setActiveVSM: (vsm) => set({ activeVSM: vsm }),
+  vsmRhIndex: 98,
+  setVsmRhIndex: (rh) => set({ vsmRhIndex: rh }),
+  vsmQChoice: 'median',
+  setVsmQChoice: (q) => set({ vsmQChoice: q }),
 
   // Drawing tools
   drawingActive: false,
