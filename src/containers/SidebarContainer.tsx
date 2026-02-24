@@ -675,11 +675,19 @@ export function SidebarContainer() {
     fgbLayer.changed();
   }, [fgbLayer, enableConditionalRendering, conditionalStyles, fgbStyleOptions, map]);
 
-  const { activeVSM, setActiveVSM, vsmRhIndex, setVsmRhIndex, vsmQChoice, setVsmQChoice, drawingActive, setDrawingActive, selectedTiles } = useMapStore();
+  const { addVsmLayer, addedVsmLayers, vsmYear, setVsmYear, vsmRhIndex, setVsmRhIndex, vsmQChoice, setVsmQChoice, drawingActive, setDrawingActive, selectedTiles } = useMapStore();
 
-  const handleToggleVSM = (year: '2020' | '2024') => {
-    // Toggle: clicking the active button turns it off, otherwise switch to it
-    setActiveVSM(activeVSM === year ? null : year);
+  const handleAddLayer = () => {
+    if (vsmYear !== 2020 && vsmYear !== 2024) return;
+    const alreadyAdded = addedVsmLayers.some(
+      (e) => e.year === vsmYear && e.rhIndex === vsmRhIndex && e.qChoice === vsmQChoice
+    );
+    if (alreadyAdded) return;
+    addVsmLayer({
+      year: vsmYear as 2020 | 2024,
+      rhIndex: vsmRhIndex,
+      qChoice: vsmQChoice,
+    });
   };
 
   const handleGetTiles = () => {
@@ -689,15 +697,10 @@ export function SidebarContainer() {
 
   return (
     <Sidebar
-      onFileChange={handleFileChange}
-      fgbUrl={fgbUrl}
-      onFGBUrlChange={handleFGBUrlChange}
-      onLoadFGB={handleLoadFGB}
-      onRemoveFGBLayer={handleRemoveFGBLayer}
-      fgbLoading={fgbLoading}
-      fgbError={fgbError}
-      activeVSM={activeVSM}
-      onToggleVSM={handleToggleVSM}
+      onAddLayer={handleAddLayer}
+      addedVsmLayers={addedVsmLayers}
+      vsmYear={vsmYear}
+      onVsmYearChange={setVsmYear}
       vsmRhIndex={vsmRhIndex}
       onVsmRhIndexChange={setVsmRhIndex}
       vsmQChoice={vsmQChoice}

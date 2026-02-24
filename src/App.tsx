@@ -21,7 +21,7 @@ import TileLayer from 'ol/layer/Tile';
 import { transformExtent, transform } from 'ol/proj';
 import { LayerManager } from './utils/LayerManager';
 import { useMapStore } from './stores/mapStore';
-import { getDefaultRescaleForRh } from './constants/predictions';
+import { getDefaultRescaleForRh, getVsmLayerId, type VsmLayerEntry } from './constants/predictions';
 
 const theme = createTheme({
   palette: {
@@ -58,9 +58,8 @@ function App() {
     layerManager,
     setLayerManager,
     closePopup,
-    activeVSM,
-    vsmRhIndex,
-    vsmQChoice,
+    addedVsmLayers,
+    removeVsmLayerByLayerId,
   } = useMapStore();
 
   // Initialize layer manager
@@ -607,153 +606,143 @@ function App() {
     updateLayersList();
   }, [updateLayersList]);
 
-  // --- Auto-load VSM predictions (single "Global" layer, driven by activeVSM) ---
-  const autoLoadingTilesRef = useRef<Set<string>>(new Set());
-  const globalPredGroupRef = useRef<LayerGroup | null>(null);
-  const globalLayerRegisteredRef = useRef(false);
-  const globalOuterGroupRef = useRef<LayerGroup | null>(null);
+  // --- Auto-load VSM predictions: one global layer per entry in addedVsmLayers ---
+  const DEBOUNCE_MS = 1500;
+  const MAX_CONCURRENT = 3;
+  const MIN_ZOOM = 8;
+  const qIndexMap: Record<string, number> = { '5%': 2, 'median': 1, '95%': 0 };
+
+  type GlobalLayerState = {
+    outerGroup: LayerGroup;
+    group: LayerGroup;
+    autoLoadingTiles: Set<string>;
+    entry: VsmLayerEntry;
+    cancelled: boolean;
+  };
+  const globalLayersRef = useRef<globalThis.Map<string, GlobalLayerState>>(new globalThis.Map());
+  const debounceTimersRef = useRef<globalThis.Map<string, ReturnType<typeof setTimeout>>>(new globalThis.Map());
   const [showZoomMessage, setShowZoomMessage] = useState(false);
 
   useEffect(() => {
-    // When activeVSM is null, hide zoom message and skip
-    console.log('[auto-load effect] map=', !!map, 'fgbLayer=', !!fgbLayer, 'activeVSM=', activeVSM);
-    if (!map || !fgbLayer || !activeVSM) {
+    if (!map || !fgbLayer) {
       setShowZoomMessage(false);
       return;
     }
 
-    const qIndexMap: Record<string, number> = { '5%': 2, 'median': 1, '95%': 0 };
-    const AUTO_RH_INDEX = vsmRhIndex;
-    const AUTO_Q_INDEX = qIndexMap[vsmQChoice];
-    const AUTO_YEAR = parseInt(activeVSM); // '2020' | '2024' → number
-    const DEBOUNCE_MS = 1500;
-    const MAX_CONCURRENT = 3;
-    const MIN_ZOOM = 8;
-    const qLabel = vsmQChoice === 'median' ? 'Q1' : vsmQChoice === '5%' ? 'Q2' : 'Q0';
-    const GLOBAL_LAYER_ID = `prediction-global-RH${AUTO_RH_INDEX}-${qLabel}-${activeVSM}`;
-
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
-
-    // Unregister old global layer from LayerManager (removes outer group from map)
+    const wantedIds = new Set(addedVsmLayers.map((e) => getVsmLayerId(e)));
     const mgr = useMapStore.getState().layerManager;
-    if (mgr && typeof mgr.getAllLayers === 'function') {
-      const all = mgr.getAllLayers();
-      all.forEach((managed: { id: string }) => {
-        if (managed.id.startsWith('prediction-global-')) mgr.removeLayer(managed.id);
-      });
-    }
-    globalLayerRegisteredRef.current = false;
-    autoLoadingTilesRef.current.clear();
 
-    // Zoom-in group (per-tile detail, visible at zoom >= MIN_ZOOM)
-    const group = new LayerGroup({ layers: [], zIndex: 600, minZoom: MIN_ZOOM - 1 });
-    // Single outer group: mosaic (when loaded) + zoom-in group, one layer control entry
-    const outerGroup = new LayerGroup({ layers: [group], zIndex: 599 });
-    map.addLayer(outerGroup);
-    globalOuterGroupRef.current = outerGroup;
-    globalPredGroupRef.current = group;
-
-    if (mgr) {
-      const defaultRescale = getDefaultRescaleForRh(AUTO_RH_INDEX);
-      const layerName = `Global (RH${AUTO_RH_INDEX} ${vsmQChoice}, ${AUTO_YEAR})`;
-      mgr.addLayer(GLOBAL_LAYER_ID, layerName, 'prediction', outerGroup as any, {
-        tileName: 'Global',
-        rhIndex: AUTO_RH_INDEX,
-        qIndex: AUTO_Q_INDEX,
-        year: AUTO_YEAR,
-        rescaleMin: defaultRescale.min,
-        rescaleMax: defaultRescale.max,
-        isAutoLoadGroup: true,
-      });
-      globalLayerRegisteredRef.current = true;
-      updateLayersList();
-    }
-
-    // --- Load low-res mosaic layer (visible when zoomed out, below MIN_ZOOM) ---
-    let mosaicLayer: any = null;
-    (async () => {
-      try {
-        const mosaicResp = await fetch(
-          `http://localhost:8000/predictions/mosaic-url?year=${AUTO_YEAR}&rh_index=${AUTO_RH_INDEX}&q_index=${AUTO_Q_INDEX}`
-        );
-        const mosaicData = await mosaicResp.json();
-        if (cancelled || !mosaicData.success) {
-          console.warn('[mosaic] Could not load mosaic:', mosaicData.error);
-          return;
-        }
-        console.log('[mosaic] Loaded mosaic URL:', mosaicData.url);
-
-        const mosaicRescale = getDefaultRescaleForRh(AUTO_RH_INDEX);
-        const mosaicTileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${mosaicRescale.min},${mosaicRescale.max}&colormap_name=inferno`;
-
-        mosaicLayer = new TileLayer({
-          source: new XYZ({
-            url: mosaicTileUrl,
-            crossOrigin: 'anonymous',
-            maxZoom: 14,
-          }),
-          zIndex: 599,
-          maxZoom: MIN_ZOOM,
-        });
-
-        if (!cancelled && globalOuterGroupRef.current) {
-          globalOuterGroupRef.current.getLayers().insertAt(0, mosaicLayer);
-          console.log('[mosaic] Added mosaic into global group (maxZoom:', MIN_ZOOM, ')');
-        }
-      } catch (err) {
-        console.warn('[mosaic] Error loading mosaic layer:', err);
+    // Remove layers that are no longer in addedVsmLayers
+    for (const [layerId, state] of globalLayersRef.current.entries()) {
+      if (wantedIds.has(layerId)) continue;
+      state.cancelled = true;
+      const t = debounceTimersRef.current.get(layerId);
+      if (t) {
+        clearTimeout(t);
+        debounceTimersRef.current.delete(layerId);
       }
-    })();
+      if (mgr && mgr.getLayer(layerId)) mgr.removeLayer(layerId);
+      if (map.getLayers().getArray().includes(state.outerGroup)) {
+        map.removeLayer(state.outerGroup);
+      }
+      globalLayersRef.current.delete(layerId);
+    }
 
-    const autoLoadVisiblePredictions = async () => {
-      if (cancelled) return;
+    // Add new layers for entries not yet in ref
+    for (const entry of addedVsmLayers) {
+      const layerId = getVsmLayerId(entry);
+      if (globalLayersRef.current.has(layerId)) continue;
 
-      // --- Zoom gate ---
+      const AUTO_RH_INDEX = entry.rhIndex;
+      const AUTO_YEAR = entry.year;
+      const AUTO_Q_INDEX = qIndexMap[entry.qChoice];
+
+      const group = new LayerGroup({ layers: [], zIndex: 600, minZoom: MIN_ZOOM - 1 });
+      const outerGroup = new LayerGroup({ layers: [group], zIndex: 599 });
+      map.addLayer(outerGroup);
+
+      const state: GlobalLayerState = {
+        outerGroup,
+        group,
+        autoLoadingTiles: new Set(),
+        entry,
+        cancelled: false,
+      };
+      globalLayersRef.current.set(layerId, state);
+
+      if (mgr) {
+        const defaultRescale = getDefaultRescaleForRh(AUTO_RH_INDEX);
+        const layerName = `Global (RH${AUTO_RH_INDEX} ${entry.qChoice}, ${AUTO_YEAR})`;
+        mgr.addLayer(layerId, layerName, 'prediction', outerGroup as any, {
+          tileName: 'Global',
+          rhIndex: AUTO_RH_INDEX,
+          qIndex: AUTO_Q_INDEX,
+          year: AUTO_YEAR,
+          rescaleMin: defaultRescale.min,
+          rescaleMax: defaultRescale.max,
+          isAutoLoadGroup: true,
+        });
+        updateLayersList();
+      }
+
+      // Load mosaic for this layer
+      (async () => {
+        try {
+          const mosaicResp = await fetch(
+            `http://localhost:8000/predictions/mosaic-url?year=${AUTO_YEAR}&rh_index=${AUTO_RH_INDEX}&q_index=${AUTO_Q_INDEX}`
+          );
+          const mosaicData = await mosaicResp.json();
+          const s = globalLayersRef.current.get(layerId);
+          if (!s || s.cancelled || !mosaicData.success) return;
+          const mosaicRescale = getDefaultRescaleForRh(AUTO_RH_INDEX);
+          const mosaicTileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${mosaicRescale.min},${mosaicRescale.max}&colormap_name=inferno`;
+          const mosaicLayer = new TileLayer({
+            source: new XYZ({ url: mosaicTileUrl, crossOrigin: 'anonymous', maxZoom: 14 }),
+            zIndex: 599,
+            maxZoom: MIN_ZOOM,
+          });
+          const st = globalLayersRef.current.get(layerId);
+          if (st && !st.cancelled && map.getLayers().getArray().includes(st.outerGroup)) {
+            st.outerGroup.getLayers().insertAt(0, mosaicLayer);
+          }
+        } catch (err) {
+          console.warn('[mosaic] Error loading mosaic layer:', err);
+        }
+      })();
+    }
+
+    const runAutoLoadForLayer = async (layerId: string, state: GlobalLayerState) => {
+      if (state.cancelled) return;
       const zoom = map.getView().getZoom();
       if (zoom === undefined || zoom < MIN_ZOOM) return;
-
       const source = fgbLayer.getSource();
       if (!source) return;
-
       const mapSize = map.getSize();
       if (!mapSize) return;
-
       const viewExtent = map.getView().calculateExtent(mapSize);
       const features = source.getFeaturesInExtent(viewExtent);
-
-      // Collect unique tile names from visible features
       const visibleTiles = new Set<string>();
       for (const feature of features) {
         const name = feature.get('Name');
-        if (name && typeof name === 'string') {
-          visibleTiles.add(name);
-        }
+        if (name && typeof name === 'string') visibleTiles.add(name);
       }
-
       if (visibleTiles.size === 0) return;
+      const toLoad = [...visibleTiles].filter((t) => !state.autoLoadingTiles.has(t));
+      if (toLoad.length === 0) return;
 
-      // Filter to tiles not yet attempted
-      const allTilesToLoad = [...visibleTiles].filter(
-        (t) => !autoLoadingTilesRef.current.has(t),
-      );
+      const { entry } = state;
+      const AUTO_RH_INDEX = entry.rhIndex;
+      const AUTO_YEAR = entry.year;
+      const AUTO_Q_INDEX = qIndexMap[entry.qChoice];
 
-      if (allTilesToLoad.length === 0) return;
-
-      console.log(`[Auto-load] Loading RH98_Q1 (${AUTO_YEAR}) for ${allTilesToLoad.length} visible tiles`);
-
-      for (let i = 0; i < allTilesToLoad.length; i += MAX_CONCURRENT) {
-        if (cancelled) return;
-
-        const batch = allTilesToLoad.slice(i, i + MAX_CONCURRENT);
-
+      for (let i = 0; i < toLoad.length; i += MAX_CONCURRENT) {
+        if (state.cancelled) return;
+        const batch = toLoad.slice(i, i + MAX_CONCURRENT);
         await Promise.allSettled(
           batch.map(async (tileName) => {
-            if (cancelled) return;
-            autoLoadingTilesRef.current.add(tileName);
-
+            if (state.cancelled) return;
+            state.autoLoadingTiles.add(tileName);
             try {
-              // Step 1: Get prediction COG URL (backend handles remote vs local)
               const resp = await fetch('http://localhost:8000/predictions/load', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -764,112 +753,94 @@ function App() {
                   q_index: AUTO_Q_INDEX,
                 }),
               });
-
               if (!resp.ok) return;
-
               const data = await resp.json();
               if (!data.success || !data.url) return;
+              if (state.cancelled) return;
 
-              if (cancelled) return;
-
-              // Step 2: Get COG info (bounds / CRS) from TiTiler
               const infoResp = await fetch(
                 `http://localhost:8000/cog/info?url=${encodeURIComponent(data.url)}`,
               );
               if (!infoResp.ok) return;
-
               const infoData = await infoResp.json();
               const bbox = infoData.bounds;
               if (!bbox || bbox.length !== 4) return;
-
               let sourceCRS = 'EPSG:4326';
               if (infoData.crs) {
                 if (typeof infoData.crs === 'string') sourceCRS = infoData.crs;
                 else if (infoData.crs.properties?.name) sourceCRS = infoData.crs.properties.name;
                 else if (infoData.crs.code) sourceCRS = `EPSG:${infoData.crs.code}`;
               }
-
-              let extent: number[];
-              if (sourceCRS === 'EPSG:3857' || sourceCRS === 'EPSG:900913') {
-                extent = bbox;
-              } else {
-                extent = transformExtent(bbox, sourceCRS, 'EPSG:3857');
-              }
-
+              let extent: number[] =
+                sourceCRS === 'EPSG:3857' || sourceCRS === 'EPSG:900913'
+                  ? bbox
+                  : transformExtent(bbox, sourceCRS, 'EPSG:3857');
               if (!extent.every((v: number) => isFinite(v) && !isNaN(v))) return;
+              if (state.cancelled) return;
 
-              if (cancelled) return;
-
-              // Step 3: Create TileLayer and add to group (use current global rescale from layer control)
               const defaultRescaleTile = getDefaultRescaleForRh(AUTO_RH_INDEX);
-              const globalManaged = useMapStore.getState().layerManager?.getLayer(GLOBAL_LAYER_ID);
+              const globalManaged = useMapStore.getState().layerManager?.getLayer(layerId);
               const rescaleMin = globalManaged?.metadata?.rescaleMin ?? defaultRescaleTile.min;
               const rescaleMax = globalManaged?.metadata?.rescaleMax ?? defaultRescaleTile.max;
               const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rescaleMin},${rescaleMax}&colormap_name=inferno`;
-
               const tileOpts: any = {
                 source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18, wrapX: true }),
                 minZoom: MIN_ZOOM - 1,
               };
-              // Skip extent constraint for antimeridian-crossing tiles
               const extentWidth = extent[2] - extent[0];
-              if (extentWidth <= 1_000_000) {
-                tileOpts.extent = extent;
-              } else {
-                console.warn(`[Auto-load] Antimeridian tile ${tileName} – skipping extent constraint`);
-              }
+              if (extentWidth <= 1_000_000) tileOpts.extent = extent;
+              else console.warn(`[Auto-load] Antimeridian tile ${tileName} – skipping extent constraint`);
               const tileLayer = new TileLayer(tileOpts);
-
-              if (!cancelled) {
-                group.getLayers().push(tileLayer);
-              }
+              if (!state.cancelled) state.group.getLayers().push(tileLayer);
             } catch (err) {
               console.warn(`[Auto-load] Failed for tile ${tileName}:`, err);
             }
-          }),
+          })
         );
       }
-
     };
 
     const onMoveEnd = () => {
-      // Visibility is handled by onZoomChange (fires immediately).
-      // onMoveEnd only triggers tile loading after pan/zoom animation settles.
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(autoLoadVisiblePredictions, DEBOUNCE_MS);
+      for (const [layerId, state] of globalLayersRef.current.entries()) {
+        const t = debounceTimersRef.current.get(layerId);
+        if (t) clearTimeout(t);
+        debounceTimersRef.current.set(
+          layerId,
+          setTimeout(() => runAutoLoadForLayer(layerId, state), DEBOUNCE_MS)
+        );
+      }
     };
 
-    // Handle zoom message immediately (not debounced)
     const onZoomChange = () => {
       const zoom = map.getView().getZoom();
-      const belowMinZoom = zoom !== undefined && zoom < MIN_ZOOM;
-      setShowZoomMessage(belowMinZoom);
+      const hasLayers = addedVsmLayers.length > 0;
+      setShowZoomMessage(hasLayers && zoom !== undefined && zoom < MIN_ZOOM);
     };
 
     onMoveEnd();
     map.on('moveend', onMoveEnd);
-    // change:resolution fires immediately during zoom (wheel, pinch, etc.)
     map.getView().on('change:resolution', onZoomChange);
 
     return () => {
-      cancelled = true;
+      for (const [layerId, state] of globalLayersRef.current.entries()) {
+        state.cancelled = true;
+        const t = debounceTimersRef.current.get(layerId);
+        if (t) {
+          clearTimeout(t);
+          debounceTimersRef.current.delete(layerId);
+        }
+        if (mgr && mgr.getLayer(layerId)) mgr.removeLayer(layerId);
+        if (map.getLayers().getArray().includes(state.outerGroup)) {
+          map.removeLayer(state.outerGroup);
+        }
+      }
+      globalLayersRef.current.clear();
+      debounceTimersRef.current.clear();
       map.un('moveend', onMoveEnd);
       map.getView().un('change:resolution', onZoomChange);
-      if (debounceTimer) clearTimeout(debounceTimer);
-      const mgr = useMapStore.getState().layerManager;
-      if (mgr && mgr.getLayer(GLOBAL_LAYER_ID)) {
-        mgr.removeLayer(GLOBAL_LAYER_ID);
-      }
-      if (globalOuterGroupRef.current) {
-        map.removeLayer(globalOuterGroupRef.current);
-        globalOuterGroupRef.current = null;
-      }
-      globalPredGroupRef.current = null;
-      globalLayerRegisteredRef.current = false;
-      autoLoadingTilesRef.current.clear();
       updateLayersList();
     };
-  }, [map, fgbLayer, activeVSM, vsmRhIndex, vsmQChoice, updateLayersList]);
+  }, [map, fgbLayer, addedVsmLayers, updateLayersList]);
 
   // --- Drawing tool: "Get Tiles" rectangle draw ---
   const { drawingActive, setDrawingActive, setSelectedTiles } = useMapStore();
@@ -1576,11 +1547,12 @@ function App() {
       } else if (layerId.startsWith('sentinel2-')) {
         setSentinel2Layers((prev: any[]) => prev.filter((l: any) => l.id !== layerId));
       } else if (layerId.startsWith('prediction-global-')) {
-        globalOuterGroupRef.current = null;
-        globalPredGroupRef.current = null;
-        globalLayerRegisteredRef.current = false;
-        autoLoadingTilesRef.current.clear();
-        useMapStore.getState().setActiveVSM(null);
+        const state = globalLayersRef.current.get(layerId);
+        if (state) {
+          state.cancelled = true;
+          globalLayersRef.current.delete(layerId);
+        }
+        removeVsmLayerByLayerId(layerId);
       } else if (layerId.startsWith('prediction-')) {
         setPredictionLayers((prev: any[]) => prev.filter((l: any) => l.id !== layerId));
       }

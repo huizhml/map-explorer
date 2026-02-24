@@ -6,6 +6,8 @@ import VectorSource from 'ol/source/Vector';
 import { Geometry } from 'ol/geom';
 import { LayerManager } from '../utils/LayerManager';
 import type { Layer } from '../components/LayerControl';
+import type { VsmLayerEntry } from '../constants/predictions';
+import { getVsmLayerId } from '../constants/predictions';
 
 // Types
 export interface FgbInfo {
@@ -108,13 +110,16 @@ interface MapStore {
   predictionLayers: PredictionLayer[];
   setPredictionLayers: (layers: PredictionLayer[] | ((prev: PredictionLayer[]) => PredictionLayer[])) => void;
 
-  // Active VSM auto-load mode
-  activeVSM: '2020' | '2024' | null;
-  setActiveVSM: (vsm: '2020' | '2024' | null) => void;
+  // VSM layers: form state (year, RH, Q) and list of added layers (each gets a global layer)
+  vsmYear: number;
+  setVsmYear: (year: number) => void;
   vsmRhIndex: number;
   setVsmRhIndex: (rh: number) => void;
   vsmQChoice: '5%' | 'median' | '95%';
   setVsmQChoice: (q: '5%' | 'median' | '95%') => void;
+  addedVsmLayers: VsmLayerEntry[];
+  addVsmLayer: (entry: VsmLayerEntry) => void;
+  removeVsmLayerByLayerId: (layerId: string) => void;
 
   // Drawing tools
   drawingActive: boolean;
@@ -216,13 +221,22 @@ export const useMapStore = create<MapStore>((set, get) => ({
       predictionLayers: typeof layers === 'function' ? layers(state.predictionLayers) : layers,
     })),
 
-  // Active VSM auto-load mode
-  activeVSM: null,
-  setActiveVSM: (vsm) => set({ activeVSM: vsm }),
+  // VSM layers
+  vsmYear: 2020,
+  setVsmYear: (year) => set({ vsmYear: year }),
   vsmRhIndex: 98,
   setVsmRhIndex: (rh) => set({ vsmRhIndex: rh }),
   vsmQChoice: 'median',
   setVsmQChoice: (q) => set({ vsmQChoice: q }),
+  addedVsmLayers: [],
+  addVsmLayer: (entry) =>
+    set((state) => ({
+      addedVsmLayers: [...state.addedVsmLayers, entry],
+    })),
+  removeVsmLayerByLayerId: (layerId) =>
+    set((state) => ({
+      addedVsmLayers: state.addedVsmLayers.filter((e) => getVsmLayerId(e) !== layerId),
+    })),
 
   // Drawing tools
   drawingActive: false,

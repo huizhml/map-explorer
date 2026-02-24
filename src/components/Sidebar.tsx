@@ -5,28 +5,26 @@ import {
   Button,
   styled,
   TextField,
-  Alert,
-  CircularProgress,
   List,
   ListItem,
   ListItemText,
   Checkbox,
   FormControlLabel,
 } from '@mui/material';
-import { Layers as LayersIcon, Link as LinkIcon, CropFree as CropFreeIcon } from '@mui/icons-material';
+import { Layers as LayersIcon, CropFree as CropFreeIcon } from '@mui/icons-material';
+
+export interface VsmLayerEntryDisplay {
+  year: number;
+  rhIndex: number;
+  qChoice: string;
+}
 
 interface SidebarProps {
-  onFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  // FlatGeobuf props
-  fgbUrl: string;
-  onFGBUrlChange: (url: string) => void;
-  onLoadFGB: () => void;
-  onRemoveFGBLayer: () => void;
-  fgbLoading: boolean;
-  fgbError: string | null;
-  // VSM auto-load props
-  activeVSM: '2020' | '2024' | null;
-  onToggleVSM: (year: '2020' | '2024') => void;
+  // VSM add-layer props
+  onAddLayer: () => void;
+  addedVsmLayers: VsmLayerEntryDisplay[];
+  vsmYear: number;
+  onVsmYearChange: (year: number) => void;
   vsmRhIndex: number;
   onVsmRhIndexChange: (rh: number) => void;
   vsmQChoice: '5%' | 'median' | '95%';
@@ -63,19 +61,11 @@ const SidebarContainer = styled(Box)(({ theme }) => ({
   overflow: 'hidden'
 }));
 
-const FileInput = styled('input')({
-  display: 'none',
-});
-
 export function Sidebar({
-  onFileChange,
-  fgbUrl,
-  onFGBUrlChange,
-  onLoadFGB,
-  fgbLoading,
-  fgbError,
-  activeVSM,
-  onToggleVSM,
+  onAddLayer,
+  addedVsmLayers,
+  vsmYear,
+  onVsmYearChange,
   vsmRhIndex,
   onVsmRhIndexChange,
   vsmQChoice,
@@ -93,80 +83,25 @@ export function Sidebar({
       </Box>
 
       <Box sx={{ p: 2, flex: 1, overflowY: 'auto' }}>
-        <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <LayersIcon /> Layers
-        </Typography>
-        
-        <Box sx={{ mt: 2 }}>
-          <label htmlFor="cog-file-input">
-            <FileInput
-              id="cog-file-input"
-              type="file"
-              accept=".tif,.tiff,.geotiff"
-              onChange={onFileChange}
-            />
-            <Button
-              variant="contained"
-              component="span"
-              fullWidth
-            >
-              Add COG Layer
-            </Button>
-          </label>
-        </Box>
-
-        {/* FlatGeobuf Section */}
-        <Box sx={{ mt: 3 }}>
-          <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <LinkIcon /> FlatGeobuf Layer
-          </Typography>
-          
-          <Box sx={{ mt: 2 }}>
-            <TextField
-              fullWidth
-              size="small"
-              label="FlatGeobuf URL"
-              value={fgbUrl}
-              onChange={(e) => onFGBUrlChange(e.target.value)}
-              placeholder="https://example.com/data.fgb"
-              sx={{ mb: 1 }}
-            />
-            
-            <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
-              <Button
-                variant="contained"
-                onClick={onLoadFGB}
-                disabled={fgbLoading || !fgbUrl.trim()}
-                startIcon={<LinkIcon />}
-                sx={{ flex: 1 }}
-              >
-                Load FlatGeobuf
-              </Button>
-            </Box>
-          </Box>
-
-          {/* Loading State */}
-          {fgbLoading && (
-            <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-              <CircularProgress size={20} sx={{ mr: 1 }} />
-              <Typography variant="body2">Loading FlatGeobuf...</Typography>
-            </Box>
-          )}
-
-          {/* Error Display */}
-          {fgbError && (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              {fgbError}
-            </Alert>
-          )}
-        </Box>
 
         {/* VSM Predictions Section */}
         <Box sx={{ mt: 3 }}>
           <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <LayersIcon /> VSM Predictions
+            <LayersIcon />Explore VSM
           </Typography>
           <Box sx={{ mt: 2, display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+            <TextField
+              label="Year"
+              type="number"
+              value={vsmYear}
+              onChange={(e) => {
+                const v = parseInt(e.target.value);
+                if (!isNaN(v)) onVsmYearChange(v);
+              }}
+              size="small"
+              sx={{ width: 80 }}
+              inputProps={{ min: 2015, max: 2030 }}
+            />
             <TextField
               label="RH index"
               type="number"
@@ -191,27 +126,14 @@ export function Sidebar({
               label={<Typography variant="caption">95%</Typography>}
             />
           </Box>
-          <Box sx={{ mt: 1, display: 'flex', gap: 1 }}>
-            <Button
-              variant={activeVSM === '2020' ? 'contained' : 'outlined'}
-              color={activeVSM === '2020' ? 'success' : 'primary'}
-              onClick={() => onToggleVSM('2020')}
-              sx={{ flex: 1 }}
-            >
-              {activeVSM === '2020' ? 'VSM 2020 ✓' : 'Load VSM 2020'}
-            </Button>
-            <Button
-              variant={activeVSM === '2024' ? 'contained' : 'outlined'}
-              color={activeVSM === '2024' ? 'success' : 'primary'}
-              onClick={() => onToggleVSM('2024')}
-              sx={{ flex: 1 }}
-            >
-              {activeVSM === '2024' ? 'VSM 2024 ✓' : 'Load VSM 2024'}
+          <Box sx={{ mt: 1 }}>
+            <Button variant="outlined" color="primary" onClick={onAddLayer} fullWidth>
+              Add layer
             </Button>
           </Box>
-          {activeVSM && (
+          {addedVsmLayers.length > 0 && (
             <Typography variant="caption" sx={{ mt: 1, display: 'block', color: 'text.secondary' }}>
-              Auto-loading RH{vsmRhIndex} {vsmQChoice} ({activeVSM}) for visible tiles{activeVSM === '2020' ? ' (local)' : ' (remote)'}
+              Added: {addedVsmLayers.map((e) => `${e.year} (RH${e.rhIndex}, ${e.qChoice})`).join('; ')}
             </Typography>
           )}
         </Box>
