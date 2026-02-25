@@ -12,6 +12,7 @@ import {
   FormControlLabel,
 } from '@mui/material';
 import { Layers as LayersIcon, CropFree as CropFreeIcon } from '@mui/icons-material';
+import type { VsmQChoice } from '../constants/predictions';
 
 export interface VsmLayerEntryDisplay {
   year: number;
@@ -27,8 +28,8 @@ interface SidebarProps {
   onVsmYearChange: (year: number) => void;
   vsmRhIndex: number;
   onVsmRhIndexChange: (rh: number) => void;
-  vsmQChoice: '5%' | 'median' | '95%';
-  onVsmQChoiceChange: (q: '5%' | 'median' | '95%') => void;
+  vsmQChoice: VsmQChoice;
+  onVsmQChoiceChange: (q: VsmQChoice) => void;
   // Drawing tools props
   drawingActive: boolean;
   onGetTiles: () => void;
@@ -89,42 +90,70 @@ export function Sidebar({
           <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <LayersIcon />Explore VSM
           </Typography>
-          <Box sx={{ mt: 2, display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-            <TextField
-              label="Year"
-              type="number"
-              value={vsmYear}
-              onChange={(e) => {
-                const v = parseInt(e.target.value);
-                if (!isNaN(v)) onVsmYearChange(v);
-              }}
-              size="small"
-              sx={{ width: 80 }}
-              inputProps={{ min: 2015, max: 2030 }}
-            />
-            <TextField
-              label="RH index"
-              type="number"
-              value={vsmRhIndex}
-              onChange={(e) => {
-                const v = parseInt(e.target.value);
-                if (!isNaN(v)) onVsmRhIndexChange(v);
-              }}
-              size="small"
-              sx={{ width: 90 }}
-            />
-            <FormControlLabel
-              control={<Checkbox size="small" checked={vsmQChoice === '5%'} onChange={() => onVsmQChoiceChange('5%')} />}
-              label={<Typography variant="caption">5%</Typography>}
-            />
-            <FormControlLabel
-              control={<Checkbox size="small" checked={vsmQChoice === 'median'} onChange={() => onVsmQChoiceChange('median')} />}
-              label={<Typography variant="caption">median</Typography>}
-            />
-            <FormControlLabel
-              control={<Checkbox size="small" checked={vsmQChoice === '95%'} onChange={() => onVsmQChoiceChange('95%')} />}
-              label={<Typography variant="caption">95%</Typography>}
-            />
+          <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+              <TextField
+                label="Year"
+                type="number"
+                value={vsmYear}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value);
+                  if (!isNaN(v)) onVsmYearChange(v);
+                }}
+                size="small"
+                sx={{ width: 80 }}
+                inputProps={{ min: 2015, max: 2030 }}
+              />
+              <TextField
+                label="RH index"
+                type="number"
+                value={vsmRhIndex}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value);
+                  if (!isNaN(v)) onVsmRhIndexChange(v);
+                }}
+                size="small"
+                sx={{ width: 90 }}
+              />
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 0.5 }}>
+                Quantiles
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
+                <FormControlLabel
+                  control={<Checkbox size="small" checked={vsmQChoice === '5%'} onChange={() => onVsmQChoiceChange('5%')} />}
+                  label={<Typography variant="caption">5%</Typography>}
+                />
+                <FormControlLabel
+                  control={<Checkbox size="small" checked={vsmQChoice === 'median'} onChange={() => onVsmQChoiceChange('median')} />}
+                  label={<Typography variant="caption">median</Typography>}
+                />
+                <FormControlLabel
+                  control={<Checkbox size="small" checked={vsmQChoice === '95%'} onChange={() => onVsmQChoiceChange('95%')} />}
+                  label={<Typography variant="caption">95%</Typography>}
+                />
+              </Box>
+            </Box>
+            <Box>
+              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 0.5 }}>
+                Intervals
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
+                <FormControlLabel
+                  control={<Checkbox size="small" checked={vsmQChoice === '95%-5%'} onChange={() => onVsmQChoiceChange('95%-5%')} />}
+                  label={<Typography variant="caption">95%-5%</Typography>}
+                />
+                <FormControlLabel
+                  control={<Checkbox size="small" checked={vsmQChoice === '95%-50%'} onChange={() => onVsmQChoiceChange('95%-50%')} />}
+                  label={<Typography variant="caption">95%-50%</Typography>}
+                />
+                <FormControlLabel
+                  control={<Checkbox size="small" checked={vsmQChoice === '50%-5%'} onChange={() => onVsmQChoiceChange('50%-5%')} />}
+                  label={<Typography variant="caption">50%-5%</Typography>}
+                />
+              </Box>
+            </Box>
           </Box>
           <Box sx={{ mt: 1 }}>
             <Button variant="outlined" color="primary" onClick={onAddLayer} fullWidth>

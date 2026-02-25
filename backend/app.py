@@ -11,7 +11,7 @@ import geopandas as gpd
 import pandas as pd
 from pathlib import Path
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import requests
 from urllib.parse import urlparse, quote
 from pydantic import BaseModel
@@ -1305,7 +1305,7 @@ async def tile_offset_options():
 
 # -------------------- Mosaic (low-res overview) --------------------
 @app.get("/predictions/mosaic-url")
-async def get_mosaic_url(year: int, rh_index: int = 98, q_index: int = 1):
+async def get_mosaic_url(year: int, rh_index: int = 98, q_index: Union[int, str] = 1):
     """Return the mosaic JSON URL for a given year/RH/Q combination.
 
     Env vars:
@@ -1318,6 +1318,7 @@ async def get_mosaic_url(year: int, rh_index: int = 98, q_index: int = 1):
     import os
 
     fmt = dict(year=year, rh=rh_index, q=q_index)
+
 
     if year == 2020:
         template = os.environ.get("PREDICTIONS_MOSAIC_LOCAL_PATH", "")
@@ -1345,7 +1346,7 @@ class PredictionsRequest(BaseModel):
     year: int
     tile_name: str
     rh_index: int
-    q_index: int
+    q_index: Union[int, str]  # int 0,1,2 for single quantile; str '0-Q2','0-Q1','1-Q2' for ranges
     source: str = "blended"
 
 @app.post("/predictions/load")
@@ -1474,7 +1475,7 @@ async def auxiliary_distance_map_options():
     return {"message": "OK"}
 
 @app.get("/predictions/info")
-async def get_predictions_cog_info(tile_name: str, rh_index: int, q_index: int):
+async def get_predictions_cog_info(tile_name: str, rh_index: int, q_index: Union[int, str]):
     """Get COG metadata via TiTiler for a prediction file"""
     import os
     base_url = os.environ.get("PREDICTIONS_BASE_URL")

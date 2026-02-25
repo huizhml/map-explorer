@@ -6,7 +6,7 @@ import VectorSource from 'ol/source/Vector';
 import { Geometry } from 'ol/geom';
 import { LayerManager } from '../utils/LayerManager';
 import type { Layer } from '../components/LayerControl';
-import type { VsmLayerEntry } from '../constants/predictions';
+import type { VsmLayerEntry, VsmQChoice } from '../constants/predictions';
 import { getVsmLayerId } from '../constants/predictions';
 
 // Types
@@ -115,8 +115,8 @@ interface MapStore {
   setVsmYear: (year: number) => void;
   vsmRhIndex: number;
   setVsmRhIndex: (rh: number) => void;
-  vsmQChoice: '5%' | 'median' | '95%';
-  setVsmQChoice: (q: '5%' | 'median' | '95%') => void;
+  vsmQChoice: VsmQChoice;
+  setVsmQChoice: (q: VsmQChoice) => void;
   addedVsmLayers: VsmLayerEntry[];
   addVsmLayer: (entry: VsmLayerEntry) => void;
   removeVsmLayerByLayerId: (layerId: string) => void;

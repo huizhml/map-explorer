@@ -21,7 +21,7 @@ import TileLayer from 'ol/layer/Tile';
 import { transformExtent, transform } from 'ol/proj';
 import { LayerManager } from './utils/LayerManager';
 import { useMapStore } from './stores/mapStore';
-import { getDefaultRescaleForRh, getVsmLayerId, type VsmLayerEntry } from './constants/predictions';
+import { getDefaultRescaleForRh, getVsmLayerId, getQIndexForApi, type VsmLayerEntry } from './constants/predictions';
 
 const theme = createTheme({
   palette: {
@@ -610,8 +610,6 @@ function App() {
   const DEBOUNCE_MS = 1500;
   const MAX_CONCURRENT = 3;
   const MIN_ZOOM = 8;
-  const qIndexMap: Record<string, number> = { '5%': 2, 'median': 1, '95%': 0 };
-
   type GlobalLayerState = {
     outerGroup: LayerGroup;
     group: LayerGroup;
@@ -655,7 +653,7 @@ function App() {
 
       const AUTO_RH_INDEX = entry.rhIndex;
       const AUTO_YEAR = entry.year;
-      const AUTO_Q_INDEX = qIndexMap[entry.qChoice];
+      const AUTO_Q_INDEX = getQIndexForApi(entry.qChoice);
 
       const group = new LayerGroup({ layers: [], zIndex: 600, minZoom: MIN_ZOOM - 1 });
       const outerGroup = new LayerGroup({ layers: [group], zIndex: 599 });
@@ -688,8 +686,9 @@ function App() {
       // Load mosaic for this layer
       (async () => {
         try {
+          const qParam = encodeURIComponent(String(AUTO_Q_INDEX));
           const mosaicResp = await fetch(
-            `http://localhost:8000/predictions/mosaic-url?year=${AUTO_YEAR}&rh_index=${AUTO_RH_INDEX}&q_index=${AUTO_Q_INDEX}`
+            `http://localhost:8000/predictions/mosaic-url?year=${AUTO_YEAR}&rh_index=${AUTO_RH_INDEX}&q_index=${qParam}`
           );
           const mosaicData = await mosaicResp.json();
           const s = globalLayersRef.current.get(layerId);
@@ -733,7 +732,7 @@ function App() {
       const { entry } = state;
       const AUTO_RH_INDEX = entry.rhIndex;
       const AUTO_YEAR = entry.year;
-      const AUTO_Q_INDEX = qIndexMap[entry.qChoice];
+      const AUTO_Q_INDEX = getQIndexForApi(entry.qChoice);
 
       for (let i = 0; i < toLoad.length; i += MAX_CONCURRENT) {
         if (state.cancelled) return;
