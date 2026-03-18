@@ -20,8 +20,10 @@ import XYZ from 'ol/source/XYZ';
 import TileLayer from 'ol/layer/Tile';
 import { transformExtent, transform } from 'ol/proj';
 import { LayerManager } from './utils/LayerManager';
+import { inspectPointAtLonLat } from './utils/inspectPoint';
 import { useMapStore } from './stores/mapStore';
-import { getDefaultRescaleForRh, getVsmLayerId, getQIndexForApi, type VsmLayerEntry } from './constants/predictions';
+import { InspectPanel } from './components/InspectPanel';
+import { getDefaultRescaleForRh, getDefaultRescaleAndColormap, getVsmLayerId, getQIndexForApi, type VsmLayerEntry } from './constants/predictions';
 
 const theme = createTheme({
   palette: {
@@ -60,7 +62,12 @@ function App() {
     closePopup,
     addedVsmLayers,
     removeVsmLayerByLayerId,
+    inspectMode,
+    inspectPanel,
+    setInspectPanel,
   } = useMapStore();
+
+  const inspectRequestIdRef = useRef(0);
 
   // Initialize layer manager
   useEffect(() => {
@@ -207,6 +214,7 @@ function App() {
         imageId: image.id,
         tileName: finalTileName,
         datetime: image.datetime,
+        url: imageUrl,
       };
 
       // Add to map
@@ -219,11 +227,12 @@ function App() {
         ? `${finalTileName || 'Unknown'} ${dateStr}`
         : finalTileName || 'Sentinel-2';
       
-      // Store bbox in metadata for locating
+      // Store bbox in metadata for locating / inspecting
       const metadata: any = {
         imageId: image.id,
         tileName: finalTileName,
         datetime: image.datetime,
+        url: imageUrl,
       };
       if (bbox && Array.isArray(bbox) && bbox.length === 4) {
         metadata.bbox = bbox;
@@ -524,7 +533,9 @@ function App() {
         });
       }
 
-      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=0,5490`;
+      const rescale = data.layer_type === 'cr' ? '0.3,1.3' : '0,5490';
+      const colormapParam = data.layer_type === 'cr' ? '&colormap_name=ylgn_r' : '';
+      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=${rescale}${colormapParam}`;
       const layerOpts: any = {
         source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
         opacity: 1,
@@ -536,7 +547,7 @@ function App() {
       const newLayer = new TileLayer(layerOpts);
 
       const layerId = `auxiliary-${data.layer_type}-${data.tile_name}-${Date.now()}`;
-      const layerName = `${data.tile_name} (${data.layer_type.replace('_', ' ')})`;
+      const layerName = data.layer_type === 'cr' ? `Canopy Ratio ${data.tile_name}` : `${data.tile_name} (${data.layer_type.replace('_', ' ')})`;
 
       map.addLayer(newLayer);
 
@@ -669,15 +680,16 @@ function App() {
       globalLayersRef.current.set(layerId, state);
 
       if (mgr) {
-        const defaultRescale = getDefaultRescaleForRh(AUTO_RH_INDEX);
+        const defaultRescaleColormap = getDefaultRescaleAndColormap(entry.rhIndex, entry.qChoice);
         const layerName = `Global (RH${AUTO_RH_INDEX} ${entry.qChoice}, ${AUTO_YEAR})`;
         mgr.addLayer(layerId, layerName, 'prediction', outerGroup as any, {
           tileName: 'Global',
           rhIndex: AUTO_RH_INDEX,
           qIndex: AUTO_Q_INDEX,
           year: AUTO_YEAR,
-          rescaleMin: defaultRescale.min,
-          rescaleMax: defaultRescale.max,
+          rescaleMin: defaultRescaleColormap.min,
+          rescaleMax: defaultRescaleColormap.max,
+          colormap: defaultRescaleColormap.colormap,
           isAutoLoadGroup: true,
         });
         updateLayersList();
@@ -693,8 +705,8 @@ function App() {
           const mosaicData = await mosaicResp.json();
           const s = globalLayersRef.current.get(layerId);
           if (!s || s.cancelled || !mosaicData.success) return;
-          const mosaicRescale = getDefaultRescaleForRh(AUTO_RH_INDEX);
-          const mosaicTileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${mosaicRescale.min},${mosaicRescale.max}&colormap_name=inferno`;
+          const mosaicRescaleColormap = getDefaultRescaleAndColormap(entry.rhIndex, entry.qChoice);
+          const mosaicTileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${mosaicRescaleColormap.min},${mosaicRescaleColormap.max}&colormap_name=${encodeURIComponent(mosaicRescaleColormap.colormap)}`;
           const mosaicLayer = new TileLayer({
             source: new XYZ({ url: mosaicTileUrl, crossOrigin: 'anonymous', maxZoom: 14 }),
             zIndex: 599,
@@ -777,11 +789,12 @@ function App() {
               if (!extent.every((v: number) => isFinite(v) && !isNaN(v))) return;
               if (state.cancelled) return;
 
-              const defaultRescaleTile = getDefaultRescaleForRh(AUTO_RH_INDEX);
+              const defaultRescaleColormapTile = getDefaultRescaleAndColormap(entry.rhIndex, entry.qChoice);
               const globalManaged = useMapStore.getState().layerManager?.getLayer(layerId);
-              const rescaleMin = globalManaged?.metadata?.rescaleMin ?? defaultRescaleTile.min;
-              const rescaleMax = globalManaged?.metadata?.rescaleMax ?? defaultRescaleTile.max;
-              const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rescaleMin},${rescaleMax}&colormap_name=inferno`;
+              const rescaleMin = globalManaged?.metadata?.rescaleMin ?? defaultRescaleColormapTile.min;
+              const rescaleMax = globalManaged?.metadata?.rescaleMax ?? defaultRescaleColormapTile.max;
+              const colormap = globalManaged?.metadata?.colormap ?? defaultRescaleColormapTile.colormap;
+              const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rescaleMin},${rescaleMax}&colormap_name=${encodeURIComponent(colormap)}`;
               const tileOpts: any = {
                 source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18, wrapX: true }),
                 minZoom: MIN_ZOOM - 1,
@@ -843,6 +856,17 @@ function App() {
 
   // --- Drawing tool: "Get Tiles" rectangle draw ---
   const { drawingActive, setDrawingActive, setSelectedTiles } = useMapStore();
+
+  useEffect(() => {
+    if (!map) return;
+    const el = map.getTargetElement();
+    if (!el) return;
+    if (inspectMode && !drawingActive) {
+      el.style.cursor = 'crosshair';
+    } else if (!drawingActive) {
+      el.style.cursor = '';
+    }
+  }, [map, inspectMode, drawingActive]);
   const drawLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
   const labelLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
 
@@ -1277,6 +1301,41 @@ function App() {
     }
 
     const handleClick = (evt: any) => {
+      const { inspectMode: im, drawingActive: drawOn, layerManager: mgr } = useMapStore.getState();
+      if (im && !drawOn) {
+        const [lon, lat] = transform(evt.coordinate, 'EPSG:3857', 'EPSG:4326');
+        const req = ++inspectRequestIdRef.current;
+        useMapStore.getState().setInspectPanel((prev) => {
+          if (prev && prev.layers.length > 0) {
+            return {
+              lon: prev.lon,
+              lat: prev.lat,
+              layers: prev.layers,
+              loading: true,
+              pendingSample: { lon, lat },
+            };
+          }
+          return {
+            lon,
+            lat,
+            layers: prev?.layers ?? [],
+            loading: true,
+            pendingSample: undefined,
+          };
+        });
+        inspectPointAtLonLat(mgr, lon, lat).then((layers) => {
+          if (req !== inspectRequestIdRef.current) return;
+          useMapStore.getState().setInspectPanel({
+            lon,
+            lat,
+            loading: false,
+            layers,
+            pendingSample: undefined,
+          });
+        });
+        return;
+      }
+
       // Clear previous highlight
       highlightLayer.getSource()?.clear();
 
@@ -1358,7 +1417,14 @@ function App() {
         console.debug('Hit detection: fgbLayer or highlightLayer not available');
         return;
       }
-      
+
+      if (useMapStore.getState().inspectMode && !useMapStore.getState().drawingActive) {
+        const el = map.getTargetElement();
+        if (el) el.style.cursor = 'crosshair';
+        lastCursorState = 'crosshair';
+        return;
+      }
+
       lastCheckTime = Date.now();
       pendingCheck = null;
       
@@ -1400,20 +1466,23 @@ function App() {
 
     // Handle pointer leave to clear hover highlight
     const handlePointerLeave = () => {
-      if (highlightLayer) {
-        // Only clear if it's a hover highlight (not a click highlight)
-        // We track this by checking if there's a feature in the highlight layer
-        // and if the mouse is leaving, clear it
+      const im = useMapStore.getState().inspectMode;
+      const dr = useMapStore.getState().drawingActive;
+      if (highlightLayer && !(im && !dr)) {
         const highlightSource = highlightLayer.getSource();
         if (highlightSource) {
-          // Clear hover highlight when mouse leaves map
           highlightSource.clear();
           lastHoveredFeature = null;
         }
       }
       if (map.getTargetElement()) {
-        map.getTargetElement().style.cursor = '';
-        lastCursorState = '';
+        if (im && !dr) {
+          map.getTargetElement().style.cursor = 'crosshair';
+          lastCursorState = 'crosshair';
+        } else {
+          map.getTargetElement().style.cursor = '';
+          lastCursorState = '';
+        }
       }
     };
 
@@ -1743,6 +1812,10 @@ function App() {
           onLoadAuxiliaryLayer={handleLoadAuxiliaryLayer}
           onClose={closePopup}
         />
+
+        {inspectMode && inspectPanel && (
+          <InspectPanel panel={inspectPanel} onClose={() => setInspectPanel(null)} />
+        )}
       </div>
     </ThemeProvider>
   );

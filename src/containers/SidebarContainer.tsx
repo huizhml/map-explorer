@@ -675,7 +675,28 @@ export function SidebarContainer() {
     fgbLayer.changed();
   }, [fgbLayer, enableConditionalRendering, conditionalStyles, fgbStyleOptions, map]);
 
-  const { addVsmLayer, addedVsmLayers, vsmYear, setVsmYear, vsmRhIndex, setVsmRhIndex, vsmQChoice, setVsmQChoice, drawingActive, setDrawingActive, selectedTiles } = useMapStore();
+  const {
+    addVsmLayer,
+    addedVsmLayers,
+    vsmYear,
+    setVsmYear,
+    vsmRhIndex,
+    setVsmRhIndex,
+    vsmQChoice,
+    setVsmQChoice,
+    drawingActive,
+    setDrawingActive,
+    selectedTiles,
+    inspectMode,
+    setInspectMode,
+  } = useMapStore();
+
+  const handleInspectModeChange = (active: boolean) => {
+    if (active) {
+      setDrawingActive(false);
+    }
+    setInspectMode(active);
+  };
 
   const handleAddLayer = () => {
     if (vsmYear !== 2020 && vsmYear !== 2024) return;
@@ -691,8 +712,11 @@ export function SidebarContainer() {
   };
 
   const handleGetTiles = () => {
-    // Toggle drawing mode
-    setDrawingActive(!drawingActive);
+    const next = !drawingActive;
+    if (next) {
+      setInspectMode(false);
+    }
+    setDrawingActive(next);
   };
 
   return (
@@ -708,6 +732,8 @@ export function SidebarContainer() {
       drawingActive={drawingActive}
       onGetTiles={handleGetTiles}
       selectedTiles={selectedTiles}
+      inspectMode={inspectMode}
+      onInspectModeChange={handleInspectModeChange}
     />
   );
 } 

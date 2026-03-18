@@ -8,6 +8,16 @@ import { LayerManager } from '../utils/LayerManager';
 import type { Layer } from '../components/LayerControl';
 import type { VsmLayerEntry, VsmQChoice } from '../constants/predictions';
 import { getVsmLayerId } from '../constants/predictions';
+import type { InspectLayerRow } from '../utils/inspectPoint';
+
+export type InspectPanelState = {
+  lon: number;
+  lat: number;
+  loading: boolean;
+  layers: InspectLayerRow[];
+  /** New click in flight; displayed coords/values stay on last sample until resolved */
+  pendingSample?: { lon: number; lat: number };
+};
 
 // Types
 export interface FgbInfo {
@@ -127,6 +137,12 @@ interface MapStore {
   selectedTiles: string[];
   setSelectedTiles: (tiles: string[]) => void;
 
+  /** When true, map clicks sample rasters and show the inspect panel */
+  inspectMode: boolean;
+  setInspectMode: (active: boolean) => void;
+  inspectPanel: InspectPanelState | null;
+  setInspectPanel: (panel: InspectPanelState | null | ((prev: InspectPanelState | null) => InspectPanelState | null)) => void;
+
   // Popup state
   popupProperties: Record<string, any> | null;
   setPopupProperties: (properties: Record<string, any> | null) => void;
@@ -243,6 +259,18 @@ export const useMapStore = create<MapStore>((set, get) => ({
   setDrawingActive: (active) => set({ drawingActive: active }),
   selectedTiles: [],
   setSelectedTiles: (tiles) => set({ selectedTiles: tiles }),
+
+  inspectMode: false,
+  setInspectMode: (active) =>
+    set({
+      inspectMode: active,
+      inspectPanel: null,
+    }),
+  inspectPanel: null,
+  setInspectPanel: (panel) =>
+    set((state) => ({
+      inspectPanel: typeof panel === 'function' ? panel(state.inspectPanel) : panel,
+    })),
 
   // Popup state
   popupProperties: null,

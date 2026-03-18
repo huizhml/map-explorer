@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -10,8 +10,9 @@ import {
   ListItemText,
   Checkbox,
   FormControlLabel,
+  IconButton,
 } from '@mui/material';
-import { Layers as LayersIcon, CropFree as CropFreeIcon } from '@mui/icons-material';
+import { Layers as LayersIcon, CropFree as CropFreeIcon, Close as CloseIcon, Search as SearchIcon } from '@mui/icons-material';
 import type { VsmQChoice } from '../constants/predictions';
 
 export interface VsmLayerEntryDisplay {
@@ -34,6 +35,9 @@ interface SidebarProps {
   drawingActive: boolean;
   onGetTiles: () => void;
   selectedTiles: string[];
+  /** Inspect mode: map clicks sample rasters; bottom-right panel shows values */
+  inspectMode: boolean;
+  onInspectModeChange: (active: boolean) => void;
 }
 
 // Common palettes for visualization
@@ -74,7 +78,18 @@ export function Sidebar({
   drawingActive,
   onGetTiles,
   selectedTiles,
+  inspectMode,
+  onInspectModeChange,
 }: SidebarProps) {
+  const [showAddedInfo, setShowAddedInfo] = useState(true);
+
+  useEffect(() => {
+    if (addedVsmLayers.length === 0) return;
+    setShowAddedInfo(true);
+    const t = setTimeout(() => setShowAddedInfo(false), 10000);
+    return () => clearTimeout(t);
+  }, [addedVsmLayers]);
+
   return (
     <SidebarContainer>
       <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
@@ -154,17 +169,55 @@ export function Sidebar({
                 />
               </Box>
             </Box>
+            <Box>
+              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 0.5 }}>
+                Skewness
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
+                <FormControlLabel
+                  control={<Checkbox size="small" checked={vsmQChoice === 'skewness'} onChange={() => onVsmQChoiceChange('skewness')} />}
+                  label={
+                    <Typography variant="caption" component="span">
+                      (Q<sub>0.95</sub> − Q<sub>0.50</sub>) − (Q<sub>0.50</sub> − Q<sub>0.05</sub>)
+                    </Typography>
+                  }
+                />
+              </Box>
+            </Box>
           </Box>
           <Box sx={{ mt: 1 }}>
             <Button variant="outlined" color="primary" onClick={onAddLayer} fullWidth>
               Add layer
             </Button>
           </Box>
-          {addedVsmLayers.length > 0 && (
-            <Typography variant="caption" sx={{ mt: 1, display: 'block', color: 'text.secondary' }}>
-              Added: {addedVsmLayers.map((e) => `${e.year} (RH${e.rhIndex}, ${e.qChoice})`).join('; ')}
-            </Typography>
+          {addedVsmLayers.length > 0 && showAddedInfo && (
+            <Box sx={{ mt: 1, display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
+              <Typography variant="caption" sx={{ flex: 1, color: 'text.secondary' }}>
+                Added: {addedVsmLayers.map((e) => `${e.year} (RH${e.rhIndex}, ${e.qChoice})`).join('; ')}
+              </Typography>
+              <IconButton size="small" onClick={() => setShowAddedInfo(false)} aria-label="Dismiss" sx={{ mt: -0.5, mr: -0.5 }}>
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            </Box>
           )}
+        </Box>
+
+        {/* Inspect Section */}
+        <Box sx={{ mt: 3 }}>
+          <Button
+            variant={inspectMode ? 'contained' : 'outlined'}
+            color="secondary"
+            onClick={() => onInspectModeChange(!inspectMode)}
+            fullWidth
+            startIcon={<SearchIcon />}
+          >
+            {inspectMode ? 'Inspect (on)' : 'Inspect'}
+          </Button>
+          <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: 'text.secondary' }}>
+            {inspectMode
+              ? 'Click anywhere on the map — values appear in the panel bottom-right'
+              : 'Turn on, then click the map to sample visible raster layers at that point'}
+          </Typography>
         </Box>
 
         {/* Drawing Tools Section */}
