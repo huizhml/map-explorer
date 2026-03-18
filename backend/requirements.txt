@@ -9,3 +9,5 @@ shapely
 requests
 pyproj
 pydantic
+mgrs
+rasterio

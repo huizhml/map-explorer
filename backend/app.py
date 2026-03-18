@@ -3,10 +3,10 @@ from titiler.core.factory import TilerFactory
 from titiler.mosaic.factory import MosaicTilerFactory
 from titiler.extensions import cogViewerExtension  # adds /viewer to the COG tiler
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
+
 import geopandas as gpd
 import pandas as pd
 from pathlib import Path
@@ -20,6 +20,16 @@ from pyproj import Transformer
 import re
 import time
 import os
+import rasterio
+from rasterio.warp import transform as rw_transform
+from fastapi import HTTPException, Request
+from fastapi.responses import Response
+from rio_tiler.errors import TileOutsideBounds
+import io
+from PIL import Image
+import subprocess
+import asyncio
+import mgrs
 
 origins = [
     "http://localhost:9020",
@@ -67,6 +77,7 @@ PREDICTIONS_REMOTE_PATH_TEMPLATE = os.environ.get('PREDICTIONS_REMOTE_PATH_TEMPL
 PREDICTIONS_MOSAIC_LOCAL_PATH = os.environ.get('PREDICTIONS_MOSAIC_LOCAL_PATH', '')
 DISTANCE_MAPS_LOCAL_BASE_PATH = os.environ.get('DISTANCE_MAPS_LOCAL_BASE_PATH', '')
 S2_GRID_LOCAL_PATH = os.environ.get('S2_GRID_LOCAL_PATH', '')
+CR_LOCAL_BASE_PATH = os.environ.get('CR_LOCAL_BASE_PATH', '')
 print("=== Prediction env vars ===")
 print(f"  PREDICTIONS_LOCAL_BASE_PATH  = {PREDICTIONS_LOCAL_BASE_PATH}")
 print(f"  PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH = {PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH}")
@@ -76,6 +87,7 @@ print(f"  PREDICTIONS_BASE_URL         = {PREDICTIONS_BASE_URL}")
 print(f"  PREDICTIONS_REMOTE_PATH_TEMPLATE = {PREDICTIONS_REMOTE_PATH_TEMPLATE}")
 print(f"  DISTANCE_MAPS_LOCAL_BASE_PATH = {DISTANCE_MAPS_LOCAL_BASE_PATH}")
 print(f"  S2_GRID_LOCAL_PATH           = {S2_GRID_LOCAL_PATH}")
+print(f"  CR_LOCAL_BASE_PATH           = {CR_LOCAL_BASE_PATH}")
 print("===========================")
 
 # COG tiler with a simple HTML viewer at /cog/viewer
@@ -86,13 +98,56 @@ app.include_router(cog.router, prefix="/cog", tags=["cog"])
 mosaic = MosaicTilerFactory()
 app.include_router(mosaic.router, tags=["mosaicjson"])
 
-# Custom exception handler for TileOutsideBounds errors
-# Returns a transparent 256x256 PNG instead of a 500 error
-from fastapi import HTTPException, Request
-from fastapi.responses import Response
-from rio_tiler.errors import TileOutsideBounds
-import io
-from PIL import Image
+
+async def compute_cr(tile_id: str, year: int) -> Path:
+    path_a = Path(f"{PREDICTIONS_LOCAL_BASE_PATH}/{tile_id}/RH98_Q1.tif")
+    path_b = Path(f"{PREDICTIONS_LOCAL_BASE_PATH}/{tile_id}/RH25_Q1.tif")
+    path_cr = Path(f"{CR_LOCAL_BASE_PATH}/{year}/tiles/geotiff/{tile_id}.tif")
+    path_cr_cog = Path(f"{CR_LOCAL_BASE_PATH}/{year}/tiles/cog/{tile_id}.tif")
+    
+    if not path_a.exists() or not path_b.exists():
+        raise HTTPException(status_code=404, detail=f"Source tiles not found for {tile_id}")
+
+    path_cr.parent.mkdir(parents=True, exist_ok=True)
+    path_cr_cog.parent.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: gdal_calc
+    calc_cmd = [
+        "gdal_calc.py",
+        "-A", str(path_a),
+        "-B", str(path_b),
+        "--outfile", str(path_cr),
+        "--calc=numpy.where((A==32767)|(B==32767)|(A==0), -9999, (A-B)/A.astype(float))",
+        "--NoDataValue=-9999",
+        "--type", "Float32",
+        "--overwrite"
+    ]
+    
+    # Step 2: gdal_translate to COG
+    translate_cmd = [
+        "gdal_translate",
+        str(path_cr),
+        str(path_cr_cog),
+        "-of", "COG",
+        "-co", "COMPRESS=DEFLATE",
+        "-co", "OVERVIEW_RESAMPLING=AVERAGE"
+    ]
+    
+    loop = asyncio.get_event_loop()
+    
+    for cmd in [calc_cmd, translate_cmd]:
+        result = await loop.run_in_executor(
+            None,
+            lambda c=cmd: subprocess.run(c, capture_output=True, text=True)
+        )
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=result.stderr)
+    
+    # Cleanup tmp
+    path_cr.unlink(missing_ok=True)
+    
+    return path_cr_cog
+
 
 @app.exception_handler(TileOutsideBounds)
 async def tile_outside_bounds_handler(request: Request, exc: TileOutsideBounds):
@@ -1444,6 +1499,167 @@ async def predictions_load_options():
     """Handle CORS preflight for predictions/load endpoint"""
     return {"message": "OK"}
 
+
+def _mgrs_tile_from_latlon(lat: float, lon: float) -> Optional[str]:
+    """Sentinel-2–style 5-char tile id (e.g. 36VVH) from WGS84."""
+    try:
+
+        g = mgrs.MGRS().toMGRS(lat, lon).replace(" ", "").upper()
+        m = re.match(r"^(\d{1,2})([CDEFGHJKLMNPQRSTUVWX])([ABCDEFGHJKLMNPQRSTUVWXYZ]{2})", g)
+        if m:
+            z = int(m.group(1))
+            return f"{z:02d}{m.group(2)}{m.group(3)}"
+        m = re.match(r"^(\d{3})([CDEFGHJKLMNPQRSTUVWX])([ABCDEFGHJKLMNPQRSTUVWXYZ]{2})", g)
+        if m:
+            return f"{m.group(1)}{m.group(2)}{m.group(3)}"
+    except Exception as e:
+        print(f"[vertical-profile] MGRS error: {e}")
+    return None
+
+
+def _sample_rh_geotiff(path_or_url: str, lon: float, lat: float) -> Optional[float]:
+
+    try:
+        with rasterio.open(path_or_url) as src:
+            xs, ys = rw_transform("EPSG:4326", src.crs, [float(lon)], [float(lat)])
+            try:
+                vals = next(src.sample([(xs[0], ys[0])]))
+            except (StopIteration, ValueError):
+                return None
+            v = vals[0] if len(vals) else None
+            if v is None:
+                return None
+            if src.nodata is not None and v == src.nodata:
+                return None
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                return None
+            if fv in (32767.0, 32768.0, -9999.0):
+                return None
+            return fv
+    except Exception as ex:
+        print(f"[vertical-profile] sample error for {path_or_url[:80]}…: {ex}")
+        return None
+
+
+# Parallel RH sampling (101 COGs); tune via env if disk/network saturates
+VERTICAL_PROFILE_WORKERS = max(4, min(48, int(os.environ.get("VERTICAL_PROFILE_WORKERS", "28"))))
+
+
+class VerticalProfileRequest(BaseModel):
+    lon: float
+    lat: float
+    year: int = 2020
+    source: str = "blended"
+    q_index: int = 1
+    tile_name: Optional[str] = None
+
+
+@app.post("/predictions/vertical-profile")
+async def predictions_vertical_profile(request: VerticalProfileRequest):
+    """Sample RH0..RH100 (Q1 median) at lon/lat from prediction tile COGs.
+
+    Tile is derived via MGRS unless tile_name is provided. Uses the same paths as /predictions/load.
+    """
+    tile = (request.tile_name or "").strip().upper() or None
+    if not tile:
+        tile = _mgrs_tile_from_latlon(request.lat, request.lon)
+    if not tile:
+        return {
+            "success": False,
+            "error": "Could not determine MGRS tile (install `mgrs` or pass tile_name).",
+        }
+
+    zone = tile[:3].lower() if len(tile) >= 3 else tile.lower()
+    fmt = dict(zone=zone, year=request.year, tile=tile, q=request.q_index)
+
+    if request.year == 2020:
+        if request.source == "original":
+            if not PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH:
+                return {"success": False, "error": "PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH not set.", "tile_name": tile}
+            local_base = PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH
+        else:
+            if not PREDICTIONS_LOCAL_BASE_PATH:
+                return {"success": False, "error": "PREDICTIONS_LOCAL_BASE_PATH not set.", "tile_name": tile}
+            local_base = PREDICTIONS_LOCAL_BASE_PATH
+        local_tpl = PREDICTIONS_LOCAL_PATH_TEMPLATE
+    else:
+        if not PREDICTIONS_BASE_URL:
+            return {"success": False, "error": "PREDICTIONS_BASE_URL not set.", "tile_name": tile}
+        local_base = None
+        local_tpl = None
+
+    def path_for_rh(rh: int) -> Optional[str]:
+        fmt_rh = {**fmt, "rh": rh}
+        if request.year == 2020:
+            try:
+                rel = local_tpl.format(**fmt_rh)
+            except Exception:
+                return None
+            return os.path.join(local_base, rel)
+        try:
+            rel = PREDICTIONS_REMOTE_PATH_TEMPLATE.format(**fmt_rh)
+        except Exception:
+            return None
+        return PREDICTIONS_BASE_URL.rstrip("/") + "/" + rel.lstrip("/")
+
+    def compute_profile():
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        lon, lat = request.lon, request.lat
+        y2020 = request.year == 2020
+
+        def work(rh: int):
+            p = path_for_rh(rh)
+            if not p:
+                return rh, None, True
+            if y2020 and not os.path.isfile(p):
+                return rh, None, True
+            val = _sample_rh_geotiff(p, lon, lat)
+            return rh, val, False
+
+        rh_results: Dict[int, tuple] = {}
+        with ThreadPoolExecutor(max_workers=VERTICAL_PROFILE_WORKERS) as pool:
+            futures = [pool.submit(work, rh) for rh in range(0, 101)]
+            for fut in as_completed(futures):
+                rh, val, file_missing = fut.result()
+                rh_results[rh] = (val, file_missing)
+
+        profile = []
+        missing_files = 0
+        for rh in range(0, 101):
+            val, file_missing = rh_results[rh]
+            if file_missing:
+                profile.append({"rh": rh, "value": None, "missing": True})
+                missing_files += 1
+            else:
+                profile.append({"rh": rh, "value": val, "missing": False})
+        return profile, missing_files
+
+    try:
+        profile, missing_files = await asyncio.to_thread(compute_profile)
+    except Exception as e:
+        return {"success": False, "error": str(e), "tile_name": tile}
+
+    return {
+        "success": True,
+        "tile_name": tile,
+        "year": request.year,
+        "q_index": request.q_index,
+        "source": request.source,
+        "lon": request.lon,
+        "lat": request.lat,
+        "profile": profile,
+        "missing_file_count": missing_files,
+    }
+
+
+@app.options("/predictions/vertical-profile")
+async def predictions_vertical_profile_options():
+    return {"message": "OK"}
+
+
 # -------------------- Auxiliary data --------------------
 class AuxiliaryTileRequest(BaseModel):
     tile_name: str
@@ -1473,6 +1689,54 @@ async def load_distance_map(request: AuxiliaryTileRequest):
 @app.options("/auxiliary/distance-map")
 async def auxiliary_distance_map_options():
     return {"message": "OK"}
+
+
+class AuxiliaryCRRequest(BaseModel):
+    tile_name: str
+    year: int
+
+
+@app.post("/auxiliary/cr")
+async def load_or_compute_cr(request: AuxiliaryCRRequest):
+    """Load or generate canopy ratio (CR) COG for a tile.
+
+    Looks for {CR_LOCAL_BASE_PATH}/{year}/tiles/cog/{tile_id}.tif or .cog.tif.
+    If not found, calls compute_cr() to generate the file, then returns its path.
+    """
+    if not CR_LOCAL_BASE_PATH:
+        return {"success": False, "error": "CR_LOCAL_BASE_PATH env var is not set."}
+
+    tile_id = request.tile_name
+    year = request.year
+    path_cr = Path(CR_LOCAL_BASE_PATH) / str(year) / "tiles" / "cog" / f"{tile_id}.tif" 
+
+    if path_cr.is_file():
+        return {
+            "success": True,
+            "url": str(path_cr),
+            "tile_name": tile_id,
+            "layer_type": "cr",
+        }
+
+    try:
+        path_out = await compute_cr(tile_id, year)
+        return {
+            "success": True,
+            "url": str(path_out),
+            "tile_name": tile_id,
+            "layer_type": "cr",
+        }
+    except HTTPException as exc:
+        err = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        return {"success": False, "error": err or str(exc)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.options("/auxiliary/cr")
+async def auxiliary_cr_options():
+    return {"message": "OK"}
+
 
 @app.get("/predictions/info")
 async def get_predictions_cog_info(tile_name: str, rh_index: int, q_index: Union[int, str]):
@@ -1537,7 +1801,6 @@ async def proxy_sentinel2_geotiff(url: str):
         response.raise_for_status()
         
         # Return the data with appropriate headers
-        from fastapi.responses import Response
         return Response(
             content=response.content,
             media_type=response.headers.get('content-type', 'image/tiff'),

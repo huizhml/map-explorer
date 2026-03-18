@@ -21,6 +21,7 @@ import TileLayer from 'ol/layer/Tile';
 import { transformExtent, transform } from 'ol/proj';
 import { LayerManager } from './utils/LayerManager';
 import { inspectPointAtLonLat } from './utils/inspectPoint';
+import { fetchVerticalProfile } from './utils/verticalProfile';
 import { useMapStore } from './stores/mapStore';
 import { InspectPanel } from './components/InspectPanel';
 import { getDefaultRescaleForRh, getDefaultRescaleAndColormap, getVsmLayerId, getQIndexForApi, type VsmLayerEntry } from './constants/predictions';
@@ -1305,21 +1306,97 @@ function App() {
       if (im && !drawOn) {
         const [lon, lat] = transform(evt.coordinate, 'EPSG:3857', 'EPSG:4326');
         const req = ++inspectRequestIdRef.current;
+        const { inspectKind, vsmYear } = useMapStore.getState();
+
+        if (inspectKind === 'vertical_profile') {
+          useMapStore.getState().setInspectPanel((prev) => {
+            const stale =
+              prev &&
+              prev.kind === 'vertical_profile' &&
+              prev.verticalProfile &&
+              prev.verticalProfile.length > 0;
+            if (stale) {
+              return {
+                lon: prev.lon,
+                lat: prev.lat,
+                layers: [],
+                loading: true,
+                kind: 'vertical_profile' as const,
+                verticalProfile: prev.verticalProfile,
+                profileMeta: prev.profileMeta,
+                pendingSample: { lon, lat },
+                inspectError: null,
+              };
+            }
+            return {
+              lon,
+              lat,
+              layers: [],
+              loading: true,
+              kind: 'vertical_profile' as const,
+              verticalProfile: undefined,
+              profileMeta: undefined,
+              pendingSample: undefined,
+              inspectError: null,
+            };
+          });
+          fetchVerticalProfile(lon, lat, vsmYear).then((data) => {
+            if (req !== inspectRequestIdRef.current) return;
+            if (!data.success || !data.profile) {
+              useMapStore.getState().setInspectPanel((prev) => ({
+                lon,
+                lat,
+                layers: [],
+                loading: false,
+                kind: 'vertical_profile' as const,
+                verticalProfile: prev?.verticalProfile,
+                profileMeta: prev?.profileMeta,
+                pendingSample: undefined,
+                inspectError: data.error || 'Vertical profile failed',
+              }));
+              return;
+            }
+            useMapStore.getState().setInspectPanel({
+              lon,
+              lat,
+              layers: [],
+              loading: false,
+              kind: 'vertical_profile',
+              verticalProfile: data.profile,
+              profileMeta: {
+                tileName: data.tile_name || '',
+                year: data.year ?? vsmYear,
+                qIndex: data.q_index ?? 1,
+                source: data.source,
+              },
+              pendingSample: undefined,
+              inspectError: null,
+            });
+          });
+          return;
+        }
+
         useMapStore.getState().setInspectPanel((prev) => {
-          if (prev && prev.layers.length > 0) {
+          const layerStale =
+            prev &&
+            prev.layers.length > 0 &&
+            (prev.kind === 'layers' || prev.kind === undefined);
+          if (layerStale) {
             return {
               lon: prev.lon,
               lat: prev.lat,
               layers: prev.layers,
               loading: true,
+              kind: 'layers' as const,
               pendingSample: { lon, lat },
             };
           }
           return {
             lon,
             lat,
-            layers: prev?.layers ?? [],
+            layers: prev?.kind === 'layers' ? (prev?.layers ?? []) : [],
             loading: true,
+            kind: 'layers' as const,
             pendingSample: undefined,
           };
         });
@@ -1330,6 +1407,7 @@ function App() {
             lat,
             loading: false,
             layers,
+            kind: 'layers',
             pendingSample: undefined,
           });
         });

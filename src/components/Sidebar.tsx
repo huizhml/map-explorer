@@ -12,7 +12,13 @@ import {
   FormControlLabel,
   IconButton,
 } from '@mui/material';
-import { Layers as LayersIcon, CropFree as CropFreeIcon, Close as CloseIcon, Search as SearchIcon } from '@mui/icons-material';
+import {
+  Layers as LayersIcon,
+  CropFree as CropFreeIcon,
+  Close as CloseIcon,
+  Search as SearchIcon,
+  ShowChart as ShowChartIcon,
+} from '@mui/icons-material';
 import type { VsmQChoice } from '../constants/predictions';
 
 export interface VsmLayerEntryDisplay {
@@ -37,7 +43,9 @@ interface SidebarProps {
   selectedTiles: string[];
   /** Inspect mode: map clicks sample rasters; bottom-right panel shows values */
   inspectMode: boolean;
+  inspectKind: 'layers' | 'vertical_profile';
   onInspectModeChange: (active: boolean) => void;
+  onVerticalProfileClick: () => void;
 }
 
 // Common palettes for visualization
@@ -79,7 +87,9 @@ export function Sidebar({
   onGetTiles,
   selectedTiles,
   inspectMode,
+  inspectKind,
   onInspectModeChange,
+  onVerticalProfileClick,
 }: SidebarProps) {
   const [showAddedInfo, setShowAddedInfo] = useState(true);
 
@@ -205,18 +215,35 @@ export function Sidebar({
         {/* Inspect Section */}
         <Box sx={{ mt: 3 }}>
           <Button
-            variant={inspectMode ? 'contained' : 'outlined'}
+            variant={inspectMode && inspectKind === 'layers' ? 'contained' : 'outlined'}
             color="secondary"
-            onClick={() => onInspectModeChange(!inspectMode)}
+            onClick={() => onInspectModeChange(!inspectMode || inspectKind !== 'layers')}
             fullWidth
             startIcon={<SearchIcon />}
           >
-            {inspectMode ? 'Inspect (on)' : 'Inspect'}
+            {inspectMode && inspectKind === 'layers' ? 'Inspect (on)' : 'Inspect'}
           </Button>
           <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: 'text.secondary' }}>
-            {inspectMode
-              ? 'Click anywhere on the map — values appear in the panel bottom-right'
-              : 'Turn on, then click the map to sample visible raster layers at that point'}
+            {inspectMode && inspectKind === 'layers'
+              ? 'Click the map — visible raster values in the panel bottom-right'
+              : 'Sample visible COG layers at the clicked point'}
+          </Typography>
+          <Button
+            variant={inspectMode && inspectKind === 'vertical_profile' ? 'contained' : 'outlined'}
+            color="secondary"
+            onClick={onVerticalProfileClick}
+            fullWidth
+            startIcon={<ShowChartIcon />}
+            sx={{ mt: 1.5 }}
+          >
+            {inspectMode && inspectKind === 'vertical_profile'
+              ? 'Inspect vertical profile (on)'
+              : 'Inspect vertical profile'}
+          </Button>
+          <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: 'text.secondary' }}>
+            {inspectMode && inspectKind === 'vertical_profile'
+              ? `Click the map — original RH0–RH100 (Q1) for year ${vsmYear}`
+              : 'Original prediction COGs (Q1); year from above; click again to turn off'}
           </Typography>
         </Box>
 

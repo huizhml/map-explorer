@@ -10,6 +10,12 @@ import type { VsmLayerEntry, VsmQChoice } from '../constants/predictions';
 import { getVsmLayerId } from '../constants/predictions';
 import type { InspectLayerRow } from '../utils/inspectPoint';
 
+export type VerticalProfilePoint = {
+  rh: number;
+  value: number | null;
+  missing?: boolean;
+};
+
 export type InspectPanelState = {
   lon: number;
   lat: number;
@@ -17,6 +23,10 @@ export type InspectPanelState = {
   layers: InspectLayerRow[];
   /** New click in flight; displayed coords/values stay on last sample until resolved */
   pendingSample?: { lon: number; lat: number };
+  kind: 'layers' | 'vertical_profile';
+  verticalProfile?: VerticalProfilePoint[];
+  profileMeta?: { tileName: string; year: number; qIndex: number; source?: string };
+  inspectError?: string | null;
 };
 
 // Types
@@ -137,9 +147,11 @@ interface MapStore {
   selectedTiles: string[];
   setSelectedTiles: (tiles: string[]) => void;
 
-  /** When true, map clicks sample rasters and show the inspect panel */
+  /** When true, map clicks open the inspect panel (layer sample or vertical RH profile) */
   inspectMode: boolean;
   setInspectMode: (active: boolean) => void;
+  inspectKind: 'layers' | 'vertical_profile';
+  setInspectKind: (k: 'layers' | 'vertical_profile') => void;
   inspectPanel: InspectPanelState | null;
   setInspectPanel: (panel: InspectPanelState | null | ((prev: InspectPanelState | null) => InspectPanelState | null)) => void;
 
@@ -262,10 +274,13 @@ export const useMapStore = create<MapStore>((set, get) => ({
 
   inspectMode: false,
   setInspectMode: (active) =>
-    set({
+    set((s) => ({
       inspectMode: active,
       inspectPanel: null,
-    }),
+      inspectKind: active ? s.inspectKind : 'layers',
+    })),
+  inspectKind: 'layers' as 'layers' | 'vertical_profile',
+  setInspectKind: (k) => set({ inspectKind: k }),
   inspectPanel: null,
   setInspectPanel: (panel) =>
     set((state) => ({

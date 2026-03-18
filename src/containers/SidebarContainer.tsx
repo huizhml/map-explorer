@@ -689,13 +689,26 @@ export function SidebarContainer() {
     selectedTiles,
     inspectMode,
     setInspectMode,
+    inspectKind,
+    setInspectKind,
   } = useMapStore();
 
   const handleInspectModeChange = (active: boolean) => {
     if (active) {
       setDrawingActive(false);
+      setInspectKind('layers');
     }
     setInspectMode(active);
+  };
+
+  const handleVerticalProfileClick = () => {
+    if (inspectMode && inspectKind === 'vertical_profile') {
+      setInspectMode(false);
+      return;
+    }
+    setDrawingActive(false);
+    setInspectKind('vertical_profile');
+    setInspectMode(true);
   };
 
   const handleAddLayer = () => {
@@ -733,7 +746,9 @@ export function SidebarContainer() {
       onGetTiles={handleGetTiles}
       selectedTiles={selectedTiles}
       inspectMode={inspectMode}
+      inspectKind={inspectKind}
       onInspectModeChange={handleInspectModeChange}
+      onVerticalProfileClick={handleVerticalProfileClick}
     />
   );
 } 
