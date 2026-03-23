@@ -7,6 +7,7 @@ export type VerticalProfileResponse = {
   lon?: number;
   lat?: number;
   profile?: Array<{ rh: number; value: number | null; missing?: boolean }>;
+  vertical_profile_curve?: Array<{ z: number; value: number }>;
   source?: string;
 };
 

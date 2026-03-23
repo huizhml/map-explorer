@@ -25,6 +25,7 @@ export type InspectPanelState = {
   pendingSample?: { lon: number; lat: number };
   kind: 'layers' | 'vertical_profile';
   verticalProfile?: VerticalProfilePoint[];
+  verticalProfileCurve?: Array<{ z: number; value: number }>;
   profileMeta?: { tileName: string; year: number; qIndex: number; source?: string };
   inspectError?: string | null;
 };

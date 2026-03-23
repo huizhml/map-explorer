@@ -1,13 +1,14 @@
 /** Default rescale max by RH index for prediction visualization. Fallback 500. */
 
-/** Single quantiles: 5%, median, 95%. Ranges: 95%-5%, 95%-50%, 50%-5%. */
+/** Single quantiles: 5%, median, 95%. Ranges: 95%-5%, 95%-50%, 50%-5%. Skewness. */
 export type VsmQChoice =
   | '5%'
   | 'median'
   | '95%'
   | '95%-5%'
   | '95%-50%'
-  | '50%-5%';
+  | '50%-5%'
+  | 'skewness';
 
 export type VsmLayerEntry = {
   year: 2020 | 2024;
@@ -30,6 +31,8 @@ function getQLabelForId(qChoice: VsmQChoice): string {
       return '0-Q1';
     case '50%-5%':
       return '1-Q2';
+    case 'skewness':
+      return 'skewness';
     default:
       return String(qChoice);
   }
@@ -55,6 +58,8 @@ export function getQIndexForApi(qChoice: VsmQChoice): number | string {
       return '0-Q1';
     case '50%-5%':
       return '1-Q2';
+    case 'skewness':
+      return 'skewness';
     default:
       return 1;
   }
@@ -71,4 +76,16 @@ export function getDefaultRescaleForRh(rhIndex: number): { min: number; max: num
     min: 0,
     max: DEFAULT_RESCALE_MAX_BY_RH[rhIndex] ?? FALLBACK_RESCALE_MAX,
   };
+}
+
+/** Rescale and colormap for visualization. Skewness (e.g. RH98) uses -40..180 and RdBu. */
+export function getDefaultRescaleAndColormap(
+  rhIndex: number,
+  qChoice: VsmQChoice
+): { min: number; max: number; colormap: string } {
+  if (qChoice === 'skewness' && rhIndex === 98) {
+    return { min: -40, max: 180, colormap: 'RdBu' };
+  }
+  const rescale = getDefaultRescaleForRh(rhIndex);
+  return { ...rescale, colormap: 'inferno' };
 }

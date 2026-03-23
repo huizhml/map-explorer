@@ -31,6 +31,8 @@ import subprocess
 import asyncio
 import mgrs
 
+from utils import compute_entropy_dask, create_vrt, vertical_profile
+
 origins = [
     "http://localhost:9020",
     "http://127.0.0.1:9020",
@@ -78,6 +80,8 @@ PREDICTIONS_MOSAIC_LOCAL_PATH = os.environ.get('PREDICTIONS_MOSAIC_LOCAL_PATH', 
 DISTANCE_MAPS_LOCAL_BASE_PATH = os.environ.get('DISTANCE_MAPS_LOCAL_BASE_PATH', '')
 S2_GRID_LOCAL_PATH = os.environ.get('S2_GRID_LOCAL_PATH', '')
 CR_LOCAL_BASE_PATH = os.environ.get('CR_LOCAL_BASE_PATH', '')
+PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE = os.environ.get('PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE', '{tile}_Q{q}.vrt')
+ENTROPY_LOCAL_BASE_PATH = os.environ.get('ENTROPY_LOCAL_BASE_PATH', '')
 print("=== Prediction env vars ===")
 print(f"  PREDICTIONS_LOCAL_BASE_PATH  = {PREDICTIONS_LOCAL_BASE_PATH}")
 print(f"  PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH = {PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH}")
@@ -88,6 +92,8 @@ print(f"  PREDICTIONS_REMOTE_PATH_TEMPLATE = {PREDICTIONS_REMOTE_PATH_TEMPLATE}"
 print(f"  DISTANCE_MAPS_LOCAL_BASE_PATH = {DISTANCE_MAPS_LOCAL_BASE_PATH}")
 print(f"  S2_GRID_LOCAL_PATH           = {S2_GRID_LOCAL_PATH}")
 print(f"  CR_LOCAL_BASE_PATH           = {CR_LOCAL_BASE_PATH}")
+print(f"  PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE = {PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE}")
+print(f"  ENTROPY_LOCAL_BASE_PATH = {ENTROPY_LOCAL_BASE_PATH}")
 print("===========================")
 
 # COG tiler with a simple HTML viewer at /cog/viewer
@@ -148,6 +154,37 @@ async def compute_cr(tile_id: str, year: int) -> Path:
     
     return path_cr_cog
 
+
+async def compute_entropy(tile_id: str, year: int):
+    path_entropy = Path(f"{ENTROPY_LOCAL_BASE_PATH}/{year}/tiles/geotiff/{tile_id}_Q1.tif")
+    path_entropy_cog = Path(f"{ENTROPY_LOCAL_BASE_PATH}/{year}/tiles/cog/{tile_id}_Q1.tif")
+    if path_entropy_cog.exists():
+        return path_entropy_cog
+    input_vrt_path = Path(f"{PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE.format(tile=tile_id, q=1)}")
+    if not input_vrt_path.exists():
+        tile_dir = Path(f"{PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH}/{tile_id}") # TODO: change to blended version when blending is done for all RH metrics
+        create_vrt(tile_dir, input_vrt_path)
+    
+    compute_entropy_dask(input_vrt_path, path_entropy, year)
+    # translate to cog
+    translate_cmd = [
+        "gdal_translate",
+        str(path_entropy),
+        str(path_entropy_cog),
+        "-of", "COG",
+        "-co", "COMPRESS=DEFLATE",
+        "-co", "OVERVIEW_RESAMPLING=AVERAGE"
+    ]
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: subprocess.run(translate_cmd, capture_output=True, text=True)
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stderr)
+
+    path_entropy.unlink(missing_ok=True)
+    return path_entropy_cog
 
 @app.exception_handler(TileOutsideBounds)
 async def tile_outside_bounds_handler(request: Request, exc: TileOutsideBounds):
@@ -306,61 +343,6 @@ class Sentinel2QueryRequest(BaseModel):
     extent: Optional[List[float]] = None  # [minX, minY, maxX, maxY] in EPSG:3857 (optional)
     year: int
     mgrs_tile: str
-
-@app.post("/geojson/proxy")
-async def proxy_geojson(request: GeoJSONProxyRequest):
-    """Proxy GeoJSON or PMTiles data to bypass CORS restrictions"""
-    try:
-        # Validate URL
-        parsed_url = urlparse(request.url)
-        if not parsed_url.scheme or not parsed_url.netloc:
-            return {"error": "Invalid URL format"}
-        
-        # Check if it's a PMTiles file
-        is_pmtiles = request.url.lower().endswith('.pmtiles') or 'pmtiles' in request.url.lower()
-        
-        # Fetch data server-side
-        response = requests.get(request.url, timeout=30, stream=True)
-        response.raise_for_status()
-        
-        # If PMTiles, return as binary stream
-        if is_pmtiles:
-            # Read the binary content
-            content = response.content
-            return Response(
-                content=content,
-                media_type='application/x-protobuf',
-                headers={
-                    'Access-Control-Allow-Origin': '*',
-                    'Content-Type': 'application/x-protobuf',
-                    'Content-Length': str(len(content)),
-                    'Cache-Control': 'public, max-age=3600',
-                }
-            )
-        
-        # Otherwise, treat as GeoJSON
-        geojson_data = response.json()
-        
-        # Validate GeoJSON structure
-        if not isinstance(geojson_data, dict) or 'type' not in geojson_data:
-            return {"error": "Invalid GeoJSON format"}
-        
-        return geojson_data
-        
-    except requests.exceptions.RequestException as e:
-        return {"error": f"Failed to fetch URL: {str(e)}"}
-    except json.JSONDecodeError as e:
-        # If JSON decode fails and URL looks like PMTiles, return error suggesting direct access
-        if request.url.lower().endswith('.pmtiles') or 'pmtiles' in request.url.lower():
-            return {"error": f"PMTiles files should be accessed directly, not through JSON proxy. Use the URL directly with PMTilesVectorSource."}
-        return {"error": f"Invalid JSON: {str(e)}"}
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.options("/geojson/proxy")
-async def proxy_geojson_options():
-    """Handle preflight requests for the proxy endpoint"""
-    return {"message": "OK"}
 
 @app.get("/fgb/proxy")
 async def proxy_fgb(url: str, request: Request):
@@ -1642,6 +1624,18 @@ async def predictions_vertical_profile(request: VerticalProfileRequest):
     except Exception as e:
         return {"success": False, "error": str(e), "tile_name": tile}
 
+    valid_vals = [p["value"] for p in profile if p["value"] is not None and not p["missing"]]
+    vertical_profile_curve = None
+    if len(valid_vals) >= 3:
+        try:
+            x_vals, y_vals = vertical_profile(valid_vals)
+            vertical_profile_curve = [
+                {"z": float(xv), "value": float(yv)}
+                for xv, yv in zip(x_vals.tolist(), y_vals.tolist())
+            ]
+        except Exception as e:
+            print(f"[vertical-profile] curve compute error: {e}")
+
     return {
         "success": True,
         "tile_name": tile,
@@ -1651,6 +1645,7 @@ async def predictions_vertical_profile(request: VerticalProfileRequest):
         "lon": request.lon,
         "lat": request.lat,
         "profile": profile,
+        "vertical_profile_curve": vertical_profile_curve,
         "missing_file_count": missing_files,
     }
 
@@ -1735,6 +1730,51 @@ async def load_or_compute_cr(request: AuxiliaryCRRequest):
 
 @app.options("/auxiliary/cr")
 async def auxiliary_cr_options():
+    return {"message": "OK"}
+
+
+
+
+class AuxiliaryEntropyRequest(BaseModel):
+    tile_name: str
+    year: int
+
+
+@app.post("/auxiliary/profile-entropy")
+async def load_or_compute_profile_entropy(request: AuxiliaryEntropyRequest):
+    """Load or generate profile entropy COG for a tile."""
+    if not ENTROPY_LOCAL_BASE_PATH:
+        return {"success": False, "error": "ENTROPY_LOCAL_BASE_PATH env var is not set."}
+
+    tile_id = request.tile_name
+    year = request.year
+    path_entropy = Path(ENTROPY_LOCAL_BASE_PATH) / str(year) / "tiles" / "cog" / f"{tile_id}_Q1.tif"
+
+    if path_entropy.is_file():
+        return {
+            "success": True,
+            "url": str(path_entropy),
+            "tile_name": tile_id,
+            "layer_type": "profile_entropy",
+        }
+
+    try:
+        path_out = await compute_entropy(tile_id, year)
+        return {
+            "success": True,
+            "url": str(path_out),
+            "tile_name": tile_id,
+            "layer_type": "profile_entropy",
+        }
+    except HTTPException as exc:
+        err = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        return {"success": False, "error": err or str(exc)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.options("/auxiliary/profile-entropy")
+async def auxiliary_profile_entropy_options():
     return {"message": "OK"}
 
 

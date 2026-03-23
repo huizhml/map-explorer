@@ -5,6 +5,8 @@ import TileLayer from 'ol/layer/Tile';
 import WebGLTileLayer from 'ol/layer/WebGLTile';
 import { fromLonLat } from 'ol/proj';
 import OSM from 'ol/source/OSM';
+import ScaleLine from 'ol/control/ScaleLine';
+import { defaults as defaultControls } from 'ol/control/defaults';
 
 const DEFAULT_CENTER = fromLonLat([0, 0]);
 const DEFAULT_ZOOM = 2;
@@ -22,6 +24,15 @@ export function MapComponent({ onMapInit }: MapComponentProps) {
 
     const map = new Map({
       target: mapRef.current,
+      controls: defaultControls().extend([
+        new ScaleLine({
+          units: 'metric',
+          bar: true,
+          steps: 4,
+          text: true,
+          minWidth: 120,
+        }),
+      ]),
       layers: [
         // Base layer should be a regular TileLayer
         new TileLayer({

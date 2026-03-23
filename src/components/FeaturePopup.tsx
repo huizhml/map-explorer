@@ -84,7 +84,13 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [distMapLoading, setDistMapLoading] = useState(false);
   const [distMapError, setDistMapError] = useState<string | null>(null);
   const [distMapResult, setDistMapResult] = useState<any | null>(null);
-  
+  const [crLoading, setCrLoading] = useState(false);
+  const [crError, setCrError] = useState<string | null>(null);
+  const [crResult, setCrResult] = useState<any | null>(null);
+  const [entropyLoading, setEntropyLoading] = useState(false);
+  const [entropyError, setEntropyError] = useState<string | null>(null);
+  const [entropyResult, setEntropyResult] = useState<any | null>(null);
+
   // Draggable state
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -548,6 +554,88 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     }
   };
 
+  const handleLoadCR = async () => {
+    if (!properties?.Name) {
+      setCrError('No tile name available');
+      return;
+    }
+    setCrLoading(true);
+    setCrError(null);
+    setCrResult(null);
+    try {
+      const yearNum = parseInt(year, 10);
+      if (isNaN(yearNum)) {
+        throw new Error('Invalid year');
+      }
+      const response = await fetch('http://localhost:8000/auxiliary/cr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tile_name: properties.Name, year: yearNum }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      if (data.success === false || data.error) {
+        throw new Error(data.error || 'Failed to load or compute CR');
+      }
+      setCrResult(data);
+      if (onLoadAuxiliaryLayer && data.url) {
+        onLoadAuxiliaryLayer({
+          url: data.url,
+          tile_name: data.tile_name,
+          layer_type: data.layer_type,
+        });
+      }
+    } catch (err: any) {
+      setCrError(err.message || 'Failed to load CR');
+      console.error('Load CR error:', err);
+    } finally {
+      setCrLoading(false);
+    }
+  };
+
+  const handleLoadProfileEntropy = async () => {
+    if (!properties?.Name) {
+      setEntropyError('No tile name available');
+      return;
+    }
+    setEntropyLoading(true);
+    setEntropyError(null);
+    setEntropyResult(null);
+    try {
+      const yearNum = parseInt(year, 10);
+      if (isNaN(yearNum)) {
+        throw new Error('Invalid year');
+      }
+      const response = await fetch('http://localhost:8000/auxiliary/profile-entropy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tile_name: properties.Name, year: yearNum }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      if (data.success === false || data.error) {
+        throw new Error(data.error || 'Failed to load or compute profile entropy');
+      }
+      setEntropyResult(data);
+      if (onLoadAuxiliaryLayer && data.url) {
+        onLoadAuxiliaryLayer({
+          url: data.url,
+          tile_name: data.tile_name,
+          layer_type: data.layer_type,
+        });
+      }
+    } catch (err: any) {
+      setEntropyError(err.message || 'Failed to load profile entropy');
+      console.error('Load profile entropy error:', err);
+    } finally {
+      setEntropyLoading(false);
+    }
+  };
+
   const handleGetXYOffset = async () => {
     if (!properties?.Name) {
       setOffsetError('No tile name (Name property) available in FlatGeobuf feature');
@@ -974,19 +1062,47 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
         <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
           Check auxiliary data
         </Typography>
-        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-          <Button
-            variant="contained"
-            size="small"
-            onClick={handleLoadDistanceMap}
-            disabled={distMapLoading}
-          >
-            {distMapLoading ? 'Loading...' : 'Load distance map'}
-          </Button>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={handleLoadDistanceMap}
+              disabled={distMapLoading}
+            >
+              {distMapLoading ? 'Loading...' : 'Load distance map'}
+            </Button>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={handleLoadCR}
+              disabled={crLoading}
+            >
+              {crLoading ? 'Loading...' : 'Load CR'}
+            </Button>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={handleLoadProfileEntropy}
+              disabled={entropyLoading}
+            >
+              {entropyLoading ? 'Loading...' : 'Load Profile Entropy'}
+            </Button>
+          </Box>
         </Box>
         {distMapError && (
           <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
             {distMapError}
+          </Typography>
+        )}
+        {crError && (
+          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+            {crError}
+          </Typography>
+        )}
+        {entropyError && (
+          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+            {entropyError}
           </Typography>
         )}
         {distMapResult && (
@@ -999,6 +1115,32 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
             </Typography>
             <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
               URL: {distMapResult.url}
+            </Typography>
+          </Box>
+        )}
+        {crResult && (
+          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
+              ✓ CR loaded successfully
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
+              Tile: {crResult.tile_name}
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
+              URL: {crResult.url}
+            </Typography>
+          </Box>
+        )}
+        {entropyResult && (
+          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
+              ✓ Profile entropy loaded successfully
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
+              Tile: {entropyResult.tile_name}
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
+              URL: {entropyResult.url}
             </Typography>
           </Box>
         )}

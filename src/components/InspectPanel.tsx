@@ -78,8 +78,8 @@ function VerticalProfileChart({
   vmin -= pad;
   vmax += pad;
 
-  const xPx = (rh: number) => margin.l + (rh / 100) * iw;
-  const yPx = (v: number) => margin.t + ih - ((v - vmin) / (vmax - vmin)) * ih;
+  const xPx = (v: number) => margin.l + ((v - vmin) / (vmax - vmin || 1)) * iw;
+  const yPx = (rh: number) => margin.t + ih - (rh / 100) * ih;
 
   const interpAtRh = (rh: number): number | null => {
     const r = Math.max(0, Math.min(100, rh));
@@ -126,8 +126,8 @@ function VerticalProfileChart({
     let bestD = SNAP_PX;
     for (const p of profile) {
       if (p.value == null || p.missing) continue;
-      const cx = xPx(p.rh);
-      const cy = yPx(p.value);
+      const cx = xPx(p.value);
+      const cy = yPx(p.rh);
       const d = Math.hypot(mx - cx, my - cy);
       if (d < bestD) {
         bestD = d;
@@ -149,7 +149,7 @@ function VerticalProfileChart({
       return;
     }
 
-    const rh = ((mx - margin.l) / iw) * 100;
+    const rh = ((margin.t + ih - my) / ih) * 100;
     const v = interpAtRh(rh);
     setHover({
       clientX: e.clientX,
@@ -157,8 +157,8 @@ function VerticalProfileChart({
       line1: `RH ${rh.toFixed(1)}`,
       line2: v != null ? String(Math.round(v)) : "—",
       snap: false,
-      crossMx: mx,
-      crossVy: v != null ? yPx(v) : null,
+      crossMx: v != null ? xPx(v) : mx,
+      crossVy: yPx(Math.max(0, Math.min(100, rh))),
       activeRh: null,
     });
   };
@@ -168,15 +168,15 @@ function VerticalProfileChart({
     const a = profile[i];
     const b = profile[i + 1];
     if (a.value != null && !a.missing && b.value != null && !b.missing) {
-      paths.push(`M${xPx(a.rh)} ${yPx(a.value)}L${xPx(b.rh)} ${yPx(b.value)}`);
+      paths.push(`M${xPx(a.value)} ${yPx(a.rh)}L${xPx(b.value)} ${yPx(b.rh)}`);
     }
   }
 
-  const yLabels: number[] = [];
+  const xLabels: number[] = [];
   for (let i = 0; i <= 4; i++) {
-    yLabels.push(vmin + (i / 4) * (vmax - vmin));
+    xLabels.push(vmin + (i / 4) * (vmax - vmin));
   }
-  const xTicks = [0, 25, 50, 75, 100];
+  const yTicks = [0, 25, 50, 75, 100];
 
   const tipLeft =
     hover != null ? Math.min(hover.clientX + 12, (typeof window !== "undefined" ? window.innerWidth : 9999) - 128) : 0;
@@ -202,27 +202,27 @@ function VerticalProfileChart({
           fill={theme.palette.action.hover}
           rx={4}
         />
-        {yLabels.map((yv, i) => {
-          const y = yPx(yv);
+        {xLabels.map((xv, i) => {
+          const x = xPx(xv);
           return (
             <g key={i}>
               <line
-                x1={margin.l}
-                y1={y}
-                x2={margin.l + iw}
-                y2={y}
+                x1={x}
+                y1={margin.t}
+                x2={x}
+                y2={margin.t + ih}
                 stroke={theme.palette.divider}
                 strokeWidth={0.5}
                 strokeDasharray="2 3"
               />
               <text
-                x={margin.l - 6}
-                y={y + 3}
-                textAnchor="end"
+                x={x}
+                y={CHART_H - 8}
+                textAnchor="middle"
                 fontSize={9}
                 fill={theme.palette.text.secondary}
               >
-                {Math.round(yv)}
+                {Math.round(xv)}
               </text>
             </g>
           );
@@ -234,8 +234,8 @@ function VerticalProfileChart({
           p.value != null && !p.missing ? (
             <circle
               key={p.rh}
-              cx={xPx(p.rh)}
-              cy={yPx(p.value)}
+              cx={xPx(p.value)}
+              cy={yPx(p.rh)}
               r={hover?.activeRh === p.rh ? 4 : 2.5}
               fill={hover?.activeRh === p.rh ? snapRing : fill}
             />
@@ -257,12 +257,12 @@ function VerticalProfileChart({
           stroke={theme.palette.text.secondary}
           strokeWidth={1}
         />
-        {xTicks.map((rh) => (
+        {yTicks.map((rh) => (
           <text
             key={rh}
-            x={xPx(rh)}
-            y={CHART_H - 8}
-            textAnchor="middle"
+            x={margin.l - 6}
+            y={yPx(rh) + 3}
+            textAnchor="end"
             fontSize={10}
             fill={theme.palette.text.secondary}
           >
@@ -276,7 +276,7 @@ function VerticalProfileChart({
           fontSize={10}
           fill={theme.palette.text.secondary}
         >
-          RH index
+          Value
         </text>
         {hover && (
           <g pointerEvents="none">
@@ -290,6 +290,18 @@ function VerticalProfileChart({
               strokeDasharray="5 4"
               opacity={0.85}
             />
+            {hover.crossVy != null && (
+              <line
+                x1={margin.l}
+                y1={hover.crossVy}
+                x2={margin.l + iw}
+                y2={hover.crossVy}
+                stroke={stroke}
+                strokeWidth={1}
+                strokeDasharray="5 4"
+                opacity={0.5}
+              />
+            )}
             {hover.crossVy != null && (
               <circle
                 cx={hover.crossMx}
@@ -335,6 +347,98 @@ function VerticalProfileChart({
   );
 }
 
+function VerticalProfileCurveChart({
+  curve,
+  dimmed,
+}: {
+  curve: Array<{ z: number; value: number }>;
+  dimmed?: boolean;
+}) {
+  const theme = useTheme();
+  const stroke = theme.palette.success.main;
+  const margin = { t: 12, r: 12, b: 34, l: 48 };
+  const iw = CHART_W - margin.l - margin.r;
+  const ih = CHART_H - margin.t - margin.b;
+
+  if (!curve || curve.length < 2) return null;
+  const zVals = curve.map((p) => p.z).filter((v) => Number.isFinite(v));
+  const profileVals = curve.map((p) => p.value).filter((v) => Number.isFinite(v));
+  if (zVals.length === 0 || profileVals.length === 0) return null;
+
+  const zmin = Math.min(...zVals);
+  const zmax = Math.max(...zVals);
+  let vmin = Math.min(...profileVals);
+  let vmax = Math.max(...profileVals);
+  if (vmin === vmax) {
+    vmin -= 1;
+    vmax += 1;
+  }
+  const vpad = (vmax - vmin) * 0.06 || 0.5;
+  vmin -= vpad;
+  vmax += vpad;
+
+  // Swapped axes: X=profile value, Y=height (z).
+  const xPx = (v: number) => margin.l + ((v - vmin) / (vmax - vmin || 1)) * iw;
+  const yPx = (z: number) => margin.t + ih - ((z - zmin) / (zmax - zmin || 1)) * ih;
+
+  const d = curve
+    .filter((p) => Number.isFinite(p.value))
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${xPx(p.value)} ${yPx(p.z)}`)
+    .join('');
+
+  const xTicks = [0, 1, 2, 3, 4].map((i) => vmin + (i / 4) * (vmax - vmin));
+  const yTicks = [0, 1, 2, 3, 4].map((i) => zmin + (i / 4) * (zmax - zmin));
+
+  return (
+    <Box sx={{ width: '100%', maxWidth: CHART_W, opacity: dimmed ? 0.65 : 1 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+        Derived vertical profile curve
+      </Typography>
+      <svg width="100%" viewBox={`0 0 ${CHART_W} ${CHART_H}`} style={{ display: 'block' }} aria-label="Derived vertical profile">
+        <rect x={margin.l} y={margin.t} width={iw} height={ih} fill={theme.palette.action.hover} rx={4} />
+        {xTicks.map((xv, i) => {
+          const x = xPx(xv);
+          return (
+            <g key={`x-${i}`}>
+              <line x1={x} y1={margin.t} x2={x} y2={margin.t + ih} stroke={theme.palette.divider} strokeWidth={0.5} strokeDasharray="2 3" />
+              <text x={x} y={CHART_H - 8} textAnchor="middle" fontSize={9} fill={theme.palette.text.secondary}>
+                {xv.toFixed(1)}
+              </text>
+            </g>
+          );
+        })}
+        {yTicks.map((zv, i) => {
+          const y = yPx(zv);
+          return (
+            <g key={`y-${i}`}>
+              <line x1={margin.l} y1={y} x2={margin.l + iw} y2={y} stroke={theme.palette.divider} strokeWidth={0.5} strokeDasharray="2 3" />
+              <text x={margin.l - 6} y={y + 3} textAnchor="end" fontSize={9} fill={theme.palette.text.secondary}>
+                {Math.round(zv)}
+              </text>
+            </g>
+          );
+        })}
+        <path d={d} fill="none" stroke={stroke} strokeWidth={2} />
+        <line x1={margin.l} y1={margin.t + ih} x2={margin.l + iw} y2={margin.t + ih} stroke={theme.palette.text.secondary} strokeWidth={1} />
+        <line x1={margin.l} y1={margin.t} x2={margin.l} y2={margin.t + ih} stroke={theme.palette.text.secondary} strokeWidth={1} />
+        <text x={margin.l + iw / 2} y={CHART_H - 2} textAnchor="middle" fontSize={10} fill={theme.palette.text.secondary}>
+          Profile value
+        </text>
+        <text
+          x={12}
+          y={margin.t + ih / 2}
+          textAnchor="middle"
+          fontSize={10}
+          fill={theme.palette.text.secondary}
+          transform={`rotate(-90, 12, ${margin.t + ih / 2})`}
+        >
+          Height (m)
+        </text>
+      </svg>
+    </Box>
+  );
+}
+
 
 interface InspectPanelProps {
   panel: InspectPanelState;
@@ -350,6 +454,7 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
     layers,
     pendingSample,
     verticalProfile,
+    verticalProfileCurve,
     profileMeta,
     inspectError,
   } = panel;
@@ -370,6 +475,7 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
         id: r.id,
         name: r.name,
         type: r.type,
+        visible: r.visible,
         ...(r.error ? { error: r.error } : { value: r.value }),
       })),
     };
@@ -510,6 +616,9 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
             {verticalProfile && verticalProfile.length > 0 && (
               <VerticalProfileChart profile={verticalProfile} dimmed={hasStaleVertical} />
             )}
+            {verticalProfileCurve && verticalProfileCurve.length > 0 && (
+              <VerticalProfileCurveChart curve={verticalProfileCurve} dimmed={hasStaleVertical} />
+            )}
             {!loading && !verticalProfile?.length && !inspectError && (
               <Typography variant="body2" color="text.secondary">
                 Click the map — loads original RH0–RH100 (Q1) for the selected year.
@@ -533,7 +642,7 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
 
             {!loading && layers.length === 0 && (
               <Typography variant="body2" color="text.secondary">
-                No visible raster layers with a COG URL. Add a prediction or COG layer and ensure it is visible.
+                No raster layers with a COG URL. Add a prediction or COG layer.
               </Typography>
             )}
 
@@ -552,6 +661,11 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
                   </Typography>
                   <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
                     {row.type}
+                    {!row.visible && (
+                      <Typography component="span" color="warning.main" sx={{ ml: 1 }}>
+                        hidden
+                      </Typography>
+                    )}
                     {row.error && (
                       <Typography component="span" color="error.main" sx={{ ml: 1 }}>
                         {row.error}

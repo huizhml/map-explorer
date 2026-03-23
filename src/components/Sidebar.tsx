@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -225,8 +225,8 @@ export function Sidebar({
           </Button>
           <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: 'text.secondary' }}>
             {inspectMode && inspectKind === 'layers'
-              ? 'Click the map — visible raster values in the panel bottom-right'
-              : 'Sample visible COG layers at the clicked point'}
+              ? 'Click the map — all raster values in the panel bottom-right (visible + hidden)'
+              : 'Sample all COG layers at the clicked point (visible + hidden)'}
           </Typography>
           <Button
             variant={inspectMode && inspectKind === 'vertical_profile' ? 'contained' : 'outlined'}

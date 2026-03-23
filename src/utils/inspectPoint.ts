@@ -4,12 +4,13 @@ export interface InspectLayerRow {
   id: string;
   name: string;
   type: string;
+  visible: boolean;
   value?: unknown;
   error?: string;
 }
 
 /**
- * Sample visible raster layers (COG URLs in metadata) at lon/lat via backend.
+ * Sample all raster layers (COG URLs in metadata) at lon/lat via backend.
  */
 export async function inspectPointAtLonLat(
   layerManager: LayerManager | null,
@@ -21,7 +22,7 @@ export async function inspectPointAtLonLat(
   layerManager.syncAllProperties();
   const managed = layerManager.getAllLayers();
   const inspectable = managed.filter(
-    (m) => m.visible && m.metadata && typeof m.metadata.url === 'string' && m.metadata.url.length > 0,
+    (m) => m.metadata && typeof m.metadata.url === 'string' && m.metadata.url.length > 0,
   );
 
   const results: InspectLayerRow[] = [];
@@ -39,6 +40,7 @@ export async function inspectPointAtLonLat(
             id: m.id,
             name: m.name,
             type: m.type,
+            visible: m.visible,
             error: `HTTP ${resp.status}`,
           });
           return;
@@ -48,6 +50,7 @@ export async function inspectPointAtLonLat(
           id: m.id,
           name: m.name,
           type: m.type,
+          visible: m.visible,
           value: data,
         });
       } catch (err) {
@@ -55,6 +58,7 @@ export async function inspectPointAtLonLat(
           id: m.id,
           name: m.name,
           type: m.type,
+          visible: m.visible,
           error: err instanceof Error ? err.message : String(err),
         });
       }
