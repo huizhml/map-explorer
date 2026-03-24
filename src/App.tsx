@@ -69,6 +69,24 @@ function App() {
   } = useMapStore();
 
   const inspectRequestIdRef = useRef(0);
+  const inspectPinLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
+  const inspectPinFeatureRef = useRef<Feature<Point> | null>(null);
+
+  const clearInspectPin = useCallback(() => {
+    inspectPinLayerRef.current?.getSource()?.clear();
+    inspectPinFeatureRef.current = null;
+  }, []);
+
+  const setInspectPinAtCoordinate = useCallback((coordinate: number[]) => {
+    if (!inspectPinLayerRef.current) return;
+    const src = inspectPinLayerRef.current.getSource();
+    if (!src) return;
+
+    src.clear();
+    const pin = new Feature({ geometry: new Point(coordinate) });
+    src.addFeature(pin);
+    inspectPinFeatureRef.current = pin;
+  }, []);
 
   // Initialize layer manager
   useEffect(() => {
@@ -868,6 +886,39 @@ function App() {
       el.style.cursor = '';
     }
   }, [map, inspectMode, drawingActive]);
+
+  // Layer that shows inspect click location as a pin.
+  useEffect(() => {
+    if (!map) return;
+
+    const source = new VectorSource();
+    const layer = new VectorLayer({
+      source,
+      zIndex: 1200,
+      style: new Style({
+        image: new CircleStyle({
+          radius: 6,
+          fill: new Fill({ color: '#d32f2f' }),
+          stroke: new Stroke({ color: '#ffffff', width: 2 }),
+        }),
+      }),
+    });
+    map.addLayer(layer);
+    inspectPinLayerRef.current = layer;
+
+    return () => {
+      map.removeLayer(layer);
+      inspectPinLayerRef.current = null;
+      inspectPinFeatureRef.current = null;
+    };
+  }, [map]);
+
+  // Clear pin when inspect mode is turned off.
+  useEffect(() => {
+    if (!inspectMode) {
+      clearInspectPin();
+    }
+  }, [inspectMode, clearInspectPin]);
   const drawLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
   const labelLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
 
@@ -1304,6 +1355,7 @@ function App() {
     const handleClick = (evt: any) => {
       const { inspectMode: im, drawingActive: drawOn, layerManager: mgr } = useMapStore.getState();
       if (im && !drawOn) {
+        setInspectPinAtCoordinate(evt.coordinate);
         const [lon, lat] = transform(evt.coordinate, 'EPSG:3857', 'EPSG:4326');
         const req = ++inspectRequestIdRef.current;
         const { inspectKind, vsmYear } = useMapStore.getState();
@@ -1595,7 +1647,7 @@ function App() {
         highlightLayer.getSource()?.clear();
       }
     };
-  }, [map, fgbLayer, highlightLayer, createHighlightGeometry]);
+  }, [map, fgbLayer, highlightLayer, createHighlightGeometry, setInspectPinAtCoordinate]);
   
   // Debug: Log highlight layer state
   useEffect(() => {
@@ -1896,7 +1948,13 @@ function App() {
         />
 
         {inspectMode && inspectPanel && (
-          <InspectPanel panel={inspectPanel} onClose={() => setInspectPanel(null)} />
+          <InspectPanel
+            panel={inspectPanel}
+            onClose={() => {
+              setInspectPanel(null);
+              clearInspectPin();
+            }}
+          />
         )}
       </div>
     </ThemeProvider>

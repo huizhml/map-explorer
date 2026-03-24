@@ -30,6 +30,87 @@ function formatValueFallback(v: unknown): string {
 const CHART_W = 380;
 const CHART_H = 260;
 const SNAP_PX = 14;
+const MAX_HEIGHT = 1000;
+
+function computeFhd(rhsValues: number[], interval: number): number | null {
+  const finiteValues = rhsValues.filter((v) => Number.isFinite(v));
+  if (finiteValues.length === 0 || interval <= 0) return null;
+
+  const nBins = Math.floor(MAX_HEIGHT / interval);
+  if (nBins <= 0) return null;
+
+  const hist = new Array<number>(nBins).fill(0);
+  for (const rh of finiteValues) {
+    if (rh < 0 || rh > MAX_HEIGHT) continue;
+    const idx = Math.min(nBins - 1, Math.floor(rh / interval));
+    hist[idx] += 1;
+  }
+
+  const total = hist.reduce((sum, count) => sum + count, 0);
+  if (total === 0) return null;
+
+  let fhd = 0;
+  for (const count of hist) {
+    if (count <= 0) continue;
+    const p = count / total;
+    fhd -= p * Math.log(p);
+  }
+  return fhd;
+}
+
+function getRhValue(profile: VerticalProfilePoint[], rhTarget: number): number | null {
+  const point = profile.find((p) => p.rh === rhTarget);
+  if (!point || point.missing || point.value == null || !Number.isFinite(point.value)) return null;
+  return point.value;
+}
+
+function VerticalProfileSummary({ profile, dimmed }: { profile: VerticalProfilePoint[]; dimmed?: boolean }) {
+  const rh98 = getRhValue(profile, 98);
+  const rh25 = getRhValue(profile, 25);
+
+  const canopyRatio =
+    rh98 != null && rh25 != null && rh98 !== 0 ? (rh98 - rh25) / rh98 : null;
+
+  const rhsValues = profile
+    .filter((p) => p.value != null && !p.missing)
+    .map((p) => p.value as number);
+  const fhd5 = computeFhd(rhsValues, 50);
+  const fhd10 = computeFhd(rhsValues, 100);
+
+  const formatMetric = (v: number | null, digits = 3) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(digits));
+  const rows = [
+    { label: 'Canopy ratio (RH98 - RH25) / RH98', value: formatMetric(canopyRatio) },
+    { label: 'FHD (5m interval)', value: formatMetric(fhd5) },
+    { label: 'FHD (10m interval)', value: formatMetric(fhd10) },
+  ];
+
+  return (
+    <Paper variant="outlined" sx={{ mb: 1, width: '100%', opacity: dimmed ? 0.65 : 1 }}>
+      {rows.map((row, idx) => (
+        <Box
+          key={row.label}
+          sx={{
+            px: 1.25,
+            py: 0.5,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            borderBottom: idx < rows.length - 1 ? 1 : 0,
+            borderColor: 'divider',
+            gap: 1,
+          }}
+        >
+          <Typography variant="body2" color="text.primary">
+            {row.label}
+          </Typography>
+          <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+            {row.value}
+          </Typography>
+        </Box>
+      ))}
+    </Paper>
+  );
+}
 
 function VerticalProfileChart({
   profile,
@@ -78,8 +159,9 @@ function VerticalProfileChart({
   vmin -= pad;
   vmax += pad;
 
-  const xPx = (v: number) => margin.l + ((v - vmin) / (vmax - vmin || 1)) * iw;
-  const yPx = (rh: number) => margin.t + ih - (rh / 100) * ih;
+  // Swapped axes: X = RH (%), Y = value.
+  const xPx = (rh: number) => margin.l + (rh / 100) * iw;
+  const yPx = (v: number) => margin.t + ih - ((v - vmin) / (vmax - vmin || 1)) * ih;
 
   const interpAtRh = (rh: number): number | null => {
     const r = Math.max(0, Math.min(100, rh));
@@ -126,8 +208,8 @@ function VerticalProfileChart({
     let bestD = SNAP_PX;
     for (const p of profile) {
       if (p.value == null || p.missing) continue;
-      const cx = xPx(p.value);
-      const cy = yPx(p.rh);
+      const cx = xPx(p.rh);
+      const cy = yPx(p.value);
       const d = Math.hypot(mx - cx, my - cy);
       if (d < bestD) {
         bestD = d;
@@ -149,7 +231,7 @@ function VerticalProfileChart({
       return;
     }
 
-    const rh = ((margin.t + ih - my) / ih) * 100;
+    const rh = ((mx - margin.l) / iw) * 100;
     const v = interpAtRh(rh);
     setHover({
       clientX: e.clientX,
@@ -157,8 +239,8 @@ function VerticalProfileChart({
       line1: `RH ${rh.toFixed(1)}`,
       line2: v != null ? String(Math.round(v)) : "—",
       snap: false,
-      crossMx: v != null ? xPx(v) : mx,
-      crossVy: yPx(Math.max(0, Math.min(100, rh))),
+      crossMx: xPx(Math.max(0, Math.min(100, rh))),
+      crossVy: v != null ? yPx(v) : my,
       activeRh: null,
     });
   };
@@ -168,21 +250,21 @@ function VerticalProfileChart({
     const a = profile[i];
     const b = profile[i + 1];
     if (a.value != null && !a.missing && b.value != null && !b.missing) {
-      paths.push(`M${xPx(a.value)} ${yPx(a.rh)}L${xPx(b.value)} ${yPx(b.rh)}`);
+      paths.push(`M${xPx(a.rh)} ${yPx(a.value)}L${xPx(b.rh)} ${yPx(b.value)}`);
     }
   }
 
-  const xLabels: number[] = [];
+  const xTicks = [0, 25, 50, 75, 100];
+  const yTicks: number[] = [];
   for (let i = 0; i <= 4; i++) {
-    xLabels.push(vmin + (i / 4) * (vmax - vmin));
+    yTicks.push(vmin + (i / 4) * (vmax - vmin));
   }
-  const yTicks = [0, 25, 50, 75, 100];
 
   const tipLeft =
     hover != null ? Math.min(hover.clientX + 12, (typeof window !== "undefined" ? window.innerWidth : 9999) - 128) : 0;
 
   return (
-    <Box sx={{ position: "relative", width: "100%", maxWidth: CHART_W, opacity: dimmed ? 0.65 : 1, mb: 1 }}>
+    <Box sx={{ position: "relative", width: "100%", opacity: dimmed ? 0.65 : 1, mb: 1 }}>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
         Hover or drag: crosshair + tooltip · snap near a sample point
       </Typography>
@@ -202,8 +284,8 @@ function VerticalProfileChart({
           fill={theme.palette.action.hover}
           rx={4}
         />
-        {xLabels.map((xv, i) => {
-          const x = xPx(xv);
+        {xTicks.map((rh, i) => {
+          const x = xPx(rh);
           return (
             <g key={i}>
               <line
@@ -222,7 +304,7 @@ function VerticalProfileChart({
                 fontSize={9}
                 fill={theme.palette.text.secondary}
               >
-                {Math.round(xv)}
+                {rh}
               </text>
             </g>
           );
@@ -234,8 +316,8 @@ function VerticalProfileChart({
           p.value != null && !p.missing ? (
             <circle
               key={p.rh}
-              cx={xPx(p.value)}
-              cy={yPx(p.rh)}
+              cx={xPx(p.rh)}
+              cy={yPx(p.value)}
               r={hover?.activeRh === p.rh ? 4 : 2.5}
               fill={hover?.activeRh === p.rh ? snapRing : fill}
             />
@@ -257,16 +339,16 @@ function VerticalProfileChart({
           stroke={theme.palette.text.secondary}
           strokeWidth={1}
         />
-        {yTicks.map((rh) => (
+        {yTicks.map((yv) => (
           <text
-            key={rh}
+            key={yv}
             x={margin.l - 6}
-            y={yPx(rh) + 3}
+            y={yPx(yv) + 3}
             textAnchor="end"
             fontSize={10}
             fill={theme.palette.text.secondary}
           >
-            {rh}
+            {Math.round(yv)}
           </text>
         ))}
         <text
@@ -275,6 +357,16 @@ function VerticalProfileChart({
           textAnchor="middle"
           fontSize={10}
           fill={theme.palette.text.secondary}
+        >
+          RH (%)
+        </text>
+        <text
+          x={12}
+          y={margin.t + ih / 2}
+          textAnchor="middle"
+          fontSize={10}
+          fill={theme.palette.text.secondary}
+          transform={`rotate(-90, 12, ${margin.t + ih / 2})`}
         >
           Value
         </text>
@@ -356,9 +448,20 @@ function VerticalProfileCurveChart({
 }) {
   const theme = useTheme();
   const stroke = theme.palette.success.main;
+  const snapRing = theme.palette.warning.main;
   const margin = { t: 12, r: 12, b: 34, l: 48 };
   const iw = CHART_W - margin.l - margin.r;
   const ih = CHART_H - margin.t - margin.b;
+  const [hover, setHover] = useState<{
+    clientX: number;
+    clientY: number;
+    line1: string;
+    line2: string;
+    snap: boolean;
+    crossMx: number;
+    crossVy: number;
+    activeZ: number | null;
+  } | null>(null);
 
   if (!curve || curve.length < 2) return null;
   const zVals = curve.map((p) => p.z).filter((v) => Number.isFinite(v));
@@ -380,6 +483,79 @@ function VerticalProfileCurveChart({
   // Swapped axes: X=profile value, Y=height (z).
   const xPx = (v: number) => margin.l + ((v - vmin) / (vmax - vmin || 1)) * iw;
   const yPx = (z: number) => margin.t + ih - ((z - zmin) / (zmax - zmin || 1)) * ih;
+  const zFromY = (y: number) => zmin + ((margin.t + ih - y) / ih) * (zmax - zmin);
+
+  const interpAtZ = (z: number): number | null => {
+    const clamped = Math.max(zmin, Math.min(zmax, z));
+    let lo: { z: number; value: number } | null = null;
+    let hi: { z: number; value: number } | null = null;
+    for (const p of curve) {
+      if (!Number.isFinite(p.value) || !Number.isFinite(p.z)) continue;
+      if (p.z <= clamped) lo = p;
+      if (p.z >= clamped) {
+        hi = p;
+        break;
+      }
+    }
+    if (!lo && !hi) return null;
+    if (!lo) return hi!.value;
+    if (!hi) return lo.value;
+    if (hi.z === lo.z) return lo.value;
+    return lo.value + ((clamped - lo.z) / (hi.z - lo.z)) * (hi.value - lo.value);
+  };
+
+  const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const sx = CHART_W / rect.width;
+    const mx = (e.clientX - rect.left) * sx;
+    const my = (e.clientY - rect.top) * (CHART_H / rect.height);
+
+    if (mx < margin.l || mx > margin.l + iw || my < margin.t || my > margin.t + ih) {
+      setHover(null);
+      return;
+    }
+
+    let best: { z: number; value: number; cx: number; cy: number } | null = null;
+    let bestD = SNAP_PX;
+    for (const p of curve) {
+      if (!Number.isFinite(p.value) || !Number.isFinite(p.z)) continue;
+      const cx = xPx(p.value);
+      const cy = yPx(p.z);
+      const d = Math.hypot(mx - cx, my - cy);
+      if (d < bestD) {
+        bestD = d;
+        best = { z: p.z, value: p.value, cx, cy };
+      }
+    }
+
+    if (best) {
+      setHover({
+        clientX: e.clientX,
+        clientY: e.clientY,
+        line1: `Height ${Math.round(best.z)} m`,
+        line2: best.value.toFixed(3),
+        snap: true,
+        crossMx: best.cx,
+        crossVy: best.cy,
+        activeZ: best.z,
+      });
+      return;
+    }
+
+    const z = zFromY(my);
+    const v = interpAtZ(z);
+    setHover({
+      clientX: e.clientX,
+      clientY: e.clientY,
+      line1: `Height ${Math.round(z)} m`,
+      line2: v != null ? v.toFixed(3) : '—',
+      snap: false,
+      crossMx: v != null ? xPx(v) : mx,
+      crossVy: yPx(z),
+      activeZ: null,
+    });
+  };
 
   const d = curve
     .filter((p) => Number.isFinite(p.value))
@@ -388,13 +564,22 @@ function VerticalProfileCurveChart({
 
   const xTicks = [0, 1, 2, 3, 4].map((i) => vmin + (i / 4) * (vmax - vmin));
   const yTicks = [0, 1, 2, 3, 4].map((i) => zmin + (i / 4) * (zmax - zmin));
+  const tipLeft =
+    hover != null ? Math.min(hover.clientX + 12, (typeof window !== "undefined" ? window.innerWidth : 9999) - 140) : 0;
 
   return (
-    <Box sx={{ width: '100%', maxWidth: CHART_W, opacity: dimmed ? 0.65 : 1 }}>
+    <Box sx={{ width: '100%', opacity: dimmed ? 0.65 : 1, position: 'relative' }}>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-        Derived vertical profile curve
+        Derived vertical profile curve (interactive)
       </Typography>
-      <svg width="100%" viewBox={`0 0 ${CHART_W} ${CHART_H}`} style={{ display: 'block' }} aria-label="Derived vertical profile">
+      <svg
+        width="100%"
+        viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+        style={{ display: 'block', cursor: 'crosshair' }}
+        aria-label="Derived vertical profile"
+        onMouseMove={handleMove}
+        onMouseLeave={() => setHover(null)}
+      >
         <rect x={margin.l} y={margin.t} width={iw} height={ih} fill={theme.palette.action.hover} rx={4} />
         {xTicks.map((xv, i) => {
           const x = xPx(xv);
@@ -419,8 +604,52 @@ function VerticalProfileCurveChart({
           );
         })}
         <path d={d} fill="none" stroke={stroke} strokeWidth={2} />
+        {curve.map((p) =>
+          Number.isFinite(p.value) && Number.isFinite(p.z) ? (
+            <circle
+              key={`${p.z}-${p.value}`}
+              cx={xPx(p.value)}
+              cy={yPx(p.z)}
+              r={hover?.activeZ === p.z ? 3 : 1.8}
+              fill={hover?.activeZ === p.z ? snapRing : stroke}
+            />
+          ) : null,
+        )}
         <line x1={margin.l} y1={margin.t + ih} x2={margin.l + iw} y2={margin.t + ih} stroke={theme.palette.text.secondary} strokeWidth={1} />
         <line x1={margin.l} y1={margin.t} x2={margin.l} y2={margin.t + ih} stroke={theme.palette.text.secondary} strokeWidth={1} />
+        {hover && (
+          <g pointerEvents="none">
+            <line
+              x1={hover.crossMx}
+              y1={margin.t}
+              x2={hover.crossMx}
+              y2={margin.t + ih}
+              stroke={stroke}
+              strokeWidth={1}
+              strokeDasharray="5 4"
+              opacity={0.85}
+            />
+            <line
+              x1={margin.l}
+              y1={hover.crossVy}
+              x2={margin.l + iw}
+              y2={hover.crossVy}
+              stroke={stroke}
+              strokeWidth={1}
+              strokeDasharray="5 4"
+              opacity={0.5}
+            />
+            <circle
+              cx={hover.crossMx}
+              cy={hover.crossVy}
+              r={hover.snap ? 8 : 6}
+              fill={hover.snap ? snapRing : stroke}
+              fillOpacity={0.35}
+              stroke={hover.snap ? snapRing : stroke}
+              strokeWidth={2}
+            />
+          </g>
+        )}
         <text x={margin.l + iw / 2} y={CHART_H - 2} textAnchor="middle" fontSize={10} fill={theme.palette.text.secondary}>
           Profile value
         </text>
@@ -435,6 +664,33 @@ function VerticalProfileCurveChart({
           Height (m)
         </text>
       </svg>
+      {hover && (
+        <Paper
+          elevation={8}
+          sx={{
+            position: 'fixed',
+            left: tipLeft,
+            top: hover.clientY - 78,
+            pointerEvents: 'none',
+            zIndex: 2000,
+            px: 1.25,
+            py: 0.75,
+            minWidth: 110,
+            border: 1,
+            borderColor: 'divider',
+          }}
+        >
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.2 }}>
+            {hover.snap ? 'Sample' : 'Interpolated'}
+          </Typography>
+          <Typography variant="body2" fontWeight={700}>
+            {hover.line1}
+          </Typography>
+          <Typography variant="h6" component="div" sx={{ fontWeight: 600, lineHeight: 1.15, mt: 0.25 }}>
+            {hover.line2}
+          </Typography>
+        </Paper>
+      )}
     </Box>
   );
 }
@@ -510,6 +766,13 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
       : profileMeta?.source === 'blended'
         ? 'blended'
         : profileMeta?.source || '';
+  const hasNumericVerticalValues = Boolean(
+    verticalProfile?.some((p) => p.value != null && !p.missing && Number.isFinite(p.value)),
+  );
+  const hasVerticalCurve = Boolean(verticalProfileCurve && verticalProfileCurve.length > 0);
+  const showVerticalSummaryAndPlots = Boolean(
+    verticalProfile && verticalProfile.length > 0 && hasNumericVerticalValues && hasVerticalCurve,
+  );
 
   return (
     <Paper
@@ -519,8 +782,10 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
         right: 16,
         bottom: 88,
         zIndex: 1100,
-        width: { xs: 'calc(100% - 32px)', sm: isVertical ? 400 : 380 },
-        maxWidth: isVertical ? 440 : 420,
+        width: isVertical
+          ? { xs: 'calc(100% - 32px)', sm: 'min(92vw, 920px)' }
+          : { xs: 'calc(100% - 32px)', sm: 380 },
+        maxWidth: isVertical ? 920 : 420,
         maxHeight: isVertical ? '52vh' : '45vh',
         display: 'flex',
         flexDirection: 'column',
@@ -613,11 +878,30 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
             {verticalLoadingFirst && (
               <CircularProgress size={32} sx={{ color: 'secondary.main' }} aria-label="Loading" />
             )}
-            {verticalProfile && verticalProfile.length > 0 && (
-              <VerticalProfileChart profile={verticalProfile} dimmed={hasStaleVertical} />
+            {showVerticalSummaryAndPlots && (
+              <>
+                <VerticalProfileSummary profile={verticalProfile!} dimmed={hasStaleVertical} />
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: { xs: 'column', md: 'row' },
+                    gap: 1.5,
+                    alignItems: 'flex-start',
+                  }}
+                >
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <VerticalProfileChart profile={verticalProfile!} dimmed={hasStaleVertical} />
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <VerticalProfileCurveChart curve={verticalProfileCurve!} dimmed={hasStaleVertical} />
+                  </Box>
+                </Box>
+              </>
             )}
-            {verticalProfileCurve && verticalProfileCurve.length > 0 && (
-              <VerticalProfileCurveChart curve={verticalProfileCurve} dimmed={hasStaleVertical} />
+            {verticalProfile && verticalProfile.length > 0 && !showVerticalSummaryAndPlots && !loading && !inspectError && (
+              <Typography variant="body2" color="text.secondary">
+                Vertical profile metrics and plots are unavailable for this point.
+              </Typography>
             )}
             {!loading && !verticalProfile?.length && !inspectError && (
               <Typography variant="body2" color="text.secondary">
