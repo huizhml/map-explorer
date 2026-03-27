@@ -24,7 +24,7 @@ import psutil
 import os
 import time
 
-MAX_HEIGHT = 1000.0
+MAX_HEIGHT = 100.0
 N_BINS = 20
 BIN_WIDTH = MAX_HEIGHT / N_BINS
 NODATA_IN = 32767
@@ -32,7 +32,7 @@ NODATA_OUT = -9999.0
 stac_collection_dir = '~/data/gvs/products/gvsm_stac_catalog/vsm_local'
 
 
-def pixel_fhd(rhs, interval=50):
+def pixel_fhd(rhs, interval=5):
     """
     Compute per-pixel FHD using a simple histogram approach.
     """
@@ -45,7 +45,7 @@ def pixel_fhd(rhs, interval=50):
     return fhd
 
 
-def pixel_enl1d(rhs, interval=50):
+def pixel_enl1d(rhs, interval=5):
     """
     Compute per-pixel ENL0 using a simple histogram approach.
     """
@@ -58,7 +58,17 @@ def pixel_enl1d(rhs, interval=50):
     return enl0
 
 
-
+def pixel_enl2d(rhs, interval=5):
+    """
+    Compute per-pixel ENL2D using a simple histogram approach.
+    """
+    rhs_arr = np.asarray(rhs, dtype=np.float32)
+    rhs_arr = rhs_arr[np.isfinite(rhs_arr)]
+    n_bins = int(MAX_HEIGHT / interval)
+    hist, bins = np.histogram(rhs_arr, bins=n_bins, range=(0, MAX_HEIGHT))
+    p = hist / hist.sum()
+    enl2d = -np.sum(p * np.log(p), axis=-1).astype(np.float32)
+    return enl2d
 
 def _entropy_chunk(tile):
     """

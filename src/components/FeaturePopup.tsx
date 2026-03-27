@@ -61,9 +61,16 @@ interface FeaturePopupProps {
     layer_type: string;
     metric?: 'entropy' | 'enl1d' | 'enl2d';
   }) => void;
+  onLoadGEDIPoints?: (data: {
+    buffer: Uint8Array;
+    tile_name: string;
+    sampled_count: number;
+    total_count: number;
+    sample_size: number;
+  }) => void;
 }
 
-export function FeaturePopup({ properties, onClose, position, geometry, coordinates, onLoadSentinel2Image, onLoadPredictionCOG, onLoadAuxiliaryLayer }: FeaturePopupProps) {
+export function FeaturePopup({ properties, onClose, position, geometry, coordinates, onLoadSentinel2Image, onLoadPredictionCOG, onLoadAuxiliaryLayer, onLoadGEDIPoints }: FeaturePopupProps) {
   const [year, setYear] = useState<string>('2020');
   const [maxCloudCover, setMaxCloudCover] = useState<string>('50');
   const [loading, setLoading] = useState(false);
@@ -95,6 +102,9 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [alsLoading, setAlsLoading] = useState(false);
   const [alsError, setAlsError] = useState<string | null>(null);
   const [alsResult, setAlsResult] = useState<any | null>(null);
+  const [gediLoading, setGediLoading] = useState(false);
+  const [gediError, setGediError] = useState<string | null>(null);
+  const [gediResult, setGediResult] = useState<any | null>(null);
 
   // Draggable state
   const [isDragging, setIsDragging] = useState(false);
@@ -680,6 +690,57 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     }
   };
 
+  const handleLoadGEDI = async () => {
+    if (!properties?.Name) {
+      setGediError('No tile name available');
+      return;
+    }
+    setGediLoading(true);
+    setGediError(null);
+    setGediResult(null);
+    try {
+      const response = await fetch('http://localhost:8000/auxiliary/gedi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tile_name: properties.Name, year: parseInt(year), sample_size: 5000 }),
+      });
+      if (!response.ok && response.status !== 204) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const sampled_count = parseInt(response.headers.get('X-Sampled-Count') || '0', 10);
+      const total_count = parseInt(response.headers.get('X-Total-Count') || '0', 10);
+      const sample_size = parseInt(response.headers.get('X-Sample-Size') || '10000', 10);
+      const tile_name = response.headers.get('X-Tile-Name') || properties.Name;
+      const contentType = response.headers.get('Content-Type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to load GEDI points');
+      }
+      const data = {
+        tile_name,
+        sampled_count,
+        total_count,
+        sample_size,
+      };
+      setGediResult(data);
+      if (onLoadGEDIPoints && response.status !== 204 && sampled_count > 0) {
+        const buffer = new Uint8Array(await response.arrayBuffer());
+        onLoadGEDIPoints({
+          buffer,
+          tile_name,
+          sampled_count,
+          total_count,
+          sample_size,
+        });
+      }
+    } catch (err: any) {
+      setGediError(err.message || 'Failed to load GEDI points');
+      console.error('Load GEDI error:', err);
+    } finally {
+      setGediLoading(false);
+    }
+  };
+
   const handleGetXYOffset = async () => {
     if (!properties?.Name) {
       setOffsetError('No tile name (Name property) available in FlatGeobuf feature');
@@ -1140,6 +1201,14 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
             >
               {alsLoading ? 'Loading...' : 'Load ALS'}
             </Button>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={handleLoadGEDI}
+              disabled={gediLoading}
+            >
+              {gediLoading ? 'Loading...' : 'Load GEDI'}
+            </Button>
           </Box>
           <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
             <FormControl size="small" sx={{ minWidth: 180 }}>
@@ -1175,6 +1244,11 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
         {alsError && (
           <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
             {alsError}
+          </Typography>
+        )}
+        {gediError && (
+          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+            {gediError}
           </Typography>
         )}
         {distMapResult && (
@@ -1229,6 +1303,22 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
             </Typography>
             <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
               URL: {alsResult.url}
+            </Typography>
+          </Box>
+        )}
+        {gediResult && (
+          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
+              ✓ GEDI points loaded successfully
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
+              Tile: {gediResult.tile_name}
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
+              Sampled: {gediResult.sampled_count} / {gediResult.total_count}
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#999', fontSize: '0.7rem', mt: 0.5, fontStyle: 'italic' }}>
+              Layer added to map as sampled points
             </Typography>
           </Box>
         )}

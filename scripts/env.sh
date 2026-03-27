@@ -10,7 +10,7 @@ export CR_LOCAL_BASE_PATH="/projects/dereeco/data/gvs/products/canopy_ratio/"
 export S2_GRID_LOCAL_PATH="/projects/dereeco/data/gvs/state/deploy_status.fgb"
 export DIVERSITY_INDICES_LOCAL_BASE_PATH="/projects/dereeco/data/gvs/products/diversity_indices/"
 export ALS_LOCAL_TEMPLATE="/projects/dereeco/data/gvs/evaluation/with_airborne_lidar/ALS_MaxGEDIFootprint_GSD10m/{tile}.cog.tif"
-
+export GEDI_LOCAL_BASE_PATH="/projects/dereeco/data/gvs/gedi/veg_sensitivity_gt0p95/all_valid"
 # --- Mosaic (low-res overview) ---
 # Path template for local mosaic JSON files. Placeholders: {year}, {rh}, {q}
 export PREDICTIONS_MOSAIC_LOCAL_PATH="/projects/dereeco/data/gvs/predictions/2020/blended/mosaic/global_mosaic_2020_RH{rh}_Q{q}.cog.tif"

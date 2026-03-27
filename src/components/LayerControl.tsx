@@ -78,9 +78,10 @@ export function LayerControl({
   onLocateLayer,
   onChangePredictionRescale,
   onHighlightFeature,
-  onRemoveFeature,
+  onRemoveFeature: _onRemoveFeature,
   vectorFeatures,
 }: LayerControlProps) {
+  void _onRemoveFeature;
   // Zustand store
   const {
     fgbInfo,
@@ -1049,11 +1050,12 @@ export function LayerControl({
                       {groupedLayers.vector.map((layer, index) => {
                         const globalIndex = layers.findIndex((l) => l.id === layer.id);
                         const features = vectorFeatures?.[layer.id] || [];
+                        const featureCount = layer.metadata?.featureCount ?? features.length;
+                        const canBrowseFeatures = !layer.metadata?.skipFeatureList && features.length > 0;
                         return (
                           <React.Fragment key={layer.id}>
                             {index > 0 && <Divider />}
                             {renderLayerItem(layer, globalIndex)}
-                            {/* Clickable feature count to open feature list */}
                             <Box
                               sx={{
                                 px: 2,
@@ -1061,25 +1063,33 @@ export function LayerControl({
                                 display: 'flex',
                                 alignItems: 'center',
                                 gap: 1,
-                                cursor: 'pointer',
-                                '&:hover': { bgcolor: 'action.hover' },
+                                cursor: canBrowseFeatures ? 'pointer' : 'default',
+                                ...(canBrowseFeatures ? { '&:hover': { bgcolor: 'action.hover' } } : {}),
                               }}
-                              onClick={() => setFeatureListLayerId(
-                                featureListLayerId === layer.id ? null : layer.id
-                              )}
+                              onClick={() => {
+                                if (!canBrowseFeatures) return;
+                                setFeatureListLayerId(
+                                  featureListLayerId === layer.id ? null : layer.id
+                                );
+                              }}
                             >
                               <FilterListIcon fontSize="small" color="action" />
-                              <Typography variant="body2" color="primary" sx={{ fontWeight: 500 }}>
-                                {features.length} features
+                              <Typography variant="body2" color={canBrowseFeatures ? 'primary' : 'text.secondary'} sx={{ fontWeight: 500 }}>
+                                {featureCount} features
                               </Typography>
-                              {featureListLayerId === layer.id ? (
+                              {canBrowseFeatures && featureListLayerId === layer.id ? (
                                 <ExpandLessIcon fontSize="small" />
-                              ) : (
+                              ) : canBrowseFeatures ? (
                                 <ExpandMoreIcon fontSize="small" />
+                              ) : null}
+                              {layer.metadata?.sampledCount && layer.metadata?.totalCount && (
+                                <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                                  sampled {layer.metadata.sampledCount}/{layer.metadata.totalCount}
+                                </Typography>
                               )}
                             </Box>
                             {/* Feature list slide-in panel */}
-                            <Collapse in={featureListLayerId === layer.id}>
+                            <Collapse in={canBrowseFeatures && featureListLayerId === layer.id}>
                               <Box sx={{ maxHeight: 300, overflowY: 'auto', bgcolor: 'grey.50' }}>
                                 <List dense disablePadding>
                                   {features.map((feat) => (
@@ -1102,16 +1112,6 @@ export function LayerControl({
                                           fontWeight: 500,
                                         }}
                                       />
-                                      <IconButton
-                                        size="small"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onRemoveFeature?.(layer.id, feat.index);
-                                        }}
-                                        sx={{ ml: 1 }}
-                                      >
-                                        <DeleteIcon fontSize="small" />
-                                      </IconButton>
                                     </ListItem>
                                   ))}
                                 </List>
