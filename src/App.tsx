@@ -7,6 +7,7 @@ import { LayerControl, type Layer } from './components/LayerControl';
 import { FeaturePopup } from './components/FeaturePopup';
 import { TileSearch } from './components/TileSearch';
 import { BaseMapSelector } from './components/BaseMapSelector';
+import { MapColorbarOverlay } from './components/MapColorbarOverlay';
 import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
 import LayerGroup from 'ol/layer/Group';
@@ -482,6 +483,7 @@ function App() {
         url: predictionData.url,
         rescaleMin: defaultRescale.min,
         rescaleMax: defaultRescale.max,
+        colormap: 'inferno',
         useClientSideTransform: useClientSideTransform,
       };
       if (extent && extent.length === 4 && extent.every((val: number) => isFinite(val))) {
@@ -506,6 +508,7 @@ function App() {
     url: string;
     tile_name: string;
     layer_type: string;
+    metric?: 'entropy' | 'enl1d' | 'enl2d';
   }) => {
     if (!map) return;
     console.log('Loading auxiliary layer via TiTiler:', data);
@@ -552,9 +555,40 @@ function App() {
         });
       }
 
-      const rescale = data.layer_type === 'cr' ? '0.3,1.3' : '0,5490';
-      const colormapParam = data.layer_type === 'cr' ? '&colormap_name=ylgn_r' : '';
-      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=${rescale}${colormapParam}`;
+      const entropyMetric = data.metric ?? 'entropy';
+      const entropyRescale =
+        entropyMetric === 'enl1d'
+          ? '1,6'
+          : entropyMetric === 'enl2d'
+            ? '1,4'
+            : '0,2.5';
+      const rescale =
+        data.layer_type === 'cr'
+          ? '0.3,1.3'
+          : data.layer_type === 'als'
+            ? '0,50'
+            : data.layer_type === 'profile_entropy'
+              ? entropyRescale
+            : '0,5490';
+      const [rescaleMin, rescaleMax] = rescale.split(',').map((value) => parseFloat(value));
+      const colormap =
+        data.layer_type === 'cr'
+          ? 'ylgn_r'
+          : data.layer_type === 'als'
+            ? 'inferno'
+            : data.layer_type === 'profile_entropy'
+              ? 'greens'
+              : undefined;
+      const colormapParam =
+        data.layer_type === 'cr'
+          ? '&colormap_name=ylgn_r'
+          : data.layer_type === 'als'
+            ? '&colormap_name=inferno'
+            : data.layer_type === 'profile_entropy'
+              ? '&colormap_name=greens'
+            : '';
+      const nodataParam = data.layer_type === 'als' ? '&nodata=255' : '';
+      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=${rescale}${nodataParam}${colormapParam}`;
       const layerOpts: any = {
         source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
         opacity: 1,
@@ -566,7 +600,18 @@ function App() {
       const newLayer = new TileLayer(layerOpts);
 
       const layerId = `auxiliary-${data.layer_type}-${data.tile_name}-${Date.now()}`;
-      const layerName = data.layer_type === 'cr' ? `Canopy Ratio ${data.tile_name}` : `${data.tile_name} (${data.layer_type.replace('_', ' ')})`;
+      const profileEntropyLabel =
+        entropyMetric === 'enl1d'
+          ? '1D ENL'
+          : entropyMetric === 'enl2d'
+            ? '2D ENL'
+            : 'FHD';
+      const layerName =
+        data.layer_type === 'cr'
+          ? `Canopy Ratio ${data.tile_name}`
+          : data.layer_type === 'profile_entropy'
+            ? `${data.tile_name} (${profileEntropyLabel})`
+            : `${data.tile_name} (${data.layer_type.replace('_', ' ')})`;
 
       map.addLayer(newLayer);
 
@@ -575,6 +620,10 @@ function App() {
           tileName: data.tile_name,
           url: data.url,
           layerType: data.layer_type,
+          metric: data.metric,
+          rescaleMin,
+          rescaleMax,
+          colormap,
           extent,
         });
       }
@@ -1931,6 +1980,8 @@ function App() {
         
         {/* Tile Search */}
         <TileSearch map={map} />
+
+        <MapColorbarOverlay layers={layers} />
         
         {/* Base Map Selector */}
         <BaseMapSelector map={map} />

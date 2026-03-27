@@ -31,7 +31,8 @@ import subprocess
 import asyncio
 import mgrs
 
-from utils import compute_entropy_dask, create_vrt, vertical_profile
+import utils
+from utils import create_vrt, vertical_profile
 
 origins = [
     "http://localhost:9020",
@@ -81,7 +82,8 @@ DISTANCE_MAPS_LOCAL_BASE_PATH = os.environ.get('DISTANCE_MAPS_LOCAL_BASE_PATH', 
 S2_GRID_LOCAL_PATH = os.environ.get('S2_GRID_LOCAL_PATH', '')
 CR_LOCAL_BASE_PATH = os.environ.get('CR_LOCAL_BASE_PATH', '')
 PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE = os.environ.get('PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE', '{tile}_Q{q}.vrt')
-ENTROPY_LOCAL_BASE_PATH = os.environ.get('ENTROPY_LOCAL_BASE_PATH', '')
+DIVERSITY_INDICES_LOCAL_BASE_PATH = os.environ.get('DIVERSITY_INDICES_LOCAL_BASE_PATH', '')
+ALS_LOCAL_TEMPLATE = os.environ.get('ALS_LOCAL_TEMPLATE', '')
 print("=== Prediction env vars ===")
 print(f"  PREDICTIONS_LOCAL_BASE_PATH  = {PREDICTIONS_LOCAL_BASE_PATH}")
 print(f"  PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH = {PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH}")
@@ -93,7 +95,8 @@ print(f"  DISTANCE_MAPS_LOCAL_BASE_PATH = {DISTANCE_MAPS_LOCAL_BASE_PATH}")
 print(f"  S2_GRID_LOCAL_PATH           = {S2_GRID_LOCAL_PATH}")
 print(f"  CR_LOCAL_BASE_PATH           = {CR_LOCAL_BASE_PATH}")
 print(f"  PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE = {PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE}")
-print(f"  ENTROPY_LOCAL_BASE_PATH = {ENTROPY_LOCAL_BASE_PATH}")
+print(f"  DIVERSITY_INDICES_LOCAL_BASE_PATH = {DIVERSITY_INDICES_LOCAL_BASE_PATH}")
+print(f"  ALS_LOCAL_TEMPLATE = {ALS_LOCAL_TEMPLATE}")
 print("===========================")
 
 # COG tiler with a simple HTML viewer at /cog/viewer
@@ -156,8 +159,8 @@ async def compute_cr(tile_id: str, year: int) -> Path:
 
 
 async def compute_entropy(tile_id: str, year: int):
-    path_entropy = Path(f"{ENTROPY_LOCAL_BASE_PATH}/{year}/tiles/geotiff/{tile_id}_Q1.tif")
-    path_entropy_cog = Path(f"{ENTROPY_LOCAL_BASE_PATH}/{year}/tiles/cog/{tile_id}_Q1.tif")
+    path_entropy = Path(f"{DIVERSITY_INDICES_LOCAL_BASE_PATH}/{year}/tiles/geotiff/{tile_id}_Q1.tif")
+    path_entropy_cog = Path(f"{DIVERSITY_INDICES_LOCAL_BASE_PATH}/{year}/tiles/cog/{tile_id}_Q1.tif")
     if path_entropy_cog.exists():
         return path_entropy_cog
     input_vrt_path = Path(f"{PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE.format(tile=tile_id, q=1)}")
@@ -165,7 +168,7 @@ async def compute_entropy(tile_id: str, year: int):
         tile_dir = Path(f"{PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH}/{tile_id}") # TODO: change to blended version when blending is done for all RH metrics
         create_vrt(tile_dir, input_vrt_path)
     
-    compute_entropy_dask(input_vrt_path, path_entropy, year)
+    utils.compute_entropy(output_path=path_entropy, tile_id=tile_id, year=year, vrt_path=input_vrt_path)
     # translate to cog
     translate_cmd = [
         "gdal_translate",
@@ -1738,24 +1741,30 @@ async def auxiliary_cr_options():
 class AuxiliaryEntropyRequest(BaseModel):
     tile_name: str
     year: int
+    metric: str = "entropy"
 
 
 @app.post("/auxiliary/profile-entropy")
 async def load_or_compute_profile_entropy(request: AuxiliaryEntropyRequest):
     """Load or generate profile entropy COG for a tile."""
-    if not ENTROPY_LOCAL_BASE_PATH:
-        return {"success": False, "error": "ENTROPY_LOCAL_BASE_PATH env var is not set."}
+    if not DIVERSITY_INDICES_LOCAL_BASE_PATH:
+        return {"success": False, "error": "DIVERSITY_INDICES_LOCAL_BASE_PATH env var is not set."}
 
     tile_id = request.tile_name
     year = request.year
-    path_entropy = Path(ENTROPY_LOCAL_BASE_PATH) / str(year) / "tiles" / "cog" / f"{tile_id}_Q1.tif"
-
+    metric = request.metric.strip().lower()
+    allowed_metrics = {"entropy", "enl1d", "enl2d"}
+    if metric not in allowed_metrics:
+        return {"success": False, "error": f"Invalid metric '{request.metric}'. Use one of: entropy, enl1d, enl2d."}
+    path_entropy = Path(DIVERSITY_INDICES_LOCAL_BASE_PATH) / str(year) / "tiles" / "cog" / f"{tile_id}_{metric}.tif"
+    print(f"[auxiliary/profile-entropy] tile={tile_id}, metric={metric}, path={path_entropy}")
     if path_entropy.is_file():
         return {
             "success": True,
             "url": str(path_entropy),
             "tile_name": tile_id,
             "layer_type": "profile_entropy",
+            "metric": metric,
         }
 
     try:
@@ -1765,6 +1774,7 @@ async def load_or_compute_profile_entropy(request: AuxiliaryEntropyRequest):
             "url": str(path_out),
             "tile_name": tile_id,
             "layer_type": "profile_entropy",
+            "metric": metric,
         }
     except HTTPException as exc:
         err = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
@@ -1775,6 +1785,60 @@ async def load_or_compute_profile_entropy(request: AuxiliaryEntropyRequest):
 
 @app.options("/auxiliary/profile-entropy")
 async def auxiliary_profile_entropy_options():
+    return {"message": "OK"}
+
+
+class AuxiliaryALSRequest(BaseModel):
+    tile_name: str
+
+
+@app.post("/auxiliary/als")
+async def load_als(request: AuxiliaryALSRequest):
+    """Load ALS (Airborne Lidar) evaluation GeoTIFF/COG for a given tile.
+
+    Uses either:
+      - ALS_LOCAL_TEMPLATE: "{...}/{tile}.tif" / "{...}/{tile}.cog.tif" (recommended)
+      - ALS_LOCAL_BASE_PATH: base directory; tries "{base}/{tile}.cog.tif" then "{base}/{tile}.tif"
+    """
+    if not ALS_LOCAL_TEMPLATE:
+        return {"success": False, "error": "ALS_LOCAL_TEMPLATE / ALS_LOCAL_BASE_PATH env var is not set."}
+
+    tile_id = request.tile_name
+
+    # Preferred: template with {tile}
+    path_out: Optional[Path] = None
+    if ALS_LOCAL_TEMPLATE:
+        try:
+            candidate = Path(ALS_LOCAL_TEMPLATE.format(tile=tile_id))
+            if candidate.is_file():
+                path_out = candidate
+        except Exception:
+            # Fall back to base path if template formatting failed.
+            path_out = None
+
+    # Fallback: base directory layout
+    if path_out is None:
+        candidates = [
+            Path(ALS_LOCAL_TEMPLATE.format(tile=tile_id)),
+        ]
+        for c in candidates:
+            if c.is_file():
+                path_out = c
+                break
+
+    if path_out is None:
+        return {"success": False, "error": f"ALS tile not found for {tile_id}."}
+
+    return {
+        "success": True,
+        "url": str(path_out),
+        "tile_name": tile_id,
+        "layer_type": "als",
+    }
+
+
+@app.options("/auxiliary/als")
+async def auxiliary_als_options():
     return {"message": "OK"}
 
 

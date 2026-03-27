@@ -59,11 +59,12 @@ interface FeaturePopupProps {
     url: string;
     tile_name: string;
     layer_type: string;
+    metric?: 'entropy' | 'enl1d' | 'enl2d';
   }) => void;
 }
 
 export function FeaturePopup({ properties, onClose, position, geometry, coordinates, onLoadSentinel2Image, onLoadPredictionCOG, onLoadAuxiliaryLayer }: FeaturePopupProps) {
-  const [year, setYear] = useState<string>(new Date().getFullYear().toString());
+  const [year, setYear] = useState<string>('2020');
   const [maxCloudCover, setMaxCloudCover] = useState<string>('50');
   const [loading, setLoading] = useState(false);
   const [predLoading, setPredLoading] = useState(false);
@@ -90,6 +91,10 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [entropyLoading, setEntropyLoading] = useState(false);
   const [entropyError, setEntropyError] = useState<string | null>(null);
   const [entropyResult, setEntropyResult] = useState<any | null>(null);
+  const [entropyMetric, setEntropyMetric] = useState<'entropy' | 'enl1d' | 'enl2d'>('entropy');
+  const [alsLoading, setAlsLoading] = useState(false);
+  const [alsError, setAlsError] = useState<string | null>(null);
+  const [alsResult, setAlsResult] = useState<any | null>(null);
 
   // Draggable state
   const [isDragging, setIsDragging] = useState(false);
@@ -585,6 +590,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
           url: data.url,
           tile_name: data.tile_name,
           layer_type: data.layer_type,
+          metric: (data.metric as 'entropy' | 'enl1d' | 'enl2d') || entropyMetric,
         });
       }
     } catch (err: any) {
@@ -611,7 +617,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       const response = await fetch('http://localhost:8000/auxiliary/profile-entropy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tile_name: properties.Name, year: yearNum }),
+        body: JSON.stringify({ tile_name: properties.Name, year: yearNum, metric: entropyMetric }),
       });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -626,6 +632,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
           url: data.url,
           tile_name: data.tile_name,
           layer_type: data.layer_type,
+          metric: (data.metric as 'entropy' | 'enl1d' | 'enl2d') || entropyMetric,
         });
       }
     } catch (err: any) {
@@ -633,6 +640,43 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       console.error('Load profile entropy error:', err);
     } finally {
       setEntropyLoading(false);
+    }
+  };
+
+  const handleLoadALS = async () => {
+    if (!properties?.Name) {
+      setAlsError('No tile name available');
+      return;
+    }
+    setAlsLoading(true);
+    setAlsError(null);
+    setAlsResult(null);
+    try {
+      const response = await fetch('http://localhost:8000/auxiliary/als', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tile_name: properties.Name }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      if (data.success === false || data.error) {
+        throw new Error(data.error || 'Failed to load ALS');
+      }
+      setAlsResult(data);
+      if (onLoadAuxiliaryLayer && data.url) {
+        onLoadAuxiliaryLayer({
+          url: data.url,
+          tile_name: data.tile_name,
+          layer_type: data.layer_type,
+        });
+      }
+    } catch (err: any) {
+      setAlsError(err.message || 'Failed to load ALS');
+      console.error('Load ALS error:', err);
+    } finally {
+      setAlsLoading(false);
     }
   };
 
@@ -1088,6 +1132,29 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
             >
               {entropyLoading ? 'Loading...' : 'Load Profile Entropy'}
             </Button>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={handleLoadALS}
+              disabled={alsLoading}
+            >
+              {alsLoading ? 'Loading...' : 'Load ALS'}
+            </Button>
+          </Box>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+            <FormControl size="small" sx={{ minWidth: 180 }}>
+              <InputLabel>Profile entropy metric</InputLabel>
+              <Select
+                value={entropyMetric}
+                label="Profile entropy metric"
+                onChange={(e) => setEntropyMetric(e.target.value as 'entropy' | 'enl1d' | 'enl2d')}
+                MenuProps={{ sx: { zIndex: 2100 } }}
+              >
+                <MenuItem value="entropy">FHD</MenuItem>
+                <MenuItem value="enl1d">1D ENL</MenuItem>
+                <MenuItem value="enl2d">2D ENL</MenuItem>
+              </Select>
+            </FormControl>
           </Box>
         </Box>
         {distMapError && (
@@ -1103,6 +1170,11 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
         {entropyError && (
           <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
             {entropyError}
+          </Typography>
+        )}
+        {alsError && (
+          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+            {alsError}
           </Typography>
         )}
         {distMapResult && (
@@ -1139,8 +1211,24 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
             <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
               Tile: {entropyResult.tile_name}
             </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
+              Metric: {entropyMetric === 'entropy' ? 'FHD' : entropyMetric === 'enl1d' ? '1D ENL' : '2D ENL'}
+            </Typography>
             <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
               URL: {entropyResult.url}
+            </Typography>
+          </Box>
+        )}
+        {alsResult && (
+          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
+              ✓ ALS loaded successfully
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
+              Tile: {alsResult.tile_name}
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
+              URL: {alsResult.url}
             </Typography>
           </Box>
         )}

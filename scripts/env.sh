@@ -8,7 +8,8 @@ export PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE="/projects/dereeco/data/gvs/predictio
 export DISTANCE_MAPS_LOCAL_BASE_PATH="/projects/dereeco/data/gvs/assets/blending/distance_maps/"
 export CR_LOCAL_BASE_PATH="/projects/dereeco/data/gvs/products/canopy_ratio/"
 export S2_GRID_LOCAL_PATH="/projects/dereeco/data/gvs/state/deploy_status.fgb"
-export ENTROPY_LOCAL_BASE_PATH="/projects/dereeco/data/gvs/products/profile_entropy/"
+export DIVERSITY_INDICES_LOCAL_BASE_PATH="/projects/dereeco/data/gvs/products/diversity_indices/"
+export ALS_LOCAL_TEMPLATE="/projects/dereeco/data/gvs/evaluation/with_airborne_lidar/ALS_MaxGEDIFootprint_GSD10m/{tile}.cog.tif"
 
 # --- Mosaic (low-res overview) ---
 # Path template for local mosaic JSON files. Placeholders: {year}, {rh}, {q}

@@ -45,7 +45,7 @@ import { PALETTES, type PaletteName } from './Sidebar';
 import { DEFAULT_RESCALE_MAX_BY_RH } from '../constants/predictions';
 
 type Color = GetProp<ColorPickerProps, 'value'>;
-interface Layer {
+export interface Layer {
   id: string;
   name: string;
   visible: boolean;
@@ -55,7 +55,7 @@ interface Layer {
   metadata?: Record<string, any>;
 }
 
-interface LayerControlProps {
+export interface LayerControlProps {
   layers: Layer[];
   onToggleVisibility: (layerId: string) => void;
   onChangeOpacity: (layerId: string, opacity: number) => void;
@@ -469,6 +469,19 @@ export function LayerControl({
                         </>
                       );
                     })()}
+                  </Box>
+                )}
+                {layer.metadata?.colormap && (
+                  <Box>
+                    <Typography variant="caption" color="text.secondary" gutterBottom>
+                      Colormap
+                    </Typography>
+                    <Chip
+                      size="small"
+                      icon={<PaletteIcon />}
+                      label={String(layer.metadata.colormap)}
+                      sx={{ width: 'fit-content' }}
+                    />
                   </Box>
                 )}
                               </Box>
@@ -1118,5 +1131,3 @@ export function LayerControl({
     </Paper>
   );
 }
-
-export type { Layer, LayerControlProps };
