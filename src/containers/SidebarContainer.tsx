@@ -10,6 +10,7 @@ import { transformExtent } from 'ol/proj';
 import { unByKey } from 'ol/Observable';
 import { deserialize } from 'flatgeobuf/lib/mjs/ol';
 import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore';
+import { parseUploadedFile } from '../utils/parseUploadedFile';
 
 const max = 500;
 
@@ -19,6 +20,8 @@ function createColorRamp(colors: string[]) {
 }
 
 export function SidebarContainer() {
+  const [uploadingFile, setUploadingFile] = React.useState(false);
+
   // Zustand store
   const {
     map,
@@ -43,6 +46,8 @@ export function SidebarContainer() {
     fgbInfo: currentFgbInfo,
     setCurrentFileName,
     setFgbInfo,
+    layerManager,
+    setLayers,
   } = useMapStore();
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -724,6 +729,89 @@ export function SidebarContainer() {
     });
   };
 
+  const updateLayersList = React.useCallback(() => {
+    if (!map || !layerManager) return;
+    layerManager.syncAllProperties();
+    const managedLayers = layerManager.getAllLayers();
+    setLayers(managedLayers.map((m: any) => ({
+      id: m.id, name: m.name, visible: m.visible, opacity: m.opacity,
+      zIndex: m.zIndex, type: m.type, metadata: m.metadata,
+    })));
+  }, [map, layerManager, setLayers]);
+
+  const handleUploadFile = React.useCallback(async (file: File) => {
+    if (!map || !layerManager) return;
+    setUploadingFile(true);
+    try {
+      const result = await parseUploadedFile(file);
+      if (result.error) {
+        alert(result.error);
+        return;
+      }
+      if (result.features.length === 0) {
+        alert('No features found in the file.');
+        return;
+      }
+
+      const source = new VectorSource({ features: result.features });
+      const hasPoints = result.features.some(
+        (f) => f.getGeometry()?.getType() === 'Point' || f.getGeometry()?.getType() === 'MultiPoint',
+      );
+
+      const styleCache = new globalThis.Map<number, Style>();
+      const getZoomStyle = (zoom: number) => {
+        const rounded = Math.round(zoom);
+        let s = styleCache.get(rounded);
+        if (s) return s;
+        const radius = hasPoints ? Math.max(4000, Math.min(14000, rounded * 80)) : 0;
+        const strokeW = Math.max(8, Math.min(16, rounded * 0.6));
+        s = new Style({
+          stroke: new Stroke({ color: '#1976d2', width: strokeW }),
+          fill: new Fill({ color: 'rgba(25, 118, 210, 0.15)' }),
+          ...(hasPoints
+            ? {
+                image: new CircleStyle({
+                  radius,
+                  fill: new Fill({ color: 'rgba(25, 118, 210, 0.7)' }),
+                  stroke: new Stroke({ color: '#fff', width: Math.max(1, strokeW * 0.5) }),
+                }),
+              }
+            : {}),
+        });
+        styleCache.set(rounded, s);
+        return s;
+      };
+
+      const layer = new VectorLayer({
+        source,
+        zIndex: 700,
+        style: () => {
+          const zoom = map.getView().getZoom() ?? 10;
+          return getZoomStyle(zoom);
+        },
+      });
+
+      const layerId = `upload-${Date.now()}`;
+      const layerName = `${result.name} (${result.features.length})`;
+      map.addLayer(layer);
+
+      const extent = source.getExtent();
+      const metadata: Record<string, any> = { fileName: file.name, featureCount: result.features.length };
+      if (extent?.length === 4 && extent.every((v: number) => isFinite(v))) {
+        metadata.extent = extent;
+        map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000 });
+      }
+
+      layerManager.addLayer(layerId, layerName, 'vector', layer, metadata);
+      updateLayersList();
+    } catch (e: any) {
+      console.error('Upload error:', e);
+      alert(`Failed to load file: ${e.message}`);
+    } finally {
+      setUploadingFile(false);
+    }
+  }, [map, layerManager, updateLayersList]);
+
   const handleGetTiles = () => {
     const next = !drawingActive;
     if (next) {
@@ -749,6 +837,8 @@ export function SidebarContainer() {
       inspectKind={inspectKind}
       onInspectModeChange={handleInspectModeChange}
       onVerticalProfileClick={handleVerticalProfileClick}
+      onUploadFile={handleUploadFile}
+      uploadingFile={uploadingFile}
     />
   );
 } 

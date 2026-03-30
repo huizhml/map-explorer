@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Typography,
@@ -11,6 +11,7 @@ import {
   Checkbox,
   FormControlLabel,
   IconButton,
+  CircularProgress,
 } from '@mui/material';
 import {
   Layers as LayersIcon,
@@ -18,6 +19,7 @@ import {
   Close as CloseIcon,
   Search as SearchIcon,
   ShowChart as ShowChartIcon,
+  UploadFile as UploadFileIcon,
 } from '@mui/icons-material';
 import type { VsmQChoice } from '../constants/predictions';
 
@@ -46,6 +48,9 @@ interface SidebarProps {
   inspectKind: 'layers' | 'vertical_profile';
   onInspectModeChange: (active: boolean) => void;
   onVerticalProfileClick: () => void;
+  // File upload
+  onUploadFile: (file: File) => Promise<void>;
+  uploadingFile: boolean;
 }
 
 // Common palettes for visualization
@@ -90,8 +95,11 @@ export function Sidebar({
   inspectKind,
   onInspectModeChange,
   onVerticalProfileClick,
+  onUploadFile,
+  uploadingFile,
 }: SidebarProps) {
   const [showAddedInfo, setShowAddedInfo] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (addedVsmLayers.length === 0) return;
@@ -245,6 +253,39 @@ export function Sidebar({
               ? `Click the map — original RH0–RH100 (Q1) for year ${vsmYear}`
               : 'Original prediction COGs (Q1); year from above; click again to turn off'}
           </Typography>
+        </Box>
+
+        {/* Upload File Section */}
+        <Box sx={{ mt: 3 }}>
+          <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <UploadFileIcon /> Upload File
+          </Typography>
+          <Box sx={{ mt: 1.5 }}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,.tsv,.geojson,.json,.fgb,.zip"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onUploadFile(f);
+                e.target.value = '';
+              }}
+            />
+            <Button
+              variant="outlined"
+              color="primary"
+              fullWidth
+              startIcon={uploadingFile ? <CircularProgress size={18} /> : <UploadFileIcon />}
+              disabled={uploadingFile}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {uploadingFile ? 'Loading…' : 'Upload file'}
+            </Button>
+            <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: 'text.secondary' }}>
+              CSV, GeoJSON, FlatGeobuf, or Shapefile (zipped)
+            </Typography>
+          </Box>
         </Box>
 
         {/* Drawing Tools Section */}

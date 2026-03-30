@@ -30,7 +30,7 @@ function formatValueFallback(v: unknown): string {
 const CHART_W = 380;
 const CHART_H = 260;
 const SNAP_PX = 14;
-const MAX_HEIGHT = 1000;
+const MAX_HEIGHT = 100;
 
 function computeFhd(rhsValues: number[], interval: number): number | null {
   const finiteValues = rhsValues.filter((v) => Number.isFinite(v));
@@ -74,8 +74,8 @@ function VerticalProfileSummary({ profile, dimmed }: { profile: VerticalProfileP
   const rhsValues = profile
     .filter((p) => p.value != null && !p.missing)
     .map((p) => p.value as number);
-  const fhd5 = computeFhd(rhsValues, 50);
-  const fhd10 = computeFhd(rhsValues, 100);
+  const fhd5 = computeFhd(rhsValues, 5);
+  const fhd10 = computeFhd(rhsValues, 10);
 
   const formatMetric = (v: number | null, digits = 3) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(digits));
   const rows = [

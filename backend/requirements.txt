@@ -11,3 +11,4 @@ pyproj
 pydantic
 mgrs
 rasterio
+duckdb

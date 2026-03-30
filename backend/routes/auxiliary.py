@@ -20,7 +20,7 @@ from fastapi import HTTPException
 from shapely import wkb, wkt
 
 import utils
-from utils import create_vrt, vertical_profile, pixel_fhd
+from utils import create_vrt, vertical_profile, pixel_diversity_indices
 
 try:
     import duckdb
@@ -288,18 +288,22 @@ async def gedi_point_profile(request: GEDIPointProfileRequest):
         vp = []
         print(f"[gedi/point-profile] vertical_profile error: {e}")
 
+    def _safe_scalar(v: float):
+        return None if (math.isnan(v) or math.isinf(v)) else v
+
     try:
-        raw = float(pixel_fhd(rhs, interval=request.fhd_interval, max_height=100))
-        fhd = None if math.isnan(raw) or math.isinf(raw) else raw
+        fhd, enl1d, enl2d = _safe_scalar(float(pixel_diversity_indices(rhs, interval=request.fhd_interval, max_height=100)))
     except Exception as e:
-        fhd = None
-        print(f"[gedi/point-profile] pixel_fhd error: {e}")
+        fhd, enl1d, enl2d = None, None, None
+        print(f"[gedi/point-profile] pixel_diversity_indices error: {e}")
 
     return {
         "success": True,
         "rh_curve": [{"rh": i, "value": _safe(float(v))} for i, v in enumerate(rhs)],
         "vertical_profile": vp,
         "fhd": fhd,
+        "enl1d": enl1d,
+        "enl2d": enl2d,
         "fhd_interval": request.fhd_interval,
     }
 

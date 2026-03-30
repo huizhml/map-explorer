@@ -15,7 +15,6 @@ export function useMapInteractions(updateLayersList: () => void) {
   const {
     map, fgbLayer, highlightLayer, setHighlightLayer,
     setPopupProperties, setPopupPosition, setPopupGeometry, setPopupCoordinates,
-    setInspectPanel,
   } = useMapStore();
   const { drawingActive, setDrawingActive, setSelectedTiles } = useMapStore();
 
@@ -24,6 +23,7 @@ export function useMapInteractions(updateLayersList: () => void) {
   const inspectPinFeatureRef = useRef<Feature<Point> | null>(null);
   const drawLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
   const labelLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
+  const highlightedGediRef = useRef<Feature<Geometry> | null>(null);
   const [gediPointPopup, setGediPointPopup] = useState<GediPointData | null>(null);
 
   const clearInspectPin = useCallback(() => {
@@ -315,6 +315,10 @@ export function useMapInteractions(updateLayersList: () => void) {
       highlightLayer.getSource()?.clear();
 
       // GEDI click
+      if (highlightedGediRef.current) {
+        highlightedGediRef.current.setStyle(undefined);
+        highlightedGediRef.current = null;
+      }
       const gediMgr = useMapStore.getState().layerManager;
       if (gediMgr) {
         const gediLayers = gediMgr.getLayersByType('vector').filter((m: any) => m.id.startsWith('gedi-'));
@@ -325,7 +329,18 @@ export function useMapInteractions(updateLayersList: () => void) {
             const src = (managed.layer as any).getSource?.();
             if (src && src.getFeatures().includes(feature)) {
               hit = true;
-              setGediPointPopup({ coordinate: evt.coordinate, properties: feature.getProperties() });
+              feature.setStyle(new Style({
+                image: new CircleStyle({
+                  radius: 8,
+                  fill: new Fill({ color: 'rgba(255, 235, 59, 0.9)' }),
+                  stroke: new Stroke({ color: '#e65100', width: 2.5 }),
+                }),
+              }));
+              highlightedGediRef.current = feature;
+              const geom = feature.getGeometry();
+              const featureCoord = geom && typeof geom.getCoordinates === 'function'
+                ? geom.getCoordinates() : evt.coordinate;
+              setGediPointPopup({ coordinate: featureCoord, properties: feature.getProperties() });
               return;
             }
           }
@@ -333,6 +348,41 @@ export function useMapInteractions(updateLayersList: () => void) {
         if (hit) return;
       }
       setGediPointPopup(null);
+
+      // Uploaded vector layer click
+      const uploadMgr = useMapStore.getState().layerManager;
+      if (uploadMgr) {
+        const uploadLayers = uploadMgr.getLayersByType('vector').filter((m: any) => m.id.startsWith('upload-'));
+        if (uploadLayers.length > 0) {
+          let uploadHit = false;
+          map.forEachFeatureAtPixel(evt.pixel, (feature: any) => {
+            if (uploadHit) return;
+            for (const managed of uploadLayers) {
+              const src = (managed.layer as any).getSource?.();
+              if (src && src.getFeatures().includes(feature)) {
+                uploadHit = true;
+                const props = feature.getProperties();
+                const geom = feature.getGeometry();
+                if (geom && highlightLayer) {
+                  const hl = highlightLayer.getSource();
+                  if (hl) {
+                    const ng = createHighlightGeometry(geom);
+                    if (ng) hl.addFeature(new Feature({ geometry: ng }));
+                  }
+                }
+                const px = evt.originalEvent;
+                const [lon, lat] = transform(evt.coordinate, 'EPSG:3857', 'EPSG:4326');
+                setPopupProperties(props);
+                setPopupPosition({ x: px.offsetX, y: px.offsetY });
+                setPopupGeometry(geom || null);
+                setPopupCoordinates({ lon, lat });
+                return;
+              }
+            }
+          }, { hitTolerance: 8 });
+          if (uploadHit) return;
+        }
+      }
 
       // FGB click
       const currentFgb = useMapStore.getState().fgbLayer;
@@ -412,5 +462,13 @@ export function useMapInteractions(updateLayersList: () => void) {
     };
   }, [map, fgbLayer, highlightLayer, createHighlightGeometry, setInspectPinAtCoordinate]);
 
-  return { gediPointPopup, setGediPointPopup, clearInspectPin };
+  const closeGediPopup = useCallback(() => {
+    if (highlightedGediRef.current) {
+      highlightedGediRef.current.setStyle(undefined);
+      highlightedGediRef.current = null;
+    }
+    setGediPointPopup(null);
+  }, []);
+
+  return { gediPointPopup, closeGediPopup, clearInspectPin };
 }

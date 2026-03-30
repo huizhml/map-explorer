@@ -13,7 +13,8 @@ import mgrs as mgrs_lib
 import rasterio
 from rasterio.warp import transform as rw_transform
 
-from utils import vertical_profile
+from utils import vertical_profile, pixel_diversity_indices
+import math
 
 router = APIRouter(tags=["predictions"])
 
@@ -224,7 +225,8 @@ async def predictions_vertical_profile(request: VerticalProfileRequest):
                 profile.append({"rh": rh, "value": None, "missing": True})
                 missing_files += 1
             else:
-                profile.append({"rh": rh, "value": val, "missing": False})
+                # COG pixel values are in decimeters; convert to meters
+                profile.append({"rh": rh, "value": val / 10.0 if val is not None else None, "missing": False})
         return profile, missing_files
 
     try:
@@ -236,16 +238,27 @@ async def predictions_vertical_profile(request: VerticalProfileRequest):
     vp_curve = None
     if len(valid_vals) >= 3:
         try:
-            x_vals, y_vals = vertical_profile(valid_vals)
+            x_vals, y_vals = vertical_profile(valid_vals, min_rh=-20, max_rh=50, step=1, window=3)
             vp_curve = [{"z": float(xv), "value": float(yv)} for xv, yv in zip(x_vals.tolist(), y_vals.tolist())]
         except Exception as e:
             print(f"[vertical-profile] curve compute error: {e}")
+
+    def _safe_scalar(v: float):
+        return None if (math.isnan(v) or math.isinf(v)) else v
+
+    fhd, enl1d, enl2d = None, None, None
+    if len(valid_vals) >= 3:
+        try:
+            fhd, enl1d, enl2d = _safe_scalar(float(pixel_diversity_indices(valid_vals, interval=5, max_height=100)))
+        except Exception as e:
+            print(f"[vertical-profile] pixel_diversity_indices error: {e}")
 
     return {
         "success": True, "tile_name": tile, "year": request.year,
         "q_index": request.q_index, "source": request.source,
         "lon": request.lon, "lat": request.lat,
         "profile": profile, "vertical_profile_curve": vp_curve,
+        "fhd": fhd, "enl1d": enl1d, "enl2d": enl2d,
         "missing_file_count": missing_files,
     }
 

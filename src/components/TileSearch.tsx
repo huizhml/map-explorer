@@ -125,7 +125,7 @@ export function TileSearch({ map }: TileSearchProps) {
         const center = fromLonLat([coords.lon, coords.lat]);
         map.getView().animate({
           center: center,
-          zoom: parsedCoords ? 12 : 10, // Zoom in more for coordinates
+          zoom: parsedCoords ? 17 : 10,
           duration: 1000,
         });
         setError(null);

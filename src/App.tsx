@@ -12,6 +12,7 @@ import { GediPointPopup } from './components/GediPointPopup';
 import { LayerManager } from './utils/LayerManager';
 import { useMapStore } from './stores/mapStore';
 import { InspectPanel } from './components/InspectPanel';
+import { SavedGediPointsList } from './components/SavedGediPointsList';
 
 import { useLayerLoaders } from './hooks/useLayerLoaders';
 import { useAutoLoadVSM } from './hooks/useAutoLoadVSM';
@@ -88,7 +89,7 @@ function App() {
   // Hooks
   const { handleLoadSentinel2Image, handleLoadPredictionCOG, handleLoadAuxiliaryLayer, handleLoadGEDIPoints } = useLayerLoaders(updateLayersList);
   const { showZoomMessage, globalLayersRef } = useAutoLoadVSM(updateLayersList);
-  const { gediPointPopup, setGediPointPopup, clearInspectPin } = useMapInteractions(updateLayersList);
+  const { gediPointPopup, closeGediPopup, clearInspectPin } = useMapInteractions(updateLayersList);
   const {
     handleToggleVisibility, handleChangeOpacity, handleChangeZIndex,
     handleChangePredictionRescale, handleReorderLayers, handleRemoveLayer,
@@ -130,7 +131,7 @@ function App() {
         <MapColorbarOverlay layers={layers} />
 
         {gediPointPopup && (
-          <GediPointPopup data={gediPointPopup} onClose={() => setGediPointPopup(null)} />
+          <GediPointPopup data={gediPointPopup} onClose={closeGediPopup} />
         )}
 
         <BaseMapSelector map={map} />
@@ -153,6 +154,8 @@ function App() {
             onClose={() => { setInspectPanel(null); clearInspectPin(); }}
           />
         )}
+
+        <SavedGediPointsList />
       </div>
     </ThemeProvider>
   );

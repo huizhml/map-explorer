@@ -9,6 +9,9 @@ export type VerticalProfileResponse = {
   profile?: Array<{ rh: number; value: number | null; missing?: boolean }>;
   vertical_profile_curve?: Array<{ z: number; value: number }>;
   source?: string;
+  fhd?: number | null;
+  enl1d?: number | null;
+  enl2d?: number | null;
 };
 
 /** Vertical profile uses original COGs for 2020; remote year uses blended URL layout. */

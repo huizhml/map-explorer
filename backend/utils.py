@@ -32,43 +32,26 @@ NODATA_OUT = -9999.0
 stac_collection_dir = '~/data/gvs/products/gvsm_stac_catalog/vsm_local'
 
 
-def pixel_fhd(rhs, interval=5):
+def pixel_diversity_indices(rhs, interval=5, max_height=None):
     """
     Compute per-pixel FHD using a simple histogram approach.
     """
+    if max_height is None:
+        max_height = MAX_HEIGHT
     rhs_arr = np.asarray(rhs, dtype=np.float32)
     rhs_arr = rhs_arr[np.isfinite(rhs_arr)]
     n_bins = int(MAX_HEIGHT / interval)
-    hist, bins = np.histogram(rhs_arr, bins=n_bins, range=(0, MAX_HEIGHT))
-    p = hist / hist.sum()
-    fhd = -np.sum(p * np.log(p), axis=-1).astype(np.float32)
-    return fhd
+    hist, bins = np.histogram(rhs_arr, bins=n_bins, range=(0, MAX_HEIGHT)) # negative values are ignored
+    total = hist.sum()
+    if total == 0:
+        return np.float32(0.0), np.float32(0.0), np.float32(0.0)
+    p = hist / total
+    mask = p > 0
+    fhd = -np.sum(p[mask] * np.log(p[mask])).astype(np.float32)
+    enl1d = np.exp(fhd)
+    enl2d = (1/ (p[mask]**2)).astype(np.float32)
+    return fhd, enl1d, enl2d
 
-
-def pixel_enl1d(rhs, interval=5):
-    """
-    Compute per-pixel ENL0 using a simple histogram approach.
-    """
-    rhs_arr = np.asarray(rhs, dtype=np.float32)
-    rhs_arr = rhs_arr[np.isfinite(rhs_arr)]
-    n_bins = int(MAX_HEIGHT / interval)
-    hist, bins = np.histogram(rhs_arr, bins=n_bins, range=(0, MAX_HEIGHT))
-    p = hist / hist.sum()
-    enl0 = -np.sum(p * np.log(p), axis=-1).astype(np.float32)
-    return enl0
-
-
-def pixel_enl2d(rhs, interval=5):
-    """
-    Compute per-pixel ENL2D using a simple histogram approach.
-    """
-    rhs_arr = np.asarray(rhs, dtype=np.float32)
-    rhs_arr = rhs_arr[np.isfinite(rhs_arr)]
-    n_bins = int(MAX_HEIGHT / interval)
-    hist, bins = np.histogram(rhs_arr, bins=n_bins, range=(0, MAX_HEIGHT))
-    p = hist / hist.sum()
-    enl2d = -np.sum(p * np.log(p), axis=-1).astype(np.float32)
-    return enl2d
 
 def _entropy_chunk(tile):
     """
@@ -85,7 +68,7 @@ def _entropy_chunk(tile):
     n_bands, n_rows, n_cols = tile.shape
     n_pixels = n_rows * n_cols
 
-    valid = np.isfinite(tile) & (tile != NODATA_IN)
+    valid = np.isfinite(tile) & (tile != NODATA_IN) & (tile >= 0)
     nodata_mask = valid.sum(axis=0) == 0
 
     tile_clean = np.where(valid, tile, 0.0)

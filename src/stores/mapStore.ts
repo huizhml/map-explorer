@@ -16,6 +16,15 @@ export type VerticalProfilePoint = {
   missing?: boolean;
 };
 
+export type SavedGediPoint = {
+  id: string;
+  lon: number;
+  lat: number;
+  coordinate: number[];
+  properties: Record<string, any>;
+  savedAt: number;
+};
+
 export type InspectPanelState = {
   lon: number;
   lat: number;
@@ -166,6 +175,12 @@ interface MapStore {
   popupCoordinates: { lon: number; lat: number } | null;
   setPopupCoordinates: (coordinates: { lon: number; lat: number } | null) => void;
 
+  // Saved GEDI points
+  savedGediPoints: SavedGediPoint[];
+  addSavedGediPoint: (point: Omit<SavedGediPoint, 'id' | 'savedAt'>) => void;
+  removeSavedGediPoint: (id: string) => void;
+  clearSavedGediPoints: () => void;
+
   // Highlight layer
   highlightLayer: VectorLayer<any> | null;
   setHighlightLayer: (layer: VectorLayer<any> | null) => void;
@@ -297,6 +312,21 @@ export const useMapStore = create<MapStore>((set, get) => ({
   setPopupGeometry: (geometry) => set({ popupGeometry: geometry }),
   popupCoordinates: null,
   setPopupCoordinates: (coordinates) => set({ popupCoordinates: coordinates }),
+
+  // Saved GEDI points
+  savedGediPoints: [],
+  addSavedGediPoint: (point) =>
+    set((state) => ({
+      savedGediPoints: [
+        ...state.savedGediPoints,
+        { ...point, id: `gedi-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, savedAt: Date.now() },
+      ],
+    })),
+  removeSavedGediPoint: (id) =>
+    set((state) => ({
+      savedGediPoints: state.savedGediPoints.filter((p) => p.id !== id),
+    })),
+  clearSavedGediPoints: () => set({ savedGediPoints: [] }),
 
   // Highlight layer
   highlightLayer: null,
