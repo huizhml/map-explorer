@@ -23,6 +23,8 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
+  Radio,
+  RadioGroup,
 } from '@mui/material';
 import { ColorPicker } from 'antd';
 import type { ColorPickerProps, GetProp } from 'antd';
@@ -42,7 +44,14 @@ import {
 } from '@mui/icons-material';
 import { useMapStore, type ConditionalStyle } from '../stores/mapStore';
 import { PALETTES, type PaletteName } from './Sidebar';
-import { DEFAULT_RESCALE_MAX_BY_RH } from '../constants/predictions';
+import { getDefaultRescaleForRh } from '../constants/predictions';
+import {
+  DIVERSITY_INDICES_BAND_NAMES,
+  DIVERSITY_INDICES_DEFAULT_COLORMAP,
+  getDiversityBandRange,
+  getDiversityRgbRanges,
+} from '../constants/layerRanges';
+import type { DiversityBandConfig } from '../hooks/useLayerLoaders';
 
 type Color = GetProp<ColorPickerProps, 'value'>;
 export interface Layer {
@@ -64,9 +73,267 @@ export interface LayerControlProps {
   onRemoveLayer?: (layerId: string) => void;
   onLocateLayer?: (layerId: string) => void;
   onChangePredictionRescale?: (layerId: string, min: number, max: number) => void;
+  onChangePredictionColormap?: (layerId: string, colormap: string) => void;
+  onChangeDiversityBandConfig?: (layerId: string, config: Partial<DiversityBandConfig>) => void;
   onHighlightFeature?: (layerId: string, featureIndex: number | null) => void;
   onRemoveFeature?: (layerId: string, featureIndex: number) => void;
   vectorFeatures?: Record<string, { name: string; index: number }[]>;
+}
+
+function normalizeDiversityBandNames(bandNames?: string[]): string[] {
+  if (!Array.isArray(bandNames) || bandNames.length === 0) return [...DIVERSITY_INDICES_BAND_NAMES];
+  if (bandNames.includes('CR')) return bandNames;
+  if (bandNames.length === 3) return [...bandNames, 'CR'];
+  return bandNames;
+}
+
+const COLORMAPS = [
+  'greens', 'viridis', 'inferno', 'magma', 'plasma', 'cividis',
+  'ylgn', 'ylgnbu', 'gnbu', 'bugn', 'pubu', 'rdylgn',
+  'spectral', 'rdbu', 'RdBu', 'greys', 'blues', 'reds', 'oranges', 'ylgn_r',
+];
+
+function DiversityIndicesStylePanel({ layer, onChangeOpacity, onChangeDiversityBandConfig }: {
+  layer: Layer;
+  onChangeOpacity: (layerId: string, opacity: number) => void;
+  onChangeDiversityBandConfig?: (layerId: string, config: Partial<DiversityBandConfig>) => void;
+}) {
+  const meta = layer.metadata ?? {};
+  const bandNames: string[] = normalizeDiversityBandNames(meta.bandNames);
+  const bandMode: 'grayscale' | 'rgb' = meta.bandMode ?? 'grayscale';
+  const selectedBand: number = meta.selectedBand ?? 1;
+  const rgbBands: [number, number, number] = meta.rgbBands ?? [1, 2, 3];
+  const selectedBandDefaults = getDiversityBandRange(selectedBand);
+  const rescaleMin: number = meta.rescaleMin ?? selectedBandDefaults[0];
+  const rescaleMax: number = meta.rescaleMax ?? selectedBandDefaults[1];
+  const rgbRescales: [number, number][] = meta.rgbRescales ?? getDiversityRgbRanges(rgbBands);
+  const colormap: string = meta.colormap ?? DIVERSITY_INDICES_DEFAULT_COLORMAP;
+  const gamma: number = meta.gamma ?? 1.0;
+
+  const fire = (cfg: Partial<DiversityBandConfig>) =>
+    onChangeDiversityBandConfig?.(layer.id, cfg);
+
+  const handleBandModeChange = (mode: 'grayscale' | 'rgb') => {
+    if (mode === 'grayscale') {
+      const defaults = getDiversityBandRange(selectedBand);
+      fire({ bandMode: mode, rescaleMin: defaults[0], rescaleMax: defaults[1], colormap });
+    } else {
+      fire({ bandMode: mode, rgbBands, rgbRescales });
+    }
+  };
+
+  const handleGrayscaleBandChange = (band: number) => {
+    const defaults = getDiversityBandRange(band);
+    fire({ selectedBand: band, rescaleMin: defaults[0], rescaleMax: defaults[1] });
+  };
+
+  const handleRGBBandChange = (channel: 0 | 1 | 2, band: number) => {
+    const newBands: [number, number, number] = [...rgbBands] as [number, number, number];
+    newBands[channel] = band;
+    const newRescales = [...rgbRescales];
+    newRescales[channel] = getDiversityBandRange(band);
+    fire({ rgbBands: newBands, rgbRescales: newRescales });
+  };
+
+  const channelLabels = ['Red', 'Green', 'Blue'] as const;
+  const channelColors = ['#d32f2f', '#388e3c', '#1976d2'] as const;
+
+  return (
+    <Box sx={{ mt: 2, p: 1.5, bgcolor: 'grey.50', borderRadius: 1 }}>
+      <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 600 }}>
+        Band Visualization
+      </Typography>
+
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+        {/* Band mode radio */}
+        <RadioGroup
+          row
+          value={bandMode}
+          onChange={(e) => handleBandModeChange(e.target.value as 'grayscale' | 'rgb')}
+        >
+          <FormControlLabel
+            value="grayscale"
+            control={<Radio size="small" />}
+            label={<Typography variant="caption">1 band (Grayscale)</Typography>}
+          />
+          <FormControlLabel
+            value="rgb"
+            control={<Radio size="small" />}
+            label={<Typography variant="caption">3 bands (RGB)</Typography>}
+          />
+        </RadioGroup>
+
+        {/* Band selectors */}
+        {bandMode === 'grayscale' ? (
+          <FormControl size="small" fullWidth>
+            <InputLabel>Band</InputLabel>
+            <Select
+              value={selectedBand}
+              label="Band"
+              onChange={(e) => handleGrayscaleBandChange(Number(e.target.value))}
+            >
+              {bandNames.map((name, i) => (
+                <MenuItem key={i + 1} value={i + 1}>{name}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        ) : (
+          <Box sx={{ display: 'flex', gap: 0.5 }}>
+            {([0, 1, 2] as const).map((ch) => (
+              <FormControl key={ch} size="small" sx={{ flex: 1 }}>
+                <InputLabel sx={{ color: channelColors[ch], fontWeight: 600 }}>
+                  {channelLabels[ch]}
+                </InputLabel>
+                <Select
+                  value={rgbBands[ch]}
+                  label={channelLabels[ch]}
+                  onChange={(e) => handleRGBBandChange(ch, Number(e.target.value))}
+                  sx={{ '& .MuiSelect-select': { fontSize: '0.8rem' } }}
+                >
+                  {bandNames.map((name, i) => (
+                    <MenuItem key={i + 1} value={i + 1}>{name}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            ))}
+          </Box>
+        )}
+
+        {/* Range */}
+        {bandMode === 'grayscale' ? (
+          <Box>
+            <Typography variant="caption" color="text.secondary" gutterBottom sx={{ display: 'block' }}>
+              Range
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <TextField
+                label="Min"
+                type="number"
+                value={rescaleMin}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value);
+                  if (!isNaN(val)) fire({ rescaleMin: val });
+                }}
+                size="small"
+                inputProps={{ step: 0.1 }}
+                sx={{ flex: 1 }}
+              />
+              <TextField
+                label="Max"
+                type="number"
+                value={rescaleMax}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value);
+                  if (!isNaN(val)) fire({ rescaleMax: val });
+                }}
+                size="small"
+                inputProps={{ step: 0.1 }}
+                sx={{ flex: 1 }}
+              />
+            </Box>
+          </Box>
+        ) : (
+          <Box>
+            <Typography variant="caption" color="text.secondary" gutterBottom sx={{ display: 'block' }}>
+              Range (per band)
+            </Typography>
+            {([0, 1, 2] as const).map((ch) => (
+              <Box key={ch} sx={{ display: 'flex', gap: 1, mb: 0.5, alignItems: 'center' }}>
+                {(() => {
+                  const channelDefaults = getDiversityBandRange(rgbBands[ch]);
+                  return (
+                    <>
+                <Typography variant="caption" sx={{ color: channelColors[ch], fontWeight: 600, width: 16 }}>
+                  {channelLabels[ch][0]}
+                </Typography>
+                <TextField
+                  type="number"
+                  value={rgbRescales[ch]?.[0] ?? channelDefaults[0]}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    if (isNaN(val)) return;
+                    const newRescales = [...rgbRescales] as [number, number][];
+                    newRescales[ch] = [val, newRescales[ch]?.[1] ?? channelDefaults[1]];
+                    fire({ rgbRescales: newRescales });
+                  }}
+                  size="small"
+                  inputProps={{ step: 0.1 }}
+                  sx={{ flex: 1, '& input': { py: 0.5, fontSize: '0.8rem' } }}
+                />
+                <Typography variant="caption" color="text.secondary">-</Typography>
+                <TextField
+                  type="number"
+                  value={rgbRescales[ch]?.[1] ?? channelDefaults[1]}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    if (isNaN(val)) return;
+                    const newRescales = [...rgbRescales] as [number, number][];
+                    newRescales[ch] = [newRescales[ch]?.[0] ?? channelDefaults[0], val];
+                    fire({ rgbRescales: newRescales });
+                  }}
+                  size="small"
+                  inputProps={{ step: 0.1 }}
+                  sx={{ flex: 1, '& input': { py: 0.5, fontSize: '0.8rem' } }}
+                />
+                    </>
+                  );
+                })()}
+              </Box>
+            ))}
+          </Box>
+        )}
+
+        {/* Colormap (grayscale only) */}
+        {bandMode === 'grayscale' && (
+          <FormControl size="small" fullWidth>
+            <InputLabel>Colormap</InputLabel>
+            <Select
+              value={colormap}
+              label="Colormap"
+              onChange={(e) => fire({ colormap: e.target.value })}
+            >
+              {COLORMAPS.map((cm) => (
+                <MenuItem key={cm} value={cm}>{cm}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
+
+        {/* Opacity */}
+        <Box>
+          <Typography variant="caption" color="text.secondary" gutterBottom>
+            Opacity: {Math.round(layer.opacity * 100)}%
+          </Typography>
+          <Slider
+            value={layer.opacity}
+            onChange={(_, value) => onChangeOpacity(layer.id, value as number)}
+            min={0}
+            max={1}
+            step={0.05}
+            size="small"
+            valueLabelDisplay="auto"
+            valueLabelFormat={(value) => `${Math.round(value * 100)}%`}
+          />
+        </Box>
+
+        {/* Gamma */}
+        <Box>
+          <Typography variant="caption" color="text.secondary" gutterBottom>
+            Gamma: {gamma.toFixed(2)}
+          </Typography>
+          <Slider
+            value={gamma}
+            onChange={(_, value) => fire({ gamma: value as number })}
+            min={0.1}
+            max={3.0}
+            step={0.05}
+            size="small"
+            valueLabelDisplay="auto"
+          />
+        </Box>
+      </Box>
+    </Box>
+  );
 }
 
 export function LayerControl({
@@ -77,6 +344,8 @@ export function LayerControl({
   onRemoveLayer,
   onLocateLayer,
   onChangePredictionRescale,
+  onChangePredictionColormap,
+  onChangeDiversityBandConfig,
   onHighlightFeature,
   onRemoveFeature: _onRemoveFeature,
   vectorFeatures,
@@ -407,12 +676,23 @@ export function LayerControl({
                           </Collapse>
                         )}
 
-                        {/* Prediction Style Options */}
-                        {layer.type === 'prediction' && (
+                        {/* Diversity Indices Style Options */}
+                        {layer.type === 'prediction' && layer.metadata?.layerType === 'diversity_indices' && (
+                          <Collapse in={showStyle}>
+                            <DiversityIndicesStylePanel
+                              layer={layer}
+                              onChangeOpacity={onChangeOpacity}
+                              onChangeDiversityBandConfig={onChangeDiversityBandConfig}
+                            />
+                          </Collapse>
+                        )}
+
+                        {/* Prediction Style Options (non-diversity) */}
+                        {layer.type === 'prediction' && layer.metadata?.layerType !== 'diversity_indices' && (
                           <Collapse in={showStyle}>
                             <Box sx={{ mt: 2, p: 1.5, bgcolor: 'grey.50', borderRadius: 1 }}>
                               <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 600 }}>
-                                🎨 Style Options
+                                Style Options
                               </Typography>
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
                               <Box>
@@ -434,13 +714,14 @@ export function LayerControl({
                   <Box sx={{ display: 'flex', gap: 1 }}>
                     {(() => {
                       const rh = layer.metadata?.rhIndex as number | undefined;
-                      const defaultMax = rh != null ? (DEFAULT_RESCALE_MAX_BY_RH[rh] ?? 500) : 500;
+                      const defaultRescale = rh != null ? getDefaultRescaleForRh(rh) : { min: 0, max: 500 };
+                      const defaultMax = defaultRescale.max;
                       return (
                         <>
                           <TextField
                             label="Min"
                             type="number"
-                            value={layer.metadata?.rescaleMin ?? 0}
+                            value={layer.metadata?.rescaleMin ?? defaultRescale.min}
                             onChange={(e) => {
                               const min = parseFloat(e.target.value);
                               const max = layer.metadata?.rescaleMax ?? defaultMax;
@@ -458,7 +739,7 @@ export function LayerControl({
                             value={layer.metadata?.rescaleMax ?? defaultMax}
                             onChange={(e) => {
                               const max = parseFloat(e.target.value);
-                              const min = layer.metadata?.rescaleMin ?? 0;
+                              const min = layer.metadata?.rescaleMin ?? defaultRescale.min;
                               if (!isNaN(max) && onChangePredictionRescale) {
                                 onChangePredictionRescale(layer.id, min, max);
                               }
@@ -472,18 +753,19 @@ export function LayerControl({
                     })()}
                   </Box>
                 )}
-                {layer.metadata?.colormap && (
-                  <Box>
-                    <Typography variant="caption" color="text.secondary" gutterBottom>
-                      Colormap
-                    </Typography>
-                    <Chip
-                      size="small"
-                      icon={<PaletteIcon />}
-                      label={String(layer.metadata.colormap)}
-                      sx={{ width: 'fit-content' }}
-                    />
-                  </Box>
+                {onChangePredictionColormap && (
+                  <FormControl size="small" fullWidth>
+                    <InputLabel>Colormap</InputLabel>
+                    <Select
+                      value={String(layer.metadata?.colormap ?? 'inferno')}
+                      label="Colormap"
+                      onChange={(e) => onChangePredictionColormap(layer.id, String(e.target.value))}
+                    >
+                      {COLORMAPS.map((cm) => (
+                        <MenuItem key={cm} value={cm}>{cm}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
                 )}
                               </Box>
                             </Box>

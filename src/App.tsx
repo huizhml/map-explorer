@@ -92,7 +92,8 @@ function App() {
   const { gediPointPopup, closeGediPopup, clearInspectPin } = useMapInteractions(updateLayersList);
   const {
     handleToggleVisibility, handleChangeOpacity, handleChangeZIndex,
-    handleChangePredictionRescale, handleReorderLayers, handleRemoveLayer,
+    handleChangePredictionRescale, handleChangePredictionColormap, handleChangeDiversityBandConfig,
+    handleReorderLayers, handleRemoveLayer,
     handleLocateLayer, vectorFeatures, handleHighlightFeature, handleRemoveFeature,
   } = useLayerControls(updateLayersList, globalLayersRef);
 
@@ -110,6 +111,8 @@ function App() {
           onRemoveLayer={handleRemoveLayer}
           onLocateLayer={handleLocateLayer}
           onChangePredictionRescale={handleChangePredictionRescale}
+          onChangePredictionColormap={handleChangePredictionColormap}
+          onChangeDiversityBandConfig={handleChangeDiversityBandConfig}
           onHighlightFeature={handleHighlightFeature}
           onRemoveFeature={handleRemoveFeature}
           vectorFeatures={vectorFeatures}

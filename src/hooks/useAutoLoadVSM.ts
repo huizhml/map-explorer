@@ -5,6 +5,7 @@ import TileLayer from 'ol/layer/Tile';
 import { transformExtent } from 'ol/proj';
 import { useMapStore } from '../stores/mapStore';
 import { getDefaultRescaleAndColormap, getVsmLayerId, getQIndexForApi, type VsmLayerEntry } from '../constants/predictions';
+import { apiUrl } from '../utils/apiBase';
 
 const DEBOUNCE_MS = 1500;
 const MAX_CONCURRENT = 3;
@@ -66,12 +67,12 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
       (async () => {
         try {
           const qParam = encodeURIComponent(String(getQIndexForApi(entry.qChoice)));
-          const resp = await fetch(`http://localhost:8000/predictions/mosaic-url?year=${entry.year}&rh_index=${entry.rhIndex}&q_index=${qParam}`);
+          const resp = await fetch(apiUrl(`/predictions/mosaic-url?year=${entry.year}&rh_index=${entry.rhIndex}&q_index=${qParam}`));
           const data = await resp.json();
           const s = globalLayersRef.current.get(layerId);
           if (!s || s.cancelled || !data.success) return;
           const rc = getDefaultRescaleAndColormap(entry.rhIndex, entry.qChoice);
-          const url = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}`;
+          const url = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}`);
           const mosaicLayer = new TileLayer({ source: new XYZ({ url, crossOrigin: 'anonymous', maxZoom: 14 }), zIndex: 599, maxZoom: MIN_ZOOM });
           const st = globalLayersRef.current.get(layerId);
           if (st && !st.cancelled && map.getLayers().getArray().includes(st.outerGroup)) st.outerGroup.getLayers().insertAt(0, mosaicLayer);
@@ -108,7 +109,7 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
           if (state.cancelled) return;
           state.autoLoadingTiles.add(tileName);
           try {
-            const resp = await fetch('http://localhost:8000/predictions/load', {
+            const resp = await fetch(apiUrl('/predictions/load'), {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ year: entry.year, tile_name: tileName, rh_index: entry.rhIndex, q_index: qIdx }),
             });
@@ -116,7 +117,7 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
             const data = await resp.json();
             if (!data.success || !data.url || state.cancelled) return;
 
-            const infoResp = await fetch(`http://localhost:8000/cog/info?url=${encodeURIComponent(data.url)}`);
+            const infoResp = await fetch(apiUrl(`/cog/info?url=${encodeURIComponent(data.url)}`));
             if (!infoResp.ok) return;
             const info = await infoResp.json();
             const bbox = info.bounds;
@@ -132,7 +133,7 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
             const rMin = globalManaged?.metadata?.rescaleMin ?? rc.min;
             const rMax = globalManaged?.metadata?.rescaleMax ?? rc.max;
             const cm = globalManaged?.metadata?.colormap ?? rc.colormap;
-            const url = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rMin},${rMax}&colormap_name=${encodeURIComponent(cm)}`;
+            const url = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rMin},${rMax}&colormap_name=${encodeURIComponent(cm)}`);
             const opts: any = { source: new XYZ({ url, crossOrigin: 'anonymous', maxZoom: 18, wrapX: true }), minZoom: MIN_ZOOM - 1 };
             if ((extent[2] - extent[0]) <= 1_000_000) opts.extent = extent;
             if (!state.cancelled) state.group.getLayers().push(new TileLayer(opts));

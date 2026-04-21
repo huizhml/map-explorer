@@ -8,8 +8,61 @@ import XYZ from 'ol/source/XYZ';
 import TileLayer from 'ol/layer/Tile';
 import { transformExtent } from 'ol/proj';
 import { useMapStore } from '../stores/mapStore';
-import { getDefaultRescaleForRh, getDefaultRescaleAndColormap } from '../constants/predictions';
+import { getDefaultRescaleForRh } from '../constants/predictions';
+import {
+  CANOPY_RATIO_RANGE,
+  DIVERSITY_INDICES_BAND_NAMES,
+  DIVERSITY_INDICES_DEFAULT_BAND,
+  DIVERSITY_INDICES_DEFAULT_COLORMAP,
+  getDiversityBandRange,
+  getDiversityRgbRanges,
+  getProfileEntropyRange,
+} from '../constants/layerRanges';
 import { deserialize } from 'flatgeobuf/lib/mjs/ol';
+import { apiUrl } from '../utils/apiBase';
+
+export interface DiversityBandConfig {
+  bandMode: 'grayscale' | 'rgb';
+  selectedBand?: number;
+  rgbBands?: [number, number, number];
+  rescaleMin: number;
+  rescaleMax: number;
+  rgbRescales?: [number, number][];
+  colormap?: string;
+  gamma?: number;
+}
+
+export function buildDiversityTileUrl(cogUrl: string, config: DiversityBandConfig): string {
+  const base = apiUrl('/cog/tiles/WebMercatorQuad/{z}/{x}/{y}');
+  const params = new URLSearchParams();
+  params.set('url', cogUrl);
+  params.set('return_mask', 'true');
+
+  if (config.bandMode === 'grayscale') {
+    const band = config.selectedBand ?? 1;
+    params.append('bidx', String(band));
+    params.set('rescale', `${config.rescaleMin},${config.rescaleMax}`);
+    if (config.colormap) {
+      params.set('colormap_name', config.colormap);
+    }
+  } else {
+    const [r, g, b] = config.rgbBands ?? [1, 2, 3];
+    params.append('bidx', String(r));
+    params.append('bidx', String(g));
+    params.append('bidx', String(b));
+    if (config.rgbRescales && config.rgbRescales.length === 3) {
+      for (const [lo, hi] of config.rgbRescales) {
+        params.append('rescale', `${lo},${hi}`);
+      }
+    } else {
+      params.append('rescale', `${config.rescaleMin},${config.rescaleMax}`);
+      params.append('rescale', `${config.rescaleMin},${config.rescaleMax}`);
+      params.append('rescale', `${config.rescaleMin},${config.rescaleMax}`);
+    }
+  }
+
+  return `${base}?${params.toString()}`;
+}
 
 function extractTileName(imageId: string): string {
   const match = imageId.match(/_T([A-Z0-9]{5})_/);
@@ -19,7 +72,7 @@ function extractTileName(imageId: string): string {
 }
 
 async function fetchCogExtent(url: string) {
-  const infoUrl = `http://localhost:8000/cog/info?url=${encodeURIComponent(url)}`;
+  const infoUrl = apiUrl(`/cog/info?url=${encodeURIComponent(url)}`);
   const resp = await fetch(infoUrl);
   if (!resp.ok) throw new Error(`Failed to get COG info: ${await resp.text()}`);
   const info = await resp.json();
@@ -63,9 +116,11 @@ export function useLayerLoaders(updateLayersList: () => void) {
     try {
       let imageUrl: string;
       let bbox = image.bbox;
+      let isVisualAsset = false;
 
       if (image.visual_url) {
-        const signResp = await fetch('http://localhost:8000/sentinel2/sign-url', {
+        isVisualAsset = true;
+        const signResp = await fetch(apiUrl('/sentinel2/sign-url'), {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: image.visual_url }),
         });
@@ -74,7 +129,7 @@ export function useLayerLoaders(updateLayersList: () => void) {
         if (signData.error) throw new Error(signData.error);
         imageUrl = signData.signed_url || image.visual_url;
       } else {
-        const resp = await fetch('http://localhost:8000/sentinel2/load-image', {
+        const resp = await fetch(apiUrl('/sentinel2/load-image'), {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ item_id: image.id }),
         });
@@ -100,6 +155,10 @@ export function useLayerLoaders(updateLayersList: () => void) {
       setSentinel2Layers((prev: any[]) => [...prev, { layer: newLayer, id: layerId, imageId: image.id, tileName: finalTile, datetime: image.datetime, url: imageUrl }]);
 
       const metadata: any = { imageId: image.id, tileName: finalTile, datetime: image.datetime, url: imageUrl };
+      metadata.rgbBands = isVisualAsset ? [1, 2, 3] : [4, 3, 2];
+      metadata.rescaleMin = 0;
+      metadata.rescaleMax = isVisualAsset ? 255 : 3000;
+      metadata.gamma = 1.0;
       if (bbox?.length === 4) metadata.bbox = bbox;
       layerManager?.addLayer(layerId, layerName, 'sentinel2', newLayer, metadata);
 
@@ -131,7 +190,7 @@ export function useLayerLoaders(updateLayersList: () => void) {
       }
 
       const defaultRescale = getDefaultRescaleForRh(predictionData.rh_index);
-      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${defaultRescale.min},${defaultRescale.max}&colormap_name=inferno`;
+      const tileUrl = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${defaultRescale.min},${defaultRescale.max}&colormap_name=inferno`);
 
       const layerOpts: any = {
         source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
@@ -142,7 +201,7 @@ export function useLayerLoaders(updateLayersList: () => void) {
       const newLayer = new TileLayer(layerOpts);
       const qLabels = ['95%', 'median', '5%'];
       const layerId = `prediction-${predictionData.tile_name}-RH${predictionData.rh_index}-${qLabels[predictionData.q_index]}-${predictionData.year}-${Date.now()}`;
-      const layerName = `${predictionData.tile_name} (${predictionData.year}) RH${predictionData.rh_index} ${qLabels[predictionData.q_index]}`;
+      const layerName = `${predictionData.tile_name} ${predictionData.year} RH${predictionData.rh_index} ${qLabels[predictionData.q_index]}`;
 
       map.addLayer(newLayer);
       setPredictionLayers((prev: any[]) => [...prev, { layer: newLayer, id: layerId, tileName: predictionData.tile_name, rhIndex: predictionData.rh_index, qIndex: predictionData.q_index, year: predictionData.year, url: predictionData.url, useClientSideTransform: false }]);
@@ -158,7 +217,8 @@ export function useLayerLoaders(updateLayersList: () => void) {
   }, [map, layerManager, updateLayersList]);
 
   const handleLoadAuxiliaryLayer = useCallback(async (data: {
-    url: string; tile_name: string; layer_type: string; metric?: 'entropy' | 'enl1d' | 'enl2d';
+    url: string; tile_name: string; layer_type: string;
+    metric?: 'entropy' | 'enl1d' | 'enl2d'; bands?: string[];
   }) => {
     if (!map) return;
     try {
@@ -171,15 +231,62 @@ export function useLayerLoaders(updateLayersList: () => void) {
         });
       }
 
+      if (data.layer_type === 'diversity_indices') {
+        const bandNames = data.bands ?? [...DIVERSITY_INDICES_BAND_NAMES];
+        const defaultBandMode: 'grayscale' | 'rgb' = 'grayscale';
+        const defaultBand = DIVERSITY_INDICES_DEFAULT_BAND;
+        const [defaultRescaleMin, defaultRescaleMax] = getDiversityBandRange(defaultBand);
+        const defaultColormap = DIVERSITY_INDICES_DEFAULT_COLORMAP;
+        const defaultGamma = 1.0;
+        const defaultRgbBands: [number, number, number] = [1, 2, 3];
+        const defaultRgbRescales = getDiversityRgbRanges(defaultRgbBands);
+
+        const tileUrl = buildDiversityTileUrl(data.url, {
+          bandMode: defaultBandMode,
+          selectedBand: defaultBand,
+          rescaleMin: defaultRescaleMin,
+          rescaleMax: defaultRescaleMax,
+          colormap: defaultColormap,
+        });
+
+        const layerOpts: any = {
+          source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
+          opacity: 1, zIndex: 600,
+        };
+        if (!isAntimeridian) layerOpts.extent = extent;
+        const newLayer = new TileLayer(layerOpts);
+
+        const layerId = `auxiliary-diversity_indices-${data.tile_name}-${Date.now()}`;
+        const layerName = `${data.tile_name} Diversity`;
+
+        map.addLayer(newLayer);
+        layerManager?.addLayer(layerId, layerName, 'prediction', newLayer, {
+          tileName: data.tile_name, url: data.url, layerType: 'diversity_indices',
+          bandNames, bandMode: defaultBandMode,
+          selectedBand: defaultBand,
+          rgbBands: defaultRgbBands,
+          rescaleMin: defaultRescaleMin, rescaleMax: defaultRescaleMax,
+          rgbRescales: defaultRgbRescales,
+          colormap: defaultColormap, gamma: defaultGamma, extent,
+        });
+        updateLayersList();
+        return;
+      }
+
       const metric = data.metric ?? 'entropy';
-      const rescaleMap: Record<string, string> = { cr: '0.3,1.3', als: '0,50', profile_entropy: metric === 'enl1d' ? '1,6' : metric === 'enl2d' ? '1,4' : '0,2.5' };
+      const profileEntropyRange = getProfileEntropyRange(metric);
+      const rescaleMap: Record<string, string> = {
+        cr: `${CANOPY_RATIO_RANGE[0]},${CANOPY_RATIO_RANGE[1]}`,
+        als: '0,50',
+        profile_entropy: `${profileEntropyRange[0]},${profileEntropyRange[1]}`,
+      };
       const rescale = rescaleMap[data.layer_type] ?? '0,5490';
       const [rescaleMin, rescaleMax] = rescale.split(',').map(Number);
-      const colormapMap: Record<string, string> = { cr: 'ylgn_r', als: 'inferno', profile_entropy: 'greens' };
+      const colormapMap: Record<string, string> = { cr: 'rdbu', als: 'inferno', profile_entropy: 'greens' };
       const colormap = colormapMap[data.layer_type];
       const colormapParam = colormap ? `&colormap_name=${colormap}` : '';
       const nodataParam = data.layer_type === 'als' ? '&nodata=255' : '';
-      const tileUrl = `http://localhost:8000/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=${rescale}${nodataParam}${colormapParam}`;
+      const tileUrl = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=${rescale}${nodataParam}${colormapParam}`);
 
       const layerOpts: any = {
         source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
@@ -190,9 +297,9 @@ export function useLayerLoaders(updateLayersList: () => void) {
 
       const layerId = `auxiliary-${data.layer_type}-${data.tile_name}-${Date.now()}`;
       const entropyLabel = metric === 'enl1d' ? '1D ENL' : metric === 'enl2d' ? '2D ENL' : 'FHD';
-      const layerName = data.layer_type === 'cr' ? `Canopy Ratio ${data.tile_name}`
-        : data.layer_type === 'profile_entropy' ? `${data.tile_name} (${entropyLabel})`
-        : `${data.tile_name} (${data.layer_type.replace('_', ' ')})`;
+      const layerName = data.layer_type === 'cr' ? `${data.tile_name} Canopy Ratio`
+        : data.layer_type === 'profile_entropy' ? `${data.tile_name} ${entropyLabel}`
+        : `${data.tile_name} ${data.layer_type.replace('_', ' ')}`;
 
       map.addLayer(newLayer);
       layerManager?.addLayer(layerId, layerName, 'prediction', newLayer, {

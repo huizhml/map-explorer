@@ -30,58 +30,25 @@ function formatValueFallback(v: unknown): string {
 const CHART_W = 380;
 const CHART_H = 260;
 const SNAP_PX = 14;
-const MAX_HEIGHT = 100;
 
-function computeFhd(rhsValues: number[], interval: number): number | null {
-  const finiteValues = rhsValues.filter((v) => Number.isFinite(v));
-  if (finiteValues.length === 0 || interval <= 0) return null;
-
-  const nBins = Math.floor(MAX_HEIGHT / interval);
-  if (nBins <= 0) return null;
-
-  const hist = new Array<number>(nBins).fill(0);
-  for (const rh of finiteValues) {
-    if (rh < 0 || rh > MAX_HEIGHT) continue;
-    const idx = Math.min(nBins - 1, Math.floor(rh / interval));
-    hist[idx] += 1;
-  }
-
-  const total = hist.reduce((sum, count) => sum + count, 0);
-  if (total === 0) return null;
-
-  let fhd = 0;
-  for (const count of hist) {
-    if (count <= 0) continue;
-    const p = count / total;
-    fhd -= p * Math.log(p);
-  }
-  return fhd;
-}
-
-function getRhValue(profile: VerticalProfilePoint[], rhTarget: number): number | null {
-  const point = profile.find((p) => p.rh === rhTarget);
-  if (!point || point.missing || point.value == null || !Number.isFinite(point.value)) return null;
-  return point.value;
-}
-
-function VerticalProfileSummary({ profile, dimmed }: { profile: VerticalProfilePoint[]; dimmed?: boolean }) {
-  const rh98 = getRhValue(profile, 98);
-  const rh25 = getRhValue(profile, 25);
-
-  const canopyRatio =
-    rh98 != null && rh25 != null && rh98 !== 0 ? (rh98 - rh25) / rh98 : null;
-
-  const rhsValues = profile
-    .filter((p) => p.value != null && !p.missing)
-    .map((p) => p.value as number);
-  const fhd5 = computeFhd(rhsValues, 5);
-  const fhd10 = computeFhd(rhsValues, 10);
-
+function VerticalProfileSummary({
+  metrics,
+  dimmed,
+}: {
+  metrics?: {
+    fhd?: number | null;
+    enl1d?: number | null;
+    enl2d?: number | null;
+    cr?: number | null;
+  };
+  dimmed?: boolean;
+}) {
   const formatMetric = (v: number | null, digits = 3) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(digits));
   const rows = [
-    { label: 'Canopy ratio (RH98 - RH25) / RH98', value: formatMetric(canopyRatio) },
-    { label: 'FHD (5m interval)', value: formatMetric(fhd5) },
-    { label: 'FHD (10m interval)', value: formatMetric(fhd10) },
+    { label: 'FHD (5m interval)', value: formatMetric(metrics?.fhd ?? null) },
+    { label: '1D ENL (5m interval)', value: formatMetric(metrics?.enl1d ?? null) },
+    { label: '2D ENL (5m interval)', value: formatMetric(metrics?.enl2d ?? null) },
+    { label: 'CR', value: formatMetric(metrics?.cr ?? null) },
   ];
 
   return (
@@ -318,7 +285,7 @@ function VerticalProfileChart({
               key={p.rh}
               cx={xPx(p.rh)}
               cy={yPx(p.value)}
-              r={hover?.activeRh === p.rh ? 4 : 2.5}
+              r={hover?.activeRh === p.rh ? 4 : 2}
               fill={hover?.activeRh === p.rh ? snapRing : fill}
             />
           ) : null,
@@ -711,6 +678,7 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
     pendingSample,
     verticalProfile,
     verticalProfileCurve,
+    profileMetrics,
     profileMeta,
     inspectError,
   } = panel;
@@ -749,6 +717,7 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
       year: profileMeta?.year,
       q_index: profileMeta?.qIndex,
       source: profileMeta?.source,
+      metrics: profileMetrics,
       profile: verticalProfile,
     };
     try {
@@ -769,8 +738,14 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
   const hasNumericVerticalValues = Boolean(
     verticalProfile?.some((p) => p.value != null && !p.missing && Number.isFinite(p.value)),
   );
+  const hasVerticalMetrics = Boolean(
+    profileMetrics
+    && [profileMetrics.fhd, profileMetrics.enl1d, profileMetrics.enl2d, profileMetrics.cr]
+      .some((v) => v != null && Number.isFinite(v)),
+  );
   const hasVerticalCurve = Boolean(verticalProfileCurve && verticalProfileCurve.length > 0);
-  const showVerticalSummaryAndPlots = Boolean(
+  const showVerticalSummary = Boolean(verticalProfile && verticalProfile.length > 0 && hasVerticalMetrics);
+  const showVerticalPlots = Boolean(
     verticalProfile && verticalProfile.length > 0 && hasNumericVerticalValues && hasVerticalCurve,
   );
 
@@ -878,9 +853,13 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
             {verticalLoadingFirst && (
               <CircularProgress size={32} sx={{ color: 'secondary.main' }} aria-label="Loading" />
             )}
-            {showVerticalSummaryAndPlots && (
+            {showVerticalSummary && (
               <>
-                <VerticalProfileSummary profile={verticalProfile!} dimmed={hasStaleVertical} />
+                <VerticalProfileSummary metrics={profileMetrics} dimmed={hasStaleVertical} />
+              </>
+            )}
+            {showVerticalPlots && (
+              <>
                 <Box
                   sx={{
                     display: 'flex',
@@ -898,7 +877,7 @@ export function InspectPanel({ panel, onClose }: InspectPanelProps) {
                 </Box>
               </>
             )}
-            {verticalProfile && verticalProfile.length > 0 && !showVerticalSummaryAndPlots && !loading && !inspectError && (
+            {verticalProfile && verticalProfile.length > 0 && !showVerticalSummary && !showVerticalPlots && !loading && !inspectError && (
               <Typography variant="body2" color="text.secondary">
                 Vertical profile metrics and plots are unavailable for this point.
               </Typography>

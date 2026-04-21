@@ -1,4 +1,5 @@
 import type { LayerManager } from './LayerManager';
+import { apiUrl } from './apiBase';
 
 export interface InspectLayerRow {
   id: string;
@@ -31,7 +32,7 @@ export async function inspectPointAtLonLat(
     inspectable.map(async (m) => {
       const cogUrl = m.metadata!.url as string;
       // TiTiler expects /cog/point/{lon},{lat} (single segment), not /lon/lat
-      const requestUrl = `http://localhost:8000/cog/point/${lon},${lat}?url=${encodeURIComponent(cogUrl)}`;
+      const requestUrl = apiUrl(`/cog/point/${lon},${lat}?url=${encodeURIComponent(cogUrl)}`);
 
       try {
         const resp = await fetch(requestUrl);

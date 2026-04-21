@@ -4,11 +4,6 @@ import {
   Typography,
   IconButton,
   Box,
-  Table,
-  TableBody,
-  TableHead,
-  TableRow,
-  TableCell,
   Button,
   TextField,
   CircularProgress,
@@ -22,9 +17,10 @@ import {
   FormControl,
   InputLabel,
 } from '@mui/material';
-import { Close as CloseIcon, Search as SearchIcon, MoreVert as MoreVertIcon } from '@mui/icons-material';
+import { Close as CloseIcon, MoreVert as MoreVertIcon } from '@mui/icons-material';
 import { Geometry } from 'ol/geom';
 import { transform } from 'ol/proj';
+import { apiUrl } from '../utils/apiBase';
 // @ts-ignore - Material React Table needs to be installed: npm install material-react-table @tanstack/react-table
 import { MaterialReactTable, useMaterialReactTable, type MRT_ColumnDef } from 'material-react-table';
 
@@ -60,6 +56,7 @@ interface FeaturePopupProps {
     tile_name: string;
     layer_type: string;
     metric?: 'entropy' | 'enl1d' | 'enl2d';
+    bands?: string[];
   }) => void;
   onLoadGEDIPoints?: (data: {
     buffer: Uint8Array;
@@ -98,7 +95,6 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [entropyLoading, setEntropyLoading] = useState(false);
   const [entropyError, setEntropyError] = useState<string | null>(null);
   const [entropyResult, setEntropyResult] = useState<any | null>(null);
-  const [entropyMetric, setEntropyMetric] = useState<'entropy' | 'enl1d' | 'enl2d'>('entropy');
   const [alsLoading, setAlsLoading] = useState(false);
   const [alsError, setAlsError] = useState<string | null>(null);
   const [alsResult, setAlsResult] = useState<any | null>(null);
@@ -444,7 +440,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     try {
       // Query using only tile name from FlatGeobuf - extent is now optional
       // The backend will use tile name as primary filter
-      const response = await fetch('http://localhost:8000/sentinel2/query', {
+      const response = await fetch(apiUrl('/sentinel2/query'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -494,7 +490,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     setPredResult(null);
     try {
       console.log('Loading prediction for year:', year);
-      const response = await fetch('http://localhost:8000/predictions/load', {
+      const response = await fetch(apiUrl('/predictions/load'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -541,7 +537,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     setDistMapError(null);
     setDistMapResult(null);
     try {
-      const response = await fetch('http://localhost:8000/auxiliary/distance-map', {
+      const response = await fetch(apiUrl('/auxiliary/distance-map'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tile_name: properties.Name }),
@@ -582,7 +578,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       if (isNaN(yearNum)) {
         throw new Error('Invalid year');
       }
-      const response = await fetch('http://localhost:8000/auxiliary/cr', {
+      const response = await fetch(apiUrl('/auxiliary/cr'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tile_name: properties.Name, year: yearNum }),
@@ -600,7 +596,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
           url: data.url,
           tile_name: data.tile_name,
           layer_type: data.layer_type,
-          metric: (data.metric as 'entropy' | 'enl1d' | 'enl2d') || entropyMetric,
+          metric: data.metric,
         });
       }
     } catch (err: any) {
@@ -611,7 +607,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     }
   };
 
-  const handleLoadProfileEntropy = async () => {
+  const handleLoadDiversityIndices = async () => {
     if (!properties?.Name) {
       setEntropyError('No tile name available');
       return;
@@ -624,17 +620,17 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       if (isNaN(yearNum)) {
         throw new Error('Invalid year');
       }
-      const response = await fetch('http://localhost:8000/auxiliary/profile-entropy', {
+      const response = await fetch(apiUrl('/auxiliary/diversity-indices'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tile_name: properties.Name, year: yearNum, metric: entropyMetric }),
+        body: JSON.stringify({ tile_name: properties.Name, year: yearNum }),
       });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       const data = await response.json();
       if (data.success === false || data.error) {
-        throw new Error(data.error || 'Failed to load or compute profile entropy');
+        throw new Error(data.error || 'Failed to load diversity indices');
       }
       setEntropyResult(data);
       if (onLoadAuxiliaryLayer && data.url) {
@@ -642,12 +638,12 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
           url: data.url,
           tile_name: data.tile_name,
           layer_type: data.layer_type,
-          metric: (data.metric as 'entropy' | 'enl1d' | 'enl2d') || entropyMetric,
+          bands: data.bands,
         });
       }
     } catch (err: any) {
-      setEntropyError(err.message || 'Failed to load profile entropy');
-      console.error('Load profile entropy error:', err);
+      setEntropyError(err.message || 'Failed to load diversity indices');
+      console.error('Load diversity indices error:', err);
     } finally {
       setEntropyLoading(false);
     }
@@ -662,7 +658,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     setAlsError(null);
     setAlsResult(null);
     try {
-      const response = await fetch('http://localhost:8000/auxiliary/als', {
+      const response = await fetch(apiUrl('/auxiliary/als'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tile_name: properties.Name }),
@@ -699,7 +695,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     setGediError(null);
     setGediResult(null);
     try {
-      const response = await fetch('http://localhost:8000/auxiliary/gedi', {
+      const response = await fetch(apiUrl('/auxiliary/gedi'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tile_name: properties.Name, year: parseInt(year), sample_size: 5000 }),
@@ -782,7 +778,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
         }
       }
 
-      const response = await fetch('http://localhost:8000/tile/offset', {
+      const response = await fetch(apiUrl('/tile/offset'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -816,6 +812,36 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   // Calculate final position with drag offset
   const finalX = position.x + dragPosition.x;
   const finalY = position.y + dragPosition.y;
+  const tileName = properties.Name || properties.name || 'Unknown tile';
+  const sectionCardSx = {
+    mx: 2,
+    mt: 2,
+    p: 2.25,
+    borderRadius: 3,
+    border: '1px solid',
+    borderColor: 'divider',
+    bgcolor: '#fff',
+    boxShadow: '0 1px 3px rgba(15, 23, 42, 0.08)',
+  } as const;
+  const filledButtonSx = {
+    borderRadius: 2,
+    minHeight: 42,
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    boxShadow: 'none',
+  } as const;
+  const outlinedButtonSx = {
+    borderRadius: 2,
+    minHeight: 38,
+    fontWeight: 700,
+    textTransform: 'uppercase',
+  } as const;
+  const inputSx = {
+    '& .MuiOutlinedInput-root': {
+      borderRadius: 2,
+      bgcolor: '#f3f4f6',
+    },
+  } as const;
 
   return (
     <Box
@@ -831,12 +857,14 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     >
       <Paper
         sx={{
-          width: 500,
-          maxHeight: 600,
+          width: 450,
+          maxHeight: '80vh',
           boxShadow: 4,
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
+          borderRadius: 3,
+          bgcolor: '#fafafa',
         }}
       >
       {/* Header */}
@@ -846,7 +874,8 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          p: 1.5,
+          px: 2,
+          py: 1.75,
           bgcolor: 'primary.main',
           color: 'white',
           cursor: isDragging ? 'grabbing' : 'grab',
@@ -857,11 +886,11 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
         }}
       >
         <Box>
-          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+          <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.1 }}>
             Feature Properties
           </Typography>
           {coordinates && (
-            <Typography variant="caption" sx={{ fontSize: '0.75rem', opacity: 0.9 }}>
+            <Typography variant="body2" sx={{ opacity: 0.9, mt: 0.25 }}>
               {coordinates.lat.toFixed(6)}°, {coordinates.lon.toFixed(6)}°
             </Typography>
           )}
@@ -872,71 +901,325 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       </Box>
 
       {/* Scrollable Content Area */}
-      <Box sx={{ overflow: 'auto', flex: 1 }}>
-        {/* Properties Table - Single Row */}
-        <Box sx={{ p: 1, overflowX: 'auto' }}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              {Object.entries(properties)
-                .filter(([key]) => key !== 'geometry')
-                .map(([key]) => (
-                  <TableCell 
-                    key={key}
-                    sx={{ 
-                      fontWeight: 600, 
-                      fontSize: '0.7rem',
-                      whiteSpace: 'nowrap',
-                      backgroundColor: '#f5f5f5',
-                      borderBottom: '2px solid #ddd',
-                      position: 'sticky',
-                      top: 0,
-                      zIndex: 1,
-                    }}
-                  >
-                    {key}
-                  </TableCell>
-                ))}
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            <TableRow>
-              {Object.entries(properties)
-                .filter(([key]) => key !== 'geometry')
-                .map(([key, value]) => (
-                  <TableCell 
-                    key={key}
-                    sx={{ 
-                      fontSize: '0.75rem',
-                      whiteSpace: 'nowrap',
-                      maxWidth: 200,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                    title={value === null || value === undefined 
-                      ? 'null'
-                      : typeof value === 'object'
-                      ? JSON.stringify(value)
-                      : String(value)
-                    }
-                  >
-                    {value === null || value === undefined 
-                      ? <em style={{ color: '#999' }}>null</em>
-                      : typeof value === 'object'
-                      ? JSON.stringify(value)
-                      : String(value)
-                    }
-                  </TableCell>
-                ))}
-            </TableRow>
-          </TableBody>
-        </Table>
-      </Box>
+      <Box sx={{ overflow: 'auto', flex: 1, pb: 2 }}>
+        <Box sx={{ px: 2, pt: 1.5 }}>
+          <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.78rem' }}>
+            Tile
+          </Typography>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            {tileName}
+          </Typography>
+        </Box>
 
-      {/* Get XY Offset Section */}
-      <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+        <Box sx={sectionCardSx}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 2.25 }}>
+            VSM
+          </Typography>
+
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Source</InputLabel>
+              <Select
+                value={predSource}
+                label="Source"
+                onChange={(e) => setPredSource(e.target.value as 'blended' | 'original')}
+                MenuProps={{ sx: { zIndex: 2100 } }}
+                sx={inputSx}
+              >
+                <MenuItem value="blended">blended</MenuItem>
+                <MenuItem value="original">original</MenuItem>
+              </Select>
+            </FormControl>
+            <TextField
+              label="RH index"
+              type="number"
+              value={rhIndex}
+              onChange={(e) => setRhIndex(e.target.value)}
+              size="small"
+              fullWidth
+              sx={inputSx}
+            />
+          </Box>
+
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+            Percentiles
+          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', mb: 2 }}>
+            <FormControlLabel
+              sx={{ m: 0 }}
+              control={<Checkbox size="small" checked={qChoice === '5%'} onChange={() => setQChoice('5%')} />}
+              label={<Typography variant="body2">5%</Typography>}
+            />
+            <FormControlLabel
+              sx={{ m: 0 }}
+              control={<Checkbox size="small" checked={qChoice === 'median'} onChange={() => setQChoice('median')} />}
+              label={<Typography variant="body2">median</Typography>}
+            />
+            <FormControlLabel
+              sx={{ m: 0 }}
+              control={<Checkbox size="small" checked={qChoice === '95%'} onChange={() => setQChoice('95%')} />}
+              label={<Typography variant="body2">95%</Typography>}
+            />
+          </Box>
+
+          <Button
+            variant="contained"
+            fullWidth
+            onClick={handleLoadPrediction}
+            disabled={predLoading}
+            startIcon={predLoading ? <CircularProgress size={16} color="inherit" /> : null}
+            sx={filledButtonSx}
+          >
+            {predLoading ? 'Loading...' : 'Load'}
+          </Button>
+
+          {predError && (
+            <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+              {predError}
+            </Typography>
+          )}
+          {predResult && (
+            <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
+              <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
+                Prediction COG loaded
+              </Typography>
+              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 0.5 }}>
+                Tile: {predResult.tile_name} | Year: {predResult.year || year}
+              </Typography>
+            </Box>
+          )}
+
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 2.5, mb: 1.25 }}>
+            Diversity indices
+          </Typography>
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+            <Button
+              variant="contained"
+              onClick={handleLoadDiversityIndices}
+              disabled={entropyLoading}
+              startIcon={entropyLoading ? <CircularProgress size={16} color="inherit" /> : null}
+              sx={filledButtonSx}
+            >
+              {entropyLoading ? 'Loading...' : 'Load Diversity'}
+            </Button>
+            <Button
+              variant="contained"
+              onClick={handleLoadCR}
+              disabled={crLoading}
+              startIcon={crLoading ? <CircularProgress size={16} color="inherit" /> : null}
+              sx={filledButtonSx}
+            >
+              {crLoading ? 'Loading...' : 'Load CR'}
+            </Button>
+          </Box>
+
+          {(entropyError || crError) && (
+            <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+              {entropyError || crError}
+            </Typography>
+          )}
+          {(entropyResult || crResult) && (
+            <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
+              {entropyResult && (
+                <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
+                  Diversity indices loaded
+                </Typography>
+              )}
+              {crResult && (
+                <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700, mt: entropyResult ? 0.5 : 0 }}>
+                  CR loaded
+                </Typography>
+              )}
+            </Box>
+          )}
+
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 2.5, mb: 1.25 }}>
+            Reference data
+          </Typography>
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+            <Button
+              variant="contained"
+              onClick={handleLoadALS}
+              disabled={alsLoading}
+              startIcon={alsLoading ? <CircularProgress size={16} color="inherit" /> : null}
+              sx={filledButtonSx}
+            >
+              {alsLoading ? 'Loading...' : 'Load ALS'}
+            </Button>
+            <Button
+              variant="contained"
+              onClick={handleLoadGEDI}
+              disabled={gediLoading}
+              startIcon={gediLoading ? <CircularProgress size={16} color="inherit" /> : null}
+              sx={filledButtonSx}
+            >
+              {gediLoading ? 'Loading...' : 'Load GEDI'}
+            </Button>
+          </Box>
+
+          {(alsError || gediError) && (
+            <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+              {alsError || gediError}
+            </Typography>
+          )}
+          {(alsResult || gediResult) && (
+            <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
+              {alsResult && (
+                <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
+                  ALS loaded
+                </Typography>
+              )}
+              {gediResult && (
+                <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700, mt: alsResult ? 0.5 : 0 }}>
+                  GEDI loaded ({gediResult.sampled_count} / {gediResult.total_count})
+                </Typography>
+              )}
+            </Box>
+          )}
+        </Box>
+
+        <Box sx={sectionCardSx}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 2.25 }}>
+            Check auxiliary data
+          </Typography>
+
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.25 }}>
+            Query Sentinel-2 Images
+          </Typography>
+
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+            <TextField
+              label="Year"
+              type="number"
+              value={year}
+              onChange={(e) => setYear(e.target.value)}
+              size="small"
+              fullWidth
+              sx={inputSx}
+              inputProps={{ min: 2015, max: new Date().getFullYear() }}
+            />
+            <TextField
+              label="Max Cloud %"
+              type="number"
+              value={maxCloudCover}
+              onChange={(e) => setMaxCloudCover(e.target.value)}
+              size="small"
+              fullWidth
+              sx={inputSx}
+              placeholder="Any"
+              inputProps={{ min: 0, max: 100, step: 0.1 }}
+            />
+          </Box>
+
+          {hasGrowingMonths && (
+            <Box sx={{ mt: 1.25 }}>
+              <Tooltip title={`Filter images to only show those captured during months: ${displayGrowingMonths}`} placement="top">
+                <FormControlLabel
+                  sx={{ m: 0 }}
+                  control={
+                    <Checkbox
+                      checked={useGrowingMonths}
+                      onChange={(e) => setUseGrowingMonths(e.target.checked)}
+                      size="small"
+                    />
+                  }
+                  label={<Typography variant="body2">Filter by growing months ({displayGrowingMonths})</Typography>}
+                />
+              </Tooltip>
+            </Box>
+          )}
+
+          <Button
+            variant="contained"
+            fullWidth
+            onClick={handleQuerySentinel2}
+            disabled={loading || !properties?.Name}
+            startIcon={loading ? <CircularProgress size={16} color="inherit" /> : null}
+            sx={{ ...filledButtonSx, mt: 1.5 }}
+          >
+            {loading ? 'Querying...' : 'Query'}
+          </Button>
+
+          <Button
+            variant="contained"
+            fullWidth
+            onClick={handleLoadDistanceMap}
+            disabled={distMapLoading}
+            startIcon={distMapLoading ? <CircularProgress size={16} color="inherit" /> : null}
+            sx={{ ...filledButtonSx, mt: 1.5 }}
+          >
+            {distMapLoading ? 'Loading...' : 'Load Distance Map'}
+          </Button>
+
+          {(error || distMapError) && (
+            <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+              {error || distMapError}
+            </Typography>
+          )}
+          {distMapResult && (
+            <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
+              <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
+                Distance map loaded
+              </Typography>
+              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 0.5 }}>
+                Tile: {distMapResult.tile_name}
+              </Typography>
+            </Box>
+          )}
+
+          <Collapse in={showImages && sentinel2Images.length > 0}>
+            <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+              <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 700 }}>
+                {(() => {
+                  const hasFilters = filteredImages.length !== sentinel2Images.length;
+                  if (hasFilters) {
+                    const activeFilters = [];
+                    if (maxCloudCover.trim() !== '' && !isNaN(parseFloat(maxCloudCover))) {
+                      activeFilters.push(`cloud cover ≤ ${maxCloudCover}%`);
+                    }
+                    if (useGrowingMonths && hasGrowingMonths) {
+                      activeFilters.push('growing months');
+                    }
+                    return `Showing ${filteredImages.length} of ${sentinel2Images.length} images`;
+                  }
+                  return `Found ${sentinel2Images.length} images`;
+                })()}
+              </Typography>
+              <MaterialReactTable table={table} />
+            </Box>
+          </Collapse>
+
+          {showImages && filteredImages.length === 0 && !loading && !error && (
+            <Typography variant="caption" sx={{ mt: 1.25, display: 'block', color: 'text.secondary' }}>
+              {sentinel2Images.length === 0
+                ? 'No images found for the specified year.'
+                : (() => {
+                    const activeFilters = [];
+                    if (maxCloudCover.trim() !== '' && !isNaN(parseFloat(maxCloudCover))) {
+                      activeFilters.push(`cloud cover ≤ ${maxCloudCover}%`);
+                    }
+                    if (useGrowingMonths && hasGrowingMonths) {
+                      activeFilters.push('growing months');
+                    }
+                    return activeFilters.length > 0
+                      ? `No images found matching filters: ${activeFilters.join(', ')}.`
+                      : 'No images found.';
+                  })()}
+            </Typography>
+          )}
+        </Box>
+
+        <Box
+          sx={{
+            px: 2,
+            pt: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 1.5,
+          }}
+        >
+          <Typography variant="h6" sx={{ fontWeight: 700, fontSize: '1.05rem' }}>
             Tile Offset
           </Typography>
           <Button
@@ -945,384 +1228,30 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
             onClick={handleGetXYOffset}
             disabled={offsetLoading || !properties?.Name || !coordinates}
             startIcon={offsetLoading ? <CircularProgress size={16} /> : null}
+            sx={outlinedButtonSx}
           >
-            {offsetLoading ? 'Calculating...' : 'Get xy offset'}
+            {offsetLoading ? 'Calculating...' : 'Get XY Offset'}
           </Button>
         </Box>
-        
+
         {offsetError && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+          <Typography variant="caption" color="error" sx={{ mt: 1, px: 2, display: 'block' }}>
             {offsetError}
           </Typography>
         )}
-        
         {offsetResult && offsetResult.success && (
-          <Box sx={{ mt: 1, p: 1.5, bgcolor: '#f5f5f5', borderRadius: 1 }}>
-            <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, mb: 0.5 }}>
-              Column & Row Offset:
+          <Box sx={{ mx: 2, mt: 1.25, p: 1.5, bgcolor: '#f5f7fb', borderRadius: 2 }}>
+            <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, mb: 0.5 }}>
+              Column & Row Offset
             </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.75rem' }}>
-              Column: {offsetResult.offset.column_pixels.toFixed(2)} pixels ({offsetResult.offset.column_normalized.toFixed(4)} normalized)
+            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
+              Column: {offsetResult.offset.column_pixels.toFixed(2)} px ({offsetResult.offset.column_normalized.toFixed(4)})
             </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.75rem' }}>
-              Row: {offsetResult.offset.row_pixels.toFixed(2)} pixels ({offsetResult.offset.row_normalized.toFixed(4)} normalized)
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#999', fontSize: '0.7rem', mt: 1, fontStyle: 'italic' }}>
-              * Pixel offsets estimated at 10m resolution (10980 x 10980 pixels per tile)
+            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
+              Row: {offsetResult.offset.row_pixels.toFixed(2)} px ({offsetResult.offset.row_normalized.toFixed(4)})
             </Typography>
           </Box>
         )}
-      </Box>
-
-      {/* Year Selection */}
-      <Box sx={{ px: 2, pt: 2, borderTop: '1px solid #e0e0e0' }}>
-        <TextField
-          label="Year"
-          type="number"
-          value={year}
-          onChange={(e) => setYear(e.target.value)}
-          size="small"
-          sx={{ width: 100 }}
-          inputProps={{ min: 2015, max: new Date().getFullYear() }}
-        />
-      </Box>
-
-      {/* Sentinel-2 Query Section */}
-      <Box sx={{ p: 2 }}>
-        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
-          Query Sentinel-2 Images
-        </Typography>
-        
-        <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <TextField
-            label="Max Cloud %"
-            type="number"
-            value={maxCloudCover}
-            onChange={(e) => setMaxCloudCover(e.target.value)}
-            size="small"
-            sx={{ width: 120 }}
-            placeholder="Any"
-            inputProps={{ min: 0, max: 100, step: 0.1 }}
-          />
-          <Button
-            variant="contained"
-            size="small"
-            startIcon={loading ? <CircularProgress size={16} /> : <SearchIcon />}
-            onClick={handleQuerySentinel2}
-            disabled={loading || !geometry}
-          >
-            {loading ? 'Querying...' : 'Query'}
-          </Button>
-        </Box>
-
-        {/* Growing Months Filter */}
-        {hasGrowingMonths && (
-          <Box sx={{ mt: 1 }}>
-            <Tooltip 
-              title={`Filter images to only show those captured during months: ${displayGrowingMonths}`}
-              placement="top"
-            >
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={useGrowingMonths}
-                    onChange={(e) => setUseGrowingMonths(e.target.checked)}
-                    size="small"
-                  />
-                }
-                label={
-                  <Typography variant="caption" sx={{ fontSize: '0.75rem' }}>
-                    Filter by growing months ({displayGrowingMonths})
-                  </Typography>
-                }
-              />
-            </Tooltip>
-          </Box>
-        )}
-
-        {error && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-            {error}
-          </Typography>
-        )}
-
-        {/* Results Table */}
-        <Collapse in={showImages && sentinel2Images.length > 0}>
-          <Box sx={{ mt: 2 }}>
-            <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
-              {(() => {
-                const hasFilters = filteredImages.length !== sentinel2Images.length;
-                if (hasFilters) {
-                  const activeFilters = [];
-                  if (maxCloudCover.trim() !== '' && !isNaN(parseFloat(maxCloudCover))) {
-                    activeFilters.push(`cloud cover ≤ ${maxCloudCover}%`);
-                  }
-                  if (useGrowingMonths && hasGrowingMonths) {
-                    activeFilters.push('growing months');
-                  }
-                  return `Showing ${filteredImages.length} of ${sentinel2Images.length} images (filtered by ${activeFilters.join(', ')})`;
-                }
-                return `Found ${sentinel2Images.length} images`;
-              })()}
-            </Typography>
-            <MaterialReactTable table={table} />
-          </Box>
-        </Collapse>
-
-        {showImages && filteredImages.length === 0 && !loading && !error && (
-          <Typography variant="caption" sx={{ mt: 1, display: 'block', color: '#666' }}>
-            {sentinel2Images.length === 0 
-              ? 'No images found for the specified year.'
-              : (() => {
-                  const activeFilters = [];
-                  if (maxCloudCover.trim() !== '' && !isNaN(parseFloat(maxCloudCover))) {
-                    activeFilters.push(`cloud cover ≤ ${maxCloudCover}%`);
-                  }
-                  if (useGrowingMonths && hasGrowingMonths) {
-                    activeFilters.push('growing months');
-                  }
-                  return activeFilters.length > 0
-                    ? `No images found matching filters: ${activeFilters.join(', ')}. Try adjusting the filters.`
-                    : 'No images found.';
-                })()
-            }
-          </Typography>
-        )}
-      </Box>
-
-      {/* Check Predictions Section */}
-      <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0' }}>
-        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
-          Check predictions
-        </Typography>
-        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-          <FormControl size="small" sx={{ minWidth: 110 }}>
-            <InputLabel>Source</InputLabel>
-            <Select
-              value={predSource}
-              label="Source"
-              onChange={(e) => setPredSource(e.target.value as 'blended' | 'original')}
-              MenuProps={{ sx: { zIndex: 2100 } }}
-            >
-              <MenuItem value="blended">blended</MenuItem>
-              <MenuItem value="original">original</MenuItem>
-            </Select>
-          </FormControl>
-          <TextField
-            label="RH index"
-            type="number"
-            value={rhIndex}
-            onChange={(e) => setRhIndex(e.target.value)}
-            size="small"
-            sx={{ width: 100 }}
-          />
-          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-            <FormControlLabel
-              control={<Checkbox size="small" checked={qChoice === '5%'} onChange={() => setQChoice('5%')} />}
-              label={<Typography variant="caption">5%</Typography>}
-            />
-            <FormControlLabel
-              control={<Checkbox size="small" checked={qChoice === 'median'} onChange={() => setQChoice('median')} />}
-              label={<Typography variant="caption">median</Typography>}
-            />
-            <FormControlLabel
-              control={<Checkbox size="small" checked={qChoice === '95%'} onChange={() => setQChoice('95%')} />}
-              label={<Typography variant="caption">95%</Typography>}
-            />
-          </Box>
-          <Button
-            variant="contained"
-            size="small"
-            onClick={handleLoadPrediction}
-            disabled={predLoading}
-          >
-            {predLoading ? 'Loading...' : 'Load'}
-          </Button>
-        </Box>
-        {predError && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-            {predError}
-          </Typography>
-        )}
-        {predResult && (
-          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
-            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
-              ✓ Prediction COG loaded successfully
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
-              Tile: {predResult.tile_name} | Year: {predResult.year || year}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
-              URL: {predResult.url}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#999', fontSize: '0.7rem', mt: 0.5, fontStyle: 'italic' }}>
-              Layer added to map - use Layer Control to manage visibility
-            </Typography>
-          </Box>
-        )}
-      </Box>
-
-      {/* Check Auxiliary Data Section */}
-      <Box sx={{ p: 2, borderTop: '1px solid #e0e0e0' }}>
-        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
-          Check auxiliary data
-        </Typography>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-            <Button
-              variant="contained"
-              size="small"
-              onClick={handleLoadDistanceMap}
-              disabled={distMapLoading}
-            >
-              {distMapLoading ? 'Loading...' : 'Load distance map'}
-            </Button>
-            <Button
-              variant="contained"
-              size="small"
-              onClick={handleLoadCR}
-              disabled={crLoading}
-            >
-              {crLoading ? 'Loading...' : 'Load CR'}
-            </Button>
-            <Button
-              variant="contained"
-              size="small"
-              onClick={handleLoadProfileEntropy}
-              disabled={entropyLoading}
-            >
-              {entropyLoading ? 'Loading...' : 'Load Profile Entropy'}
-            </Button>
-            <Button
-              variant="contained"
-              size="small"
-              onClick={handleLoadALS}
-              disabled={alsLoading}
-            >
-              {alsLoading ? 'Loading...' : 'Load ALS'}
-            </Button>
-            <Button
-              variant="contained"
-              size="small"
-              onClick={handleLoadGEDI}
-              disabled={gediLoading}
-            >
-              {gediLoading ? 'Loading...' : 'Load GEDI'}
-            </Button>
-          </Box>
-          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-            <FormControl size="small" sx={{ minWidth: 180 }}>
-              <InputLabel>Profile entropy metric</InputLabel>
-              <Select
-                value={entropyMetric}
-                label="Profile entropy metric"
-                onChange={(e) => setEntropyMetric(e.target.value as 'entropy' | 'enl1d' | 'enl2d')}
-                MenuProps={{ sx: { zIndex: 2100 } }}
-              >
-                <MenuItem value="entropy">FHD</MenuItem>
-                <MenuItem value="enl1d">1D ENL</MenuItem>
-                <MenuItem value="enl2d">2D ENL</MenuItem>
-              </Select>
-            </FormControl>
-          </Box>
-        </Box>
-        {distMapError && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-            {distMapError}
-          </Typography>
-        )}
-        {crError && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-            {crError}
-          </Typography>
-        )}
-        {entropyError && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-            {entropyError}
-          </Typography>
-        )}
-        {alsError && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-            {alsError}
-          </Typography>
-        )}
-        {gediError && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-            {gediError}
-          </Typography>
-        )}
-        {distMapResult && (
-          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
-            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
-              ✓ Distance map loaded successfully
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
-              Tile: {distMapResult.tile_name}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
-              URL: {distMapResult.url}
-            </Typography>
-          </Box>
-        )}
-        {crResult && (
-          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
-            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
-              ✓ CR loaded successfully
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
-              Tile: {crResult.tile_name}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
-              URL: {crResult.url}
-            </Typography>
-          </Box>
-        )}
-        {entropyResult && (
-          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
-            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
-              ✓ Profile entropy loaded successfully
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
-              Tile: {entropyResult.tile_name}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
-              Metric: {entropyMetric === 'entropy' ? 'FHD' : entropyMetric === 'enl1d' ? '1D ENL' : '2D ENL'}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
-              URL: {entropyResult.url}
-            </Typography>
-          </Box>
-        )}
-        {alsResult && (
-          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
-            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
-              ✓ ALS loaded successfully
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
-              Tile: {alsResult.tile_name}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', fontSize: '0.7rem', mt: 0.5 }}>
-              URL: {alsResult.url}
-            </Typography>
-          </Box>
-        )}
-        {gediResult && (
-          <Box sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1 }}>
-            <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 600 }}>
-              ✓ GEDI points loaded successfully
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
-              Tile: {gediResult.tile_name}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#666', mt: 0.5 }}>
-              Sampled: {gediResult.sampled_count} / {gediResult.total_count}
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: '#999', fontSize: '0.7rem', mt: 0.5, fontStyle: 'italic' }}>
-              Layer added to map as sampled points
-            </Typography>
-          </Box>
-        )}
-      </Box>
       </Box>
 
       {/* Options Menu */}

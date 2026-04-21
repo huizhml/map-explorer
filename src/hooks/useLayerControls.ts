@@ -4,6 +4,7 @@ import { Feature } from 'ol';
 import { Geometry } from 'ol/geom';
 import { Style, Stroke, Fill, Text as TextStyle } from 'ol/style';
 import { useMapStore } from '../stores/mapStore';
+import { buildDiversityTileUrl, type DiversityBandConfig } from './useLayerLoaders';
 
 export function useLayerControls(
   updateLayersList: () => void,
@@ -29,19 +30,31 @@ export function useLayerControls(
     if (layerManager?.getLayer(layerId)) { layerManager.setZIndex(layerId, zIndex); updateLayersList(); }
   }, [layerManager, updateLayersList]);
 
-  const updateTileSourceRescale = (source: any, min: number, max: number) => {
+  const updateTileSourceQueryParams = (source: any, updates: Record<string, string | undefined>) => {
     if (!source?.getUrls) return;
     const urls = source.getUrls();
     if (!urls?.length) return;
     try {
       const [basePath, qs] = urls[0].split('?');
-      if (qs) {
-        const params = new URLSearchParams(qs);
-        params.set('rescale', `${min},${max}`);
-        source.setUrl(`${basePath}?${params.toString()}`);
-        source.refresh?.();
+      const params = new URLSearchParams(qs ?? '');
+      for (const [key, value] of Object.entries(updates)) {
+        if (value === undefined || value === '') {
+          params.delete(key);
+        } else {
+          params.set(key, value);
+        }
       }
+      source.setUrl(`${basePath}?${params.toString()}`);
+      source.refresh?.();
     } catch { /* ignore */ }
+  };
+
+  const updateTileSourceRescale = (source: any, min: number, max: number) => {
+    updateTileSourceQueryParams(source, { rescale: `${min},${max}` });
+  };
+
+  const updateTileSourceColormap = (source: any, colormap: string) => {
+    updateTileSourceQueryParams(source, { colormap_name: colormap || undefined });
   };
 
   const applyRescaleToLayer = useCallback((layer: any, min: number, max: number) => {
@@ -54,6 +67,16 @@ export function useLayerControls(
     }
   }, []);
 
+  const applyColormapToLayer = useCallback((layer: any, colormap: string) => {
+    if (!layer) return;
+    if (layer instanceof LayerGroup) {
+      layer.getLayers().forEach((child: any) => applyColormapToLayer(child, colormap));
+    } else if (layer.getSource) {
+      const src = layer.getSource();
+      if (src?.getUrls) updateTileSourceColormap(src, colormap);
+    }
+  }, []);
+
   const handleChangePredictionRescale = useCallback((layerId: string, min: number, max: number) => {
     if (!layerManager) return;
     const managed = layerManager.getLayer(layerId);
@@ -63,6 +86,50 @@ export function useLayerControls(
     applyRescaleToLayer(managed.layer, min, max);
     updateLayersList();
   }, [layerManager, applyRescaleToLayer, updateLayersList]);
+
+  const handleChangePredictionColormap = useCallback((layerId: string, colormap: string) => {
+    if (!layerManager) return;
+    const managed = layerManager.getLayer(layerId);
+    if (!managed || managed.type !== 'prediction' || !managed.metadata) return;
+    managed.metadata.colormap = colormap;
+    applyColormapToLayer(managed.layer, colormap);
+    updateLayersList();
+  }, [layerManager, applyColormapToLayer, updateLayersList]);
+
+  const handleChangeDiversityBandConfig = useCallback((layerId: string, config: Partial<DiversityBandConfig>) => {
+    if (!layerManager) return;
+    const managed = layerManager.getLayer(layerId);
+    if (!managed || !managed.metadata || managed.metadata.layerType !== 'diversity_indices') return;
+
+    const meta = managed.metadata;
+    if (config.bandMode !== undefined) meta.bandMode = config.bandMode;
+    if (config.selectedBand !== undefined) meta.selectedBand = config.selectedBand;
+    if (config.rgbBands !== undefined) meta.rgbBands = config.rgbBands;
+    if (config.rescaleMin !== undefined) meta.rescaleMin = config.rescaleMin;
+    if (config.rescaleMax !== undefined) meta.rescaleMax = config.rescaleMax;
+    if (config.rgbRescales !== undefined) meta.rgbRescales = config.rgbRescales;
+    if (config.colormap !== undefined) meta.colormap = config.colormap;
+    if (config.gamma !== undefined) meta.gamma = config.gamma;
+
+    const tileUrl = buildDiversityTileUrl(meta.url, {
+      bandMode: meta.bandMode,
+      selectedBand: meta.selectedBand,
+      rgbBands: meta.rgbBands,
+      rescaleMin: meta.rescaleMin,
+      rescaleMax: meta.rescaleMax,
+      rgbRescales: meta.rgbRescales,
+      colormap: meta.colormap,
+      gamma: meta.gamma,
+    });
+
+    const layer = managed.layer as any;
+    const source = layer.getSource?.();
+    if (source?.setUrl) {
+      source.setUrl(tileUrl);
+      source.refresh?.();
+    }
+    updateLayersList();
+  }, [layerManager, updateLayersList]);
 
   const handleReorderLayers = useCallback((fromIndex: number, toIndex: number) => {
     if (layerManager?.reorderLayers(fromIndex, toIndex)) updateLayersList();
@@ -141,7 +208,8 @@ export function useLayerControls(
 
   return {
     handleToggleVisibility, handleChangeOpacity, handleChangeZIndex,
-    handleChangePredictionRescale, handleReorderLayers, handleRemoveLayer,
+    handleChangePredictionRescale, handleChangePredictionColormap, handleChangeDiversityBandConfig,
+    handleReorderLayers, handleRemoveLayer,
     handleLocateLayer, vectorFeatures, handleHighlightFeature, handleRemoveFeature,
   };
 }

@@ -7,6 +7,7 @@ import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import CheckIcon from '@mui/icons-material/Check';
 import { transform } from 'ol/proj';
 import { fetchVerticalProfile } from '../utils/verticalProfile';
+import { apiUrl } from '../utils/apiBase';
 import { useMapStore } from '../stores/mapStore';
 
 export interface GediPointData {
@@ -21,6 +22,7 @@ interface ProfileResponse {
   fhd: number | null;
   enl1d: number | null;
   enl2d: number | null;
+  cr: number | null;
   fhd_interval: number;
 }
 
@@ -30,6 +32,7 @@ interface CogProfile {
   fhd: number | null;
   enl1d: number | null;
   enl2d: number | null;
+  cr: number | null;
 }
 
 interface GediPointPopupProps {
@@ -246,6 +249,7 @@ function DiversityTable({ gedi, cog, interval }: {
     { label: `FHD (${interval}m)`, gedi: gedi.fhd, cog: cog?.fhd ?? null },
     { label: `1D ENL (${interval}m)`, gedi: gedi.enl1d, cog: cog?.enl1d ?? null },
     { label: `2D ENL (${interval}m)`, gedi: gedi.enl2d, cog: cog?.enl2d ?? null },
+    { label: 'CR', gedi: gedi.cr, cog: cog?.cr ?? null },
   ];
   return (
     <Box sx={{
@@ -315,7 +319,7 @@ export function GediPointPopup({ data, onClose }: GediPointPopupProps) {
     let cancelled = false;
     (async () => {
       try {
-        const resp = await fetch('http://localhost:8000/auxiliary/gedi/point-profile', {
+        const resp = await fetch(apiUrl('/auxiliary/gedi/point-profile'), {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ rh_values: rhValues, fhd_interval: 5 }),
         });
@@ -342,7 +346,14 @@ export function GediPointPopup({ data, onClose }: GediPointPopupProps) {
           .filter((p) => p.value != null && !p.missing)
           .map((p) => ({ rh: p.rh, value: p.value as number }));
         const verticalCurve = res.vertical_profile_curve ?? [];
-        setCogProfile({ rhCurve, verticalCurve, fhd: res.fhd ?? null, enl1d: res.enl1d ?? null, enl2d: res.enl2d ?? null });
+        setCogProfile({
+          rhCurve,
+          verticalCurve,
+          fhd: res.fhd ?? null,
+          enl1d: res.enl1d ?? null,
+          enl2d: res.enl2d ?? null,
+          cr: res.cr ?? null,
+        });
       }
       setCogLoading(false);
     }).catch(() => { if (!cancelled) setCogLoading(false); });

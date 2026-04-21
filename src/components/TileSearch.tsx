@@ -10,6 +10,7 @@ import {
 import { Search as SearchIcon, Close as CloseIcon } from '@mui/icons-material';
 import type { Map } from 'ol';
 import { fromLonLat } from 'ol/proj';
+import { apiUrl } from '../utils/apiBase';
 
 interface TileSearchProps {
   map: Map | null;
@@ -48,7 +49,7 @@ const parseCoordinates = (input: string): { lat: number; lon: number } | null =>
 const getTileCoordinates = async (tileName: string): Promise<{ lon: number; lat: number } | null> => {
   try {
     // Call backend to get tile coordinates
-    const response = await fetch(`http://localhost:8000/sentinel2/tile-coordinates/${tileName.toUpperCase()}`);
+    const response = await fetch(apiUrl(`/sentinel2/tile-coordinates/${tileName.toUpperCase()}`));
     console.log('Response:', response);
     if (!response.ok) {
       throw new Error('Tile not found');
@@ -67,7 +68,7 @@ const getGeolocationCoordinates = async (lat: number, lon: number): Promise<{ lo
   try {
     // Call backend to validate coordinates
     const response = await fetch(
-      `http://localhost:8000/geolocation/search?latitude=${lat}&longitude=${lon}`
+      apiUrl(`/geolocation/search?latitude=${lat}&longitude=${lon}`)
     );
     
     if (!response.ok) {

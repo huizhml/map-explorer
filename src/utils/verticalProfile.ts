@@ -1,3 +1,5 @@
+import { apiUrl } from './apiBase';
+
 export type VerticalProfileResponse = {
   success: boolean;
   error?: string;
@@ -12,6 +14,7 @@ export type VerticalProfileResponse = {
   fhd?: number | null;
   enl1d?: number | null;
   enl2d?: number | null;
+  cr?: number | null;
 };
 
 /** Vertical profile uses original COGs for 2020; remote year uses blended URL layout. */
@@ -20,7 +23,7 @@ export async function fetchVerticalProfile(
   lat: number,
   year: number,
 ): Promise<VerticalProfileResponse> {
-  const res = await fetch('http://localhost:8000/predictions/vertical-profile', {
+  const res = await fetch(apiUrl('/predictions/vertical-profile'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

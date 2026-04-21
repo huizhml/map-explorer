@@ -246,10 +246,14 @@ async def predictions_vertical_profile(request: VerticalProfileRequest):
     def _safe_scalar(v: float):
         return None if (math.isnan(v) or math.isinf(v)) else v
 
-    fhd, enl1d, enl2d = None, None, None
+    fhd, enl1d, enl2d, cr = None, None, None, None
     if len(valid_vals) >= 3:
         try:
-            fhd, enl1d, enl2d = _safe_scalar(float(pixel_diversity_indices(valid_vals, interval=5, max_height=100)))
+            raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(valid_vals, interval=5, max_height=100)
+            fhd = _safe_scalar(float(raw_fhd))
+            enl1d = _safe_scalar(float(raw_enl1d))
+            enl2d = _safe_scalar(float(raw_enl2d))
+            cr = _safe_scalar(float(raw_cr))
         except Exception as e:
             print(f"[vertical-profile] pixel_diversity_indices error: {e}")
 
@@ -258,7 +262,7 @@ async def predictions_vertical_profile(request: VerticalProfileRequest):
         "q_index": request.q_index, "source": request.source,
         "lon": request.lon, "lat": request.lat,
         "profile": profile, "vertical_profile_curve": vp_curve,
-        "fhd": fhd, "enl1d": enl1d, "enl2d": enl2d,
+        "fhd": fhd, "enl1d": enl1d, "enl2d": enl2d, "cr": cr,
         "missing_file_count": missing_files,
     }
 

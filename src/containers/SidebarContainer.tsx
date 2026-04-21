@@ -11,6 +11,8 @@ import { unByKey } from 'ol/Observable';
 import { deserialize } from 'flatgeobuf/lib/mjs/ol';
 import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore';
 import { parseUploadedFile } from '../utils/parseUploadedFile';
+import { API_BASE_URL, apiUrl } from '../utils/apiBase';
+import { getDiversityBandRange } from '../constants/layerRanges';
 
 const max = 500;
 
@@ -19,8 +21,22 @@ function createColorRamp(colors: string[]) {
   return ['interpolate', ['linear'], ['band', 1], ...stops];
 }
 
+export interface FigureLayerOverrides {
+  selectedBands: number[];
+  colormap?: string;
+  rescaleMin?: number;
+  rescaleMax?: number;
+}
+
 export function SidebarContainer() {
   const [uploadingFile, setUploadingFile] = React.useState(false);
+  const [figureFormat, setFigureFormat] = React.useState<'jpg' | 'png' | 'pdf'>('pdf');
+  const [figureOutputFolder, setFigureOutputFolder] = React.useState('/maps/projects/dereeco/data/gvs');
+  const [selectedFigureLayerIds, setSelectedFigureLayerIds] = React.useState<string[]>([]);
+  const [figureLayerOverrides, setFigureLayerOverrides] = React.useState<Record<string, FigureLayerOverrides>>({});
+  const [savingFigures, setSavingFigures] = React.useState(false);
+  const [figureSaveMessage, setFigureSaveMessage] = React.useState<string | null>(null);
+  const [figureSaveError, setFigureSaveError] = React.useState<string | null>(null);
 
   // Zustand store
   const {
@@ -48,6 +64,7 @@ export function SidebarContainer() {
     setFgbInfo,
     layerManager,
     setLayers,
+    layers,
   } = useMapStore();
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -151,11 +168,11 @@ export function SidebarContainer() {
       // Use proxy for cross-origin FlatGeobuf files to handle CORS
       // Skip proxy when URL already points to our backend
       let fgbFileUrl = fgbUrl;
-      const isBackendUrl = fgbUrl.startsWith('http://localhost:8000/');
+      const isBackendUrl = fgbUrl.startsWith(`${API_BASE_URL}/`);
       const isCrossOriginUrl = isCrossOrigin(fgbUrl);
       
       if (isCrossOriginUrl && !isBackendUrl) {
-        fgbFileUrl = `http://localhost:8000/fgb/proxy?url=${encodeURIComponent(fgbUrl)}`;
+        fgbFileUrl = apiUrl(`/fgb/proxy?url=${encodeURIComponent(fgbUrl)}`);
         console.log('Cross-origin FlatGeobuf detected, using proxy:', {
           original: fgbUrl,
           proxy: fgbFileUrl
@@ -691,7 +708,10 @@ export function SidebarContainer() {
     setVsmQChoice,
     drawingActive,
     setDrawingActive,
+    drawingMode,
+    setDrawingMode,
     selectedTiles,
+    figureSelectionExtent,
     inspectMode,
     setInspectMode,
     inspectKind,
@@ -813,12 +833,193 @@ export function SidebarContainer() {
   }, [map, layerManager, updateLayersList]);
 
   const handleGetTiles = () => {
-    const next = !drawingActive;
+    const next = !(drawingActive && drawingMode === 'tiles');
     if (next) {
       setInspectMode(false);
+      setDrawingMode('tiles');
     }
     setDrawingActive(next);
   };
+
+  const exportableFigureLayers = React.useMemo(() => {
+    return layers
+      .filter((layer) => {
+        if (!layer.metadata?.url) return false;
+        return layer.type === 'prediction' || layer.type === 'sentinel2';
+      })
+      .map((layer) => {
+        const meta = layer.metadata ?? {};
+        const bandNames: string[] | undefined = Array.isArray(meta.bandNames) ? meta.bandNames : undefined;
+        const selectedBand: number | undefined = typeof meta.selectedBand === 'number' ? meta.selectedBand : undefined;
+        const rgbBands: number[] | undefined = Array.isArray(meta.rgbBands) ? meta.rgbBands : undefined;
+        return {
+          id: layer.id,
+          name: layer.name,
+          layerType: String(layer.type),
+          layerSubType: meta.layerType ? String(meta.layerType) : undefined,
+          url: String(meta.url),
+          colormap: meta.colormap ? String(meta.colormap) : undefined,
+          rescaleMin: typeof meta.rescaleMin === 'number' ? meta.rescaleMin : undefined,
+          rescaleMax: typeof meta.rescaleMax === 'number' ? meta.rescaleMax : undefined,
+          bandNames,
+          selectedBand,
+          rgbBands,
+        };
+      });
+  }, [layers]);
+
+  React.useEffect(() => {
+    setSelectedFigureLayerIds((prev) => prev.filter((id) => exportableFigureLayers.some((l) => l.id === id)));
+  }, [exportableFigureLayers]);
+
+  // Seed overrides from layer metadata so defaults match the current visualization
+  React.useEffect(() => {
+    setFigureLayerOverrides((prev) => {
+      const next = { ...prev };
+      for (const layer of exportableFigureLayers) {
+        if (next[layer.id]) continue;
+        const defaultBands: number[] = [];
+        if (layer.selectedBand != null) {
+          defaultBands.push(layer.selectedBand);
+        }
+        const isDiversity = layer.layerSubType === 'diversity_indices';
+        next[layer.id] = {
+          selectedBands: defaultBands,
+          colormap: layer.colormap,
+          // Keep diversity ranges unset initially so per-band defaults (e.g. 2D ENL -> 1..6) can be applied at save time.
+          rescaleMin: isDiversity ? undefined : layer.rescaleMin,
+          rescaleMax: isDiversity ? undefined : layer.rescaleMax,
+        };
+      }
+      return next;
+    });
+  }, [exportableFigureLayers]);
+
+  const handleToggleFigureLayer = React.useCallback((layerId: string) => {
+    setSelectedFigureLayerIds((prev) => (
+      prev.includes(layerId) ? prev.filter((id) => id !== layerId) : [...prev, layerId]
+    ));
+  }, []);
+
+  const handleUpdateFigureLayerOverride = React.useCallback((layerId: string, patch: Partial<FigureLayerOverrides>) => {
+    setFigureLayerOverrides((prev) => ({
+      ...prev,
+      [layerId]: { ...prev[layerId], ...patch } as FigureLayerOverrides,
+    }));
+  }, []);
+
+  const handleCreateFiguresDraw = () => {
+    const next = !(drawingActive && drawingMode === 'figures');
+    if (next) {
+      setInspectMode(false);
+      setDrawingMode('figures');
+      setFigureSaveError(null);
+      setFigureSaveMessage(null);
+    }
+    setDrawingActive(next);
+  };
+
+  const handleSaveFigures = React.useCallback(async () => {
+    setFigureSaveError(null);
+    setFigureSaveMessage(null);
+    if (!figureSelectionExtent) {
+      setFigureSaveError('Draw a rectangle first.');
+      return;
+    }
+    if (!figureOutputFolder.trim()) {
+      setFigureSaveError('Please provide an output folder.');
+      return;
+    }
+    const selectedLayers = exportableFigureLayers.filter((layer) => selectedFigureLayerIds.includes(layer.id));
+    if (selectedLayers.length === 0) {
+      setFigureSaveError('Select at least one layer.');
+      return;
+    }
+
+    try {
+      setSavingFigures(true);
+      const resp = await fetch(apiUrl('/auxiliary/save-figures'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          extent_3857: figureSelectionExtent,
+          output_dir: figureOutputFolder.trim(),
+          format: figureFormat,
+          layers: selectedLayers.map((layer) => {
+            const ovr = figureLayerOverrides[layer.id];
+            const isDiversity = layer.layerSubType === 'diversity_indices';
+            const cmap = ovr?.colormap !== undefined ? ovr.colormap : layer.colormap;
+            const rmin = ovr?.rescaleMin !== undefined ? ovr.rescaleMin : layer.rescaleMin;
+            const rmax = ovr?.rescaleMax !== undefined ? ovr.rescaleMax : layer.rescaleMax;
+            const hasBands = ovr?.selectedBands && ovr.selectedBands.length > 0;
+            return {
+              layer_id: layer.id,
+              name: layer.name,
+              layer_type: layer.layerType,
+              url: layer.url,
+              rgb_bands: layer.rgbBands,
+              colormap: cmap,
+              rescale_min: rmin,
+              rescale_max: rmax,
+              bands: hasBands
+                ? ovr!.selectedBands.map((bi) => ({
+                    ...(isDiversity && ovr?.rescaleMin === undefined && ovr?.rescaleMax === undefined
+                      ? {
+                          rescale_min: getDiversityBandRange(bi)[0],
+                          rescale_max: getDiversityBandRange(bi)[1],
+                        }
+                      : {
+                          rescale_min: rmin,
+                          rescale_max: rmax,
+                        }),
+                    band_index: bi,
+                    band_name: layer.bandNames?.[bi - 1] ?? `Band ${bi}`,
+                    colormap: cmap,
+                  }))
+                : undefined,
+            };
+          }),
+        }),
+      });
+      const rawBody = await resp.text();
+      let data: any = null;
+      try {
+        data = rawBody ? JSON.parse(rawBody) : null;
+      } catch {
+        data = null;
+      }
+
+      if (!resp.ok) {
+        const fallback = rawBody || `HTTP ${resp.status} ${resp.statusText}`;
+        throw new Error(data?.error || fallback);
+      }
+
+      if (data?.success === false) {
+        const detailedErrors = Array.isArray(data?.errors)
+          ? data.errors
+              .slice(0, 3)
+              .map((e: any) => `${e?.name || e?.layer_id || 'layer'}: ${e?.error || 'unknown error'}`)
+              .join(' | ')
+          : '';
+        const message = data?.error || (detailedErrors ? `No figures were saved. ${detailedErrors}` : 'Failed to save figures.');
+        throw new Error(message);
+      }
+      const count = Array.isArray(data.saved_files) ? data.saved_files.length : 0;
+      const failed = Array.isArray(data.errors) ? data.errors.length : 0;
+      setFigureSaveMessage(`Saved ${count} figure(s) to ${data.output_dir}${failed ? ` (${failed} failed)` : ''}.`);
+    } catch (err: any) {
+      setFigureSaveError(err?.message || 'Failed to save figures.');
+    } finally {
+      setSavingFigures(false);
+    }
+  }, [
+    exportableFigureLayers,
+    figureFormat,
+    figureLayerOverrides,
+    figureOutputFolder,
+    figureSelectionExtent,
+    selectedFigureLayerIds,
+  ]);
 
   return (
     <Sidebar
@@ -831,8 +1032,24 @@ export function SidebarContainer() {
       vsmQChoice={vsmQChoice}
       onVsmQChoiceChange={setVsmQChoice}
       drawingActive={drawingActive}
+      drawingMode={drawingMode}
       onGetTiles={handleGetTiles}
+      onCreateFiguresDraw={handleCreateFiguresDraw}
       selectedTiles={selectedTiles}
+      figureSelectionReady={!!figureSelectionExtent}
+      figureFormat={figureFormat}
+      onFigureFormatChange={setFigureFormat}
+      figureOutputFolder={figureOutputFolder}
+      onFigureOutputFolderChange={setFigureOutputFolder}
+      availableFigureLayers={exportableFigureLayers.map(({ id, name, bandNames, colormap, rescaleMin, rescaleMax, selectedBand }) => ({ id, name, bandNames, defaultColormap: colormap, defaultRescaleMin: rescaleMin, defaultRescaleMax: rescaleMax, defaultSelectedBand: selectedBand }))}
+      selectedFigureLayerIds={selectedFigureLayerIds}
+      onToggleFigureLayer={handleToggleFigureLayer}
+      figureLayerOverrides={figureLayerOverrides}
+      onUpdateFigureLayerOverride={handleUpdateFigureLayerOverride}
+      onSaveFigures={handleSaveFigures}
+      savingFigures={savingFigures}
+      figureSaveMessage={figureSaveMessage}
+      figureSaveError={figureSaveError}
       inspectMode={inspectMode}
       inspectKind={inspectKind}
       onInspectModeChange={handleInspectModeChange}

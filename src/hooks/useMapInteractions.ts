@@ -16,7 +16,13 @@ export function useMapInteractions(updateLayersList: () => void) {
     map, fgbLayer, highlightLayer, setHighlightLayer,
     setPopupProperties, setPopupPosition, setPopupGeometry, setPopupCoordinates,
   } = useMapStore();
-  const { drawingActive, setDrawingActive, setSelectedTiles } = useMapStore();
+  const {
+    drawingActive,
+    drawingMode,
+    setDrawingActive,
+    setSelectedTiles,
+    setFigureSelectionExtent,
+  } = useMapStore();
 
   const inspectRequestIdRef = useRef(0);
   const inspectPinLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
@@ -64,6 +70,24 @@ export function useMapInteractions(updateLayersList: () => void) {
   }, [map, useMapStore.getState().inspectMode, drawingActive]);
 
   useEffect(() => { if (!useMapStore.getState().inspectMode) clearInspectPin(); }, [useMapStore.getState().inspectMode, clearInspectPin]);
+
+  // Hide all feature popups while drawing tools are active
+  useEffect(() => {
+    if (!drawingActive) return;
+    setPopupProperties(null);
+    setPopupPosition(null);
+    setPopupGeometry(null);
+    setPopupCoordinates(null);
+    setGediPointPopup(null);
+    highlightLayer?.getSource()?.clear();
+  }, [
+    drawingActive,
+    highlightLayer,
+    setPopupProperties,
+    setPopupPosition,
+    setPopupGeometry,
+    setPopupCoordinates,
+  ]);
 
   // Highlight layer
   useEffect(() => {
@@ -120,46 +144,50 @@ export function useMapInteractions(updateLayersList: () => void) {
     drawInteraction.on('drawend', (event: any) => {
       const geom = event.feature.getGeometry();
       if (!geom) return;
-      const drawnExtent = geom.getExtent();
-      const fgb = useMapStore.getState().fgbLayer;
-      if (!fgb) { setDrawingActive(false); return; }
-      const fgbSource = fgb.getSource();
-      if (!fgbSource) return;
+      const drawnExtent = geom.getExtent() as [number, number, number, number];
+      if (drawingMode === 'figures') {
+        setFigureSelectionExtent(drawnExtent);
+      } else {
+        const fgb = useMapStore.getState().fgbLayer;
+        if (!fgb) { setDrawingActive(false); return; }
+        const fgbSource = fgb.getSource();
+        if (!fgbSource) return;
 
-      const features = fgbSource.getFeaturesInExtent(drawnExtent);
-      const tileNames: string[] = [];
-      const labelFeatures: Feature<Geometry>[] = [];
+        const features = fgbSource.getFeaturesInExtent(drawnExtent);
+        const tileNames: string[] = [];
+        const labelFeatures: Feature<Geometry>[] = [];
 
-      for (const f of features) {
-        const name = f.get('Name');
-        if (name && typeof name === 'string') {
-          tileNames.push(name);
-          const g = f.getGeometry();
-          if (g) {
-            const ext = g.getExtent();
-            labelFeatures.push(new Feature({ geometry: new Point([(ext[0] + ext[2]) / 2, (ext[1] + ext[3]) / 2]), tileName: name }));
+        for (const f of features) {
+          const name = f.get('Name');
+          if (name && typeof name === 'string') {
+            tileNames.push(name);
+            const g = f.getGeometry();
+            if (g) {
+              const ext = g.getExtent();
+              labelFeatures.push(new Feature({ geometry: new Point([(ext[0] + ext[2]) / 2, (ext[1] + ext[3]) / 2]), tileName: name }));
+            }
           }
         }
-      }
-      tileNames.sort();
-      setSelectedTiles(tileNames);
+        tileNames.sort();
+        setSelectedTiles(tileNames);
 
-      if (drawLayerRef.current) { map.removeLayer(drawLayerRef.current); drawLayerRef.current = null; }
-      if (labelLayerRef.current) { map.removeLayer(labelLayerRef.current); labelLayerRef.current = null; }
+        if (drawLayerRef.current) { map.removeLayer(drawLayerRef.current); drawLayerRef.current = null; }
+        if (labelLayerRef.current) { map.removeLayer(labelLayerRef.current); labelLayerRef.current = null; }
 
-      const lblLayer = new VectorLayer({
-        source: new VectorSource({ features: labelFeatures }),
-        style: (f: any) => new Style({ text: new TextStyle({ text: f.get('tileName') || '', font: 'bold 16px sans-serif', fill: new Fill({ color: '#FFD700' }), stroke: new Stroke({ color: '#000000', width: 3 }), overflow: true }) }),
-        zIndex: 9001,
-      });
-      map.addLayer(lblLayer);
-      labelLayerRef.current = lblLayer;
+        const lblLayer = new VectorLayer({
+          source: new VectorSource({ features: labelFeatures }),
+          style: (f: any) => new Style({ text: new TextStyle({ text: f.get('tileName') || '', font: 'bold 16px sans-serif', fill: new Fill({ color: '#FFD700' }), stroke: new Stroke({ color: '#000000', width: 3 }), overflow: true }) }),
+          zIndex: 9001,
+        });
+        map.addLayer(lblLayer);
+        labelLayerRef.current = lblLayer;
 
-      const mgr = useMapStore.getState().layerManager;
-      const labelLayerId = `vector-tiles-${Date.now()}`;
-      if (mgr) {
-        mgr.addLayer(labelLayerId, `Selected Tiles (${tileNames.length})`, 'vector', lblLayer, { featureNames: tileNames });
-        updateLayersList();
+        const mgr = useMapStore.getState().layerManager;
+        const labelLayerId = `vector-tiles-${Date.now()}`;
+        if (mgr) {
+          mgr.addLayer(labelLayerId, `Selected Tiles (${tileNames.length})`, 'vector', lblLayer, { featureNames: tileNames });
+          updateLayersList();
+        }
       }
 
       map.removeInteraction(drawInteraction);
@@ -172,7 +200,7 @@ export function useMapInteractions(updateLayersList: () => void) {
       const el = map.getTargetElement();
       if (el) el.style.cursor = '';
     };
-  }, [map, drawingActive]);
+  }, [map, drawingActive, drawingMode, setFigureSelectionExtent]);
 
   // Hover + delete overlay on vector label features (skip GEDI)
   useEffect(() => {
@@ -265,6 +293,15 @@ export function useMapInteractions(updateLayersList: () => void) {
 
     const handleClick = (evt: any) => {
       const { inspectMode: im, drawingActive: drawOn, layerManager: mgr } = useMapStore.getState();
+      if (drawOn) {
+        setPopupProperties(null);
+        setPopupPosition(null);
+        setPopupGeometry(null);
+        setPopupCoordinates(null);
+        setGediPointPopup(null);
+        highlightLayer.getSource()?.clear();
+        return;
+      }
 
       if (im && !drawOn) {
         setInspectPinAtCoordinate(evt.coordinate);
@@ -285,6 +322,7 @@ export function useMapInteractions(updateLayersList: () => void) {
               useMapStore.getState().setInspectPanel((prev) => ({
                 lon, lat, layers: [], loading: false, kind: 'vertical_profile' as const,
                 verticalProfile: prev?.verticalProfile, verticalProfileCurve: prev?.verticalProfileCurve,
+                profileMetrics: prev?.profileMetrics,
                 profileMeta: prev?.profileMeta, pendingSample: undefined, inspectError: data.error || 'Failed',
               }));
               return;
@@ -292,6 +330,12 @@ export function useMapInteractions(updateLayersList: () => void) {
             useMapStore.getState().setInspectPanel({
               lon, lat, layers: [], loading: false, kind: 'vertical_profile',
               verticalProfile: data.profile, verticalProfileCurve: data.vertical_profile_curve,
+              profileMetrics: {
+                fhd: data.fhd ?? null,
+                enl1d: data.enl1d ?? null,
+                enl2d: data.enl2d ?? null,
+                cr: data.cr ?? null,
+              },
               profileMeta: { tileName: data.tile_name || '', year: data.year ?? vsmYear, qIndex: data.q_index ?? 1, source: data.source },
               pendingSample: undefined, inspectError: null,
             });

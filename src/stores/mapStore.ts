@@ -9,6 +9,7 @@ import type { Layer } from '../components/LayerControl';
 import type { VsmLayerEntry, VsmQChoice } from '../constants/predictions';
 import { getVsmLayerId } from '../constants/predictions';
 import type { InspectLayerRow } from '../utils/inspectPoint';
+import { API_BASE_URL } from '../utils/apiBase';
 
 export type VerticalProfilePoint = {
   rh: number;
@@ -35,6 +36,12 @@ export type InspectPanelState = {
   kind: 'layers' | 'vertical_profile';
   verticalProfile?: VerticalProfilePoint[];
   verticalProfileCurve?: Array<{ z: number; value: number }>;
+  profileMetrics?: {
+    fhd?: number | null;
+    enl1d?: number | null;
+    enl2d?: number | null;
+    cr?: number | null;
+  };
   profileMeta?: { tileName: string; year: number; qIndex: number; source?: string };
   inspectError?: string | null;
 };
@@ -154,8 +161,12 @@ interface MapStore {
   // Drawing tools
   drawingActive: boolean;
   setDrawingActive: (active: boolean) => void;
+  drawingMode: 'tiles' | 'figures';
+  setDrawingMode: (mode: 'tiles' | 'figures') => void;
   selectedTiles: string[];
   setSelectedTiles: (tiles: string[]) => void;
+  figureSelectionExtent: [number, number, number, number] | null;
+  setFigureSelectionExtent: (extent: [number, number, number, number] | null) => void;
 
   /** When true, map clicks open the inspect panel (layer sample or vertical RH profile) */
   inspectMode: boolean;
@@ -222,7 +233,7 @@ export const useMapStore = create<MapStore>((set, get) => ({
   // FlatGeobuf Layer
   fgbLayer: null,
   setFgbLayer: (layer) => set({ fgbLayer: layer }),
-  fgbUrl: 'http://localhost:8000/fgb/local',
+  fgbUrl: `${API_BASE_URL}/fgb/local`,
   setFgbUrl: (url) => set({ fgbUrl: url }),
   fgbLoading: false,
   setFgbLoading: (loading) => set({ fgbLoading: loading }),
@@ -285,8 +296,12 @@ export const useMapStore = create<MapStore>((set, get) => ({
   // Drawing tools
   drawingActive: false,
   setDrawingActive: (active) => set({ drawingActive: active }),
+  drawingMode: 'tiles',
+  setDrawingMode: (mode) => set({ drawingMode: mode }),
   selectedTiles: [],
   setSelectedTiles: (tiles) => set({ selectedTiles: tiles }),
+  figureSelectionExtent: null,
+  setFigureSelectionExtent: (extent) => set({ figureSelectionExtent: extent }),
 
   inspectMode: false,
   setInspectMode: (active) =>

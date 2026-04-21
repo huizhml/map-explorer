@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 from fastapi.responses import Response
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Literal
 from pathlib import Path
 import asyncio
 import json
@@ -12,12 +12,17 @@ import subprocess
 import tempfile
 import numpy as np
 import math
+import re
 
 import geopandas as gpd
 import pandas as pd
 import pyarrow.parquet as pq
 from fastapi import HTTPException
 from shapely import wkb, wkt
+import rasterio
+from rasterio.windows import from_bounds
+from rasterio.windows import Window
+from rasterio.warp import transform_bounds
 
 import utils
 from utils import create_vrt, vertical_profile, pixel_diversity_indices
@@ -81,29 +86,25 @@ async def _compute_cr(tile_id: str, year: int) -> Path:
 
 
 async def _compute_entropy(tile_id: str, year: int):
-    path_entropy = Path(f"{DIVERSITY_INDICES_LOCAL_BASE_PATH}/{year}/tiles/geotiff/{tile_id}_Q1.tif")
-    path_entropy_cog = Path(f"{DIVERSITY_INDICES_LOCAL_BASE_PATH}/{year}/tiles/cog/{tile_id}_Q1.tif")
-    if path_entropy_cog.exists():
-        return path_entropy_cog
-
-    input_vrt_path = Path(PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE.format(tile=tile_id, q=1))
-    if not input_vrt_path.exists():
-        tile_dir = Path(f"{PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH}/{tile_id}")
-        create_vrt(tile_dir, input_vrt_path)
-
-    utils.compute_entropy(output_path=path_entropy, tile_id=tile_id, year=year, vrt_path=input_vrt_path)
+    output_dir = Path(f"{DIVERSITY_INDICES_LOCAL_BASE_PATH}/{year}/tiles/geotiff")
+    output_path = output_dir / f'{tile_id}.tif'
+    output_cog_path = output_dir.parent / f'cog/{tile_id}.tif'
+    if output_cog_path.exists():
+        return output_cog_path
+    if not output_path.exists():
+        utils.compute_entropy(output_path=output_path, tile_id=tile_id, year=year)
 
     translate_cmd = [
-        "gdal_translate", str(path_entropy), str(path_entropy_cog),
-        "-of", "COG", "-co", "COMPRESS=DEFLATE", "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+        "gdal_translate", str(output_path), str(output_cog_path),
+        "-of", "COG", "-co", "COMPRESS=ZSTD", "-co", "OVERVIEW_RESAMPLING=AVERAGE",
     ]
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, lambda: subprocess.run(translate_cmd, capture_output=True, text=True))
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr)
 
-    path_entropy.unlink(missing_ok=True)
-    return path_entropy_cog
+    output_path.unlink(missing_ok=True)
+    return output_cog_path
 
 
 # ---------------------------------------------------------------------------
@@ -217,8 +218,39 @@ class AuxiliaryEntropyRequest(BaseModel):
     year: int
     metric: str = "entropy"
 
+class AuxiliaryDiversityIndicesRequest(BaseModel):
+    tile_name: str
+    year: int
+
 class AuxiliaryALSRequest(BaseModel):
     tile_name: str
+
+
+class FigureBandSpec(BaseModel):
+    band_index: int
+    band_name: Optional[str] = None
+    colormap: Optional[str] = None
+    rescale_min: Optional[float] = None
+    rescale_max: Optional[float] = None
+
+
+class FigureLayerSpec(BaseModel):
+    layer_id: str
+    name: str
+    layer_type: Optional[str] = None
+    url: str
+    rgb_bands: Optional[List[int]] = None
+    colormap: Optional[str] = None
+    rescale_min: Optional[float] = None
+    rescale_max: Optional[float] = None
+    bands: Optional[List[FigureBandSpec]] = None
+
+
+class SaveFiguresRequest(BaseModel):
+    extent_3857: List[float]
+    output_dir: str
+    format: Literal["jpg", "png", "pdf"] = "png"
+    layers: List[FigureLayerSpec]
 
 
 # ---------------------------------------------------------------------------
@@ -292,9 +324,13 @@ async def gedi_point_profile(request: GEDIPointProfileRequest):
         return None if (math.isnan(v) or math.isinf(v)) else v
 
     try:
-        fhd, enl1d, enl2d = _safe_scalar(float(pixel_diversity_indices(rhs, interval=request.fhd_interval, max_height=100)))
+        raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(rhs, interval=request.fhd_interval, max_height=100)
+        fhd = _safe_scalar(float(raw_fhd))
+        enl1d = _safe_scalar(float(raw_enl1d))
+        enl2d = _safe_scalar(float(raw_enl2d))
+        cr = _safe_scalar(float(raw_cr))
     except Exception as e:
-        fhd, enl1d, enl2d = None, None, None
+        fhd, enl1d, enl2d, cr = None, None, None, None
         print(f"[gedi/point-profile] pixel_diversity_indices error: {e}")
 
     return {
@@ -304,6 +340,7 @@ async def gedi_point_profile(request: GEDIPointProfileRequest):
         "fhd": fhd,
         "enl1d": enl1d,
         "enl2d": enl2d,
+        "cr": cr,
         "fhd_interval": request.fhd_interval,
     }
 
@@ -373,6 +410,40 @@ async def auxiliary_profile_entropy_options():
     return {"message": "OK"}
 
 
+@router.post("/diversity-indices")
+async def load_or_compute_diversity_indices(request: AuxiliaryDiversityIndicesRequest):
+    """Return a 4-band COG (FHD, 1D-ENL, 2D-ENL, CR), computing it on the fly if needed."""
+    if not DIVERSITY_INDICES_LOCAL_BASE_PATH:
+        return {"success": False, "error": "DIVERSITY_INDICES_LOCAL_BASE_PATH env var is not set."}
+    cog_path = Path(DIVERSITY_INDICES_LOCAL_BASE_PATH) / str(request.year) / "tiles" / "cog" / f"{request.tile_name}_Q1.tif"
+    if cog_path.is_file():
+        return {
+            "success": True,
+            "url": str(cog_path),
+            "tile_name": request.tile_name,
+            "layer_type": "diversity_indices",
+            "bands": ["FHD", "1D ENL", "2D ENL", "CR"],
+        }
+    try:
+        path_out = await _compute_entropy(request.tile_name, request.year)
+        return {
+            "success": True,
+            "url": str(path_out),
+            "tile_name": request.tile_name,
+            "layer_type": "diversity_indices",
+            "bands": ["FHD", "1D ENL", "2D ENL", "CR"],
+        }
+    except HTTPException as exc:
+        return {"success": False, "error": exc.detail if isinstance(exc.detail, str) else str(exc.detail)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.options("/diversity-indices")
+async def auxiliary_diversity_indices_options():
+    return {"message": "OK"}
+
+
 @router.post("/als")
 async def load_als(request: AuxiliaryALSRequest):
     if not ALS_LOCAL_TEMPLATE:
@@ -389,3 +460,256 @@ async def load_als(request: AuxiliaryALSRequest):
 @router.options("/als")
 async def auxiliary_als_options():
     return {"message": "OK"}
+
+
+@router.get("/list-dirs")
+async def list_dirs(path: str = ""):
+    """Return immediate sub-directories of *path* (or home if empty)."""
+    base = Path(path) if path else Path.home()
+    if not base.is_dir():
+        return {"path": str(base), "dirs": [], "error": "Not a directory"}
+    dirs: list[str] = []
+    try:
+        for entry in sorted(base.iterdir()):
+            if entry.is_dir() and not entry.name.startswith('.'):
+                dirs.append(entry.name)
+    except PermissionError:
+        return {"path": str(base), "dirs": [], "error": "Permission denied"}
+    return {"path": str(base.resolve()), "dirs": dirs}
+
+
+@router.post("/save-figures")
+async def save_figures(request: SaveFiguresRequest):
+    if len(request.extent_3857) != 4:
+        return {"success": False, "error": "extent_3857 must contain exactly 4 numbers."}
+    if not request.layers:
+        return {"success": False, "error": "No layers were provided."}
+
+    output_dir = Path(request.output_dir).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+    except Exception as e:
+        return {"success": False, "error": f"Matplotlib is not available: {e}"}
+
+    _TITILER_TO_MPL_CMAP = {
+        "greens": "Greens", "viridis": "viridis", "inferno": "inferno",
+        "magma": "magma", "plasma": "plasma", "cividis": "cividis",
+        "ylgn": "YlGn", "ylgnbu": "YlGnBu", "gnbu": "GnBu",
+        "bugn": "BuGn", "pubu": "PuBu", "rdylgn": "RdYlGn",
+        "spectral": "Spectral", "rdbu": "RdBu", "greys": "Greys",
+        "blues": "Blues", "reds": "Reds", "oranges": "Oranges",
+        "ylgn_r": "YlGn_r", "ylgnbu_r": "YlGnBu_r", "gnbu_r": "GnBu_r",
+        "bugn_r": "BuGn_r", "pubu_r": "PuBu_r", "rdylgn_r": "RdYlGn_r",
+        "spectral_r": "Spectral_r", "rdbu_r": "RdBu_r",
+    }
+
+    def _resolve_cmap(name: Optional[str]) -> str:
+        if not name:
+            return "viridis"
+        if name in _TITILER_TO_MPL_CMAP:
+            return _TITILER_TO_MPL_CMAP[name]
+        return name
+
+    def _sanitize_name(name: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
+        cleaned = cleaned.strip("._")
+        return cleaned or "layer"
+
+    def _with_location_after_tile(layer_name: str) -> str:
+        parts = layer_name.strip().split(maxsplit=1)
+        if not parts:
+            return loc_tag
+        if len(parts) == 1:
+            return f"{parts[0]} {loc_tag}"
+        return f"{parts[0]} {loc_tag} {parts[1]}"
+
+    def _read_as_float(src, window, indexes=None):
+        """Read rasterio data as float32, replacing nodata with nan."""
+        kwargs = {"window": window}
+        if indexes is not None:
+            kwargs["indexes"] = indexes
+        raw = src.read(**kwargs).astype(np.float32)
+        nodata = src.nodata
+        if nodata is not None:
+            raw[raw == nodata] = np.nan
+        return raw
+
+    def _normalize_single_band(arr: np.ndarray, low: Optional[float], high: Optional[float]) -> np.ndarray:
+        data = arr.copy()
+        valid = np.isfinite(data)
+        if not np.any(valid):
+            return np.zeros_like(data, dtype=np.float32)
+        if low is None or high is None:
+            vals = data[valid]
+            low = float(np.percentile(vals, 2))
+            high = float(np.percentile(vals, 98))
+        if high <= low:
+            high = low + 1.0
+        out = (data - float(low)) / (float(high) - float(low))
+        out = np.clip(out, 0.0, 1.0)
+        out[~valid] = np.nan
+        return out
+
+    def _resolve_single_band_range(arr: np.ndarray, low: Optional[float], high: Optional[float]) -> tuple[float, float]:
+        valid = np.isfinite(arr)
+        if not np.any(valid):
+            return 0.0, 1.0
+        if low is None or high is None:
+            vals = arr[valid]
+            low = float(np.percentile(vals, 2))
+            high = float(np.percentile(vals, 98))
+        if high <= low:
+            high = low + 1.0
+        return float(low), float(high)
+
+    def _normalize_rgb(rgb: np.ndarray) -> np.ndarray:
+        out = np.zeros_like(rgb, dtype=np.float32)
+        for i in range(3):
+            band = rgb[i]
+            valid = np.isfinite(band)
+            if not np.any(valid):
+                continue
+            lo = float(np.percentile(band[valid], 2))
+            hi = float(np.percentile(band[valid], 98))
+            if hi <= lo:
+                hi = lo + 1.0
+            norm = (band - lo) / (hi - lo)
+            out[i] = np.clip(norm, 0.0, 1.0)
+        return np.transpose(out, (1, 2, 0))
+
+    def _normalize_rgb_with_range(
+        rgb: np.ndarray,
+        low: float,
+        high: float,
+        gamma: float = 1.0,
+        brightness: float = 1.0,
+    ) -> np.ndarray:
+        if high <= low:
+            high = low + 1.0
+        out = np.zeros_like(rgb, dtype=np.float32)
+        for i in range(3):
+            band = rgb[i]
+            norm = (band - low) / (high - low)
+            norm = np.clip(norm, 0.0, 1.0)
+            if gamma > 0 and gamma != 1.0:
+                norm = np.power(norm, 1.0 / gamma)
+            if brightness != 1.0:
+                norm = np.clip(norm * brightness, 0.0, 1.0)
+            out[i] = norm
+        return np.transpose(out, (1, 2, 0))
+
+    def _resolve_rgb_indexes(src, requested: Optional[List[int]], prefer_sentinel_rgb: bool) -> List[int]:
+        if requested and len(requested) == 3 and all(isinstance(v, int) and 1 <= v <= src.count for v in requested):
+            return requested
+        if prefer_sentinel_rgb and src.count >= 4:
+            return [4, 3, 2]
+        return [1, 2, 3]
+
+    xmin, ymin, xmax, ymax = [float(v) for v in request.extent_3857]
+    wgs_bounds = transform_bounds("EPSG:3857", "EPSG:4326", xmin, ymin, xmax, ymax)
+    center_lon = (wgs_bounds[0] + wgs_bounds[2]) / 2
+    center_lat = (wgs_bounds[1] + wgs_bounds[3]) / 2
+    loc_tag = f"{center_lat:.4f}_{center_lon:.4f}".replace("-", "m")
+    saved_files = []
+    errors = []
+
+    def _save_one_figure(src, window, title: str, filename: str, cmap: Optional[str],
+                         rmin: Optional[float], rmax: Optional[float], band_idx: Optional[int],
+                         prefer_sentinel_rgb: bool = False, rgb_bands: Optional[List[int]] = None):
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=160)
+        ax.set_axis_off()
+        ax.set_title(title, fontsize=11)
+        if band_idx is not None:
+            data = _read_as_float(src, window, indexes=band_idx)
+        elif src.count >= 3 and cmap is None:
+            rgb_indexes = _resolve_rgb_indexes(src, rgb_bands, prefer_sentinel_rgb)
+            rgb = _read_as_float(src, window, indexes=rgb_indexes)
+            if prefer_sentinel_rgb:
+                if rmin is not None and rmax is not None:
+                    rendered = _normalize_rgb_with_range(
+                        rgb,
+                        float(rmin),
+                        float(rmax),
+                        gamma=1.25,
+                        brightness=1.15,
+                    )
+                else:
+                    valid = rgb[np.isfinite(rgb)]
+                    auto_high = 255.0
+                    if valid.size > 0 and float(np.nanmax(valid)) > 255.0:
+                        auto_high = 2500.0
+                    rendered = _normalize_rgb_with_range(
+                        rgb,
+                        0.0,
+                        auto_high,
+                        gamma=1.25,
+                        brightness=1.15,
+                    )
+                ax.imshow(rendered)
+            else:
+                ax.imshow(_normalize_rgb(rgb))
+            out_path = output_dir / filename
+            fig.savefig(out_path, format=request.format, bbox_inches="tight", pad_inches=0.05)
+            plt.close(fig)
+            return str(out_path)
+        else:
+            data = _read_as_float(src, window, indexes=1)
+        low, high = _resolve_single_band_range(data, rmin, rmax)
+        im = ax.imshow(data, cmap=_resolve_cmap(cmap), vmin=low, vmax=high)
+        # Show colorbar only for single-band renderings; match colorbar height to image axes.
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.15)
+        cbar = fig.colorbar(im, cax=cax)
+        cbar.ax.tick_params(labelsize=8)
+        out_path = output_dir / filename
+        fig.savefig(out_path, format=request.format, bbox_inches="tight", pad_inches=0.05)
+        plt.close(fig)
+        return str(out_path)
+
+    for layer in request.layers:
+        try:
+            is_sentinel = (layer.layer_type == "sentinel2")
+            with rasterio.open(layer.url) as src:
+                src_bounds = transform_bounds("EPSG:3857", src.crs, xmin, ymin, xmax, ymax, densify_pts=21)
+                window = from_bounds(*src_bounds, transform=src.transform)
+                full_window = Window(0, 0, src.width, src.height)
+                window = window.intersection(full_window).round_offsets().round_lengths()
+                if window.width <= 0 or window.height <= 0:
+                    raise ValueError("Selection does not overlap layer extent.")
+
+                if layer.bands and len(layer.bands) > 0:
+                    for bs in layer.bands:
+                        bname = bs.band_name or f"band{bs.band_index}"
+                        title = f"{layer.name} — {bname}"
+                        base_name = _with_location_after_tile(layer.name)
+                        fname = f"{_sanitize_name(base_name)}_{_sanitize_name(bname)}.{request.format}"
+                        cmap = bs.colormap if bs.colormap is not None else layer.colormap
+                        rmin = bs.rescale_min if bs.rescale_min is not None else layer.rescale_min
+                        rmax = bs.rescale_max if bs.rescale_max is not None else layer.rescale_max
+                        path = _save_one_figure(
+                            src, window, title, fname, cmap, rmin, rmax, bs.band_index, is_sentinel, layer.rgb_bands
+                        )
+                        saved_files.append(path)
+                else:
+                    base_name = _with_location_after_tile(layer.name)
+                    fname = f"{_sanitize_name(base_name)}.{request.format}"
+                    path = _save_one_figure(src, window, layer.name, fname,
+                                            layer.colormap, layer.rescale_min, layer.rescale_max, None,
+                                            is_sentinel, layer.rgb_bands)
+                    saved_files.append(path)
+        except Exception as e:
+            errors.append({"layer_id": layer.layer_id, "name": layer.name, "error": str(e)})
+
+    return {
+        "success": len(saved_files) > 0,
+        "saved_files": saved_files,
+        "errors": errors,
+        "output_dir": str(output_dir),
+        "location_tag": loc_tag,
+        "format": request.format,
+    }
