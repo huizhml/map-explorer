@@ -13,6 +13,7 @@ import requests as http_requests
 router = APIRouter(tags=["geo"])
 
 S2_GRID_LOCAL_PATH = os.environ.get("S2_GRID_LOCAL_PATH", "")
+NATURALNESS_REF_DATA_PATH = os.environ.get("NATURALNESS_REF_DATA_PATH", "")
 
 # ---------------------------------------------------------------------------
 # GeoParquet
@@ -114,12 +115,11 @@ async def proxy_fgb_options():
     })
 
 
-@router.get("/fgb/local")
-async def serve_local_fgb(request: Request):
-    if not S2_GRID_LOCAL_PATH or not os.path.isfile(S2_GRID_LOCAL_PATH):
-        return Response(content=json.dumps({"error": "S2_GRID_LOCAL_PATH not set or file missing"}).encode(), media_type="application/json", status_code=404)
+def _serve_fgb_file(request: Request, file_path: str, missing_error: str):
+    if not file_path or not os.path.isfile(file_path):
+        return Response(content=json.dumps({"error": missing_error}).encode(), media_type="application/json", status_code=404)
 
-    file_size = os.path.getsize(S2_GRID_LOCAL_PATH)
+    file_size = os.path.getsize(file_path)
     range_header = request.headers.get("range")
     cors = {
         "Access-Control-Allow-Origin": "*",
@@ -135,7 +135,7 @@ async def serve_local_fgb(request: Request):
         length = end - start + 1
 
         def generate():
-            with open(S2_GRID_LOCAL_PATH, "rb") as f:
+            with open(file_path, "rb") as f:
                 f.seek(start)
                 remaining = length
                 while remaining > 0:
@@ -148,7 +148,7 @@ async def serve_local_fgb(request: Request):
         return StreamingResponse(generate(), status_code=206, media_type="application/octet-stream", headers={**cors, "Content-Length": str(length), "Content-Range": f"bytes {start}-{end}/{file_size}"})
     else:
         def generate():
-            with open(S2_GRID_LOCAL_PATH, "rb") as f:
+            with open(file_path, "rb") as f:
                 while True:
                     data = f.read(8192)
                     if not data:
@@ -158,21 +158,50 @@ async def serve_local_fgb(request: Request):
         return StreamingResponse(generate(), status_code=200, media_type="application/octet-stream", headers={**cors, "Content-Length": str(file_size)})
 
 
-@router.head("/fgb/local")
-async def head_local_fgb():
-    if not S2_GRID_LOCAL_PATH or not os.path.isfile(S2_GRID_LOCAL_PATH):
+def _head_fgb_file(file_path: str):
+    if not file_path or not os.path.isfile(file_path):
         return Response(status_code=404)
     return Response(status_code=200, headers={
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
         "Accept-Ranges": "bytes",
-        "Content-Length": str(os.path.getsize(S2_GRID_LOCAL_PATH)),
+        "Content-Length": str(os.path.getsize(file_path)),
         "Content-Type": "application/octet-stream",
     })
 
 
+@router.get("/fgb/local")
+async def serve_local_fgb(request: Request):
+    return _serve_fgb_file(request, S2_GRID_LOCAL_PATH, "S2_GRID_LOCAL_PATH not set or file missing")
+
+
+@router.head("/fgb/local")
+async def head_local_fgb():
+    return _head_fgb_file(S2_GRID_LOCAL_PATH)
+
+
 @router.options("/fgb/local")
 async def local_fgb_options():
+    return Response(headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Range, Content-Range, Content-Length",
+        "Access-Control-Max-Age": "3600",
+    })
+
+
+@router.get("/fgb/naturalness")
+async def serve_naturalness_fgb(request: Request):
+    return _serve_fgb_file(request, NATURALNESS_REF_DATA_PATH, "NATURALNESS_REF_DATA_PATH not set or file missing")
+
+
+@router.head("/fgb/naturalness")
+async def head_naturalness_fgb():
+    return _head_fgb_file(NATURALNESS_REF_DATA_PATH)
+
+
+@router.options("/fgb/naturalness")
+async def naturalness_fgb_options():
     return Response(headers={
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",

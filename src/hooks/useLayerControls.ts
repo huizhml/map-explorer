@@ -6,6 +6,8 @@ import { Style, Stroke, Fill, Text as TextStyle } from 'ol/style';
 import { useMapStore } from '../stores/mapStore';
 import { buildDiversityTileUrl, type DiversityBandConfig } from './useLayerLoaders';
 
+const MAX_VECTOR_FEATURE_LIST_PREVIEW = 300;
+
 export function useLayerControls(
   updateLayersList: () => void,
   globalLayersRef: React.RefObject<globalThis.Map<string, { cancelled: boolean }>>,
@@ -169,7 +171,16 @@ export function useLayerControls(
       const source = (managed.layer as any).getSource?.();
       if (!source) continue;
       const features = source.getFeatures?.() || [];
-      result[managed.id] = features.map((f: any, i: number) => ({ name: f.get('tileName') || f.get('name') || `Feature ${i}`, index: i }));
+      const previewCount = Math.min(features.length, MAX_VECTOR_FEATURE_LIST_PREVIEW);
+      const preview = new Array(previewCount);
+      for (let i = 0; i < previewCount; i += 1) {
+        const feature = features[i];
+        preview[i] = {
+          name: feature.get('tileName') || feature.get('name') || `Feature ${i}`,
+          index: i,
+        };
+      }
+      result[managed.id] = preview;
     }
     return result;
   }, [layerManager, layers]);

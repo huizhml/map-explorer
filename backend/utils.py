@@ -25,13 +25,47 @@ import os
 import time
 import pandas as pd
 
-MAX_HEIGHT = 100.0
+MAX_HEIGHT = 50 # 100.0
 N_BINS = 20
 BIN_WIDTH = MAX_HEIGHT / N_BINS
 NODATA_IN = 32767
 NODATA_OUT = -9999.0
 stac_collection_dir = '~/data/gvs/products/gvsm_stac_catalog/vsm_local'
 
+def pixel_hist(rhs: np.ndarray, interval: int = 5, max_height: float = None):
+    """
+    Compute per-pixel histogram of RH values.
+    """
+    n_bins = int(max_height / interval)
+    rhs_arr = np.asarray(rhs, dtype=np.float32)
+    rhs_arr = rhs_arr[np.isfinite(rhs_arr)] # NOTE: Ignore NaN and Inf
+    rhs_arr = rhs_arr[rhs_arr > 0] # NOTE: Ignore negative values (mostly ground return, may dominate the histogram)
+    rhs_arr = np.clip(rhs_arr, 0, max_height) # NOTE: count very tall trees
+    hist, bins = np.histogram(rhs_arr, bins=n_bins, range=(0, max_height)) # negative values are ignored
+    return hist, bins
+
+
+def pixel_vertical_profile_and_metrics(rhs, interval=5, max_height=None):
+    """
+    Compute per-pixel FHD using a simple histogram approach.
+    """
+    if isinstance(rhs, pd.Series):
+        rhs = rhs.values
+    if max_height is None:
+        max_height = MAX_HEIGHT
+    hist, bins = pixel_hist(rhs, interval, max_height)
+    p = hist / hist.sum()
+    mask = p > 0
+    fhd = -np.sum(p[mask] * np.log(p[mask]))#.astype(np.float32)
+    enl1d = np.exp(fhd)
+    enl2d = np.float32(1.0 / np.sum(p[mask] ** 2))
+    rh25 = max(0, rhs[25])
+    if rhs[98] <= 0:
+        cr = 0
+    else:
+        cr = (rhs[98] - rh25)/rhs[98]
+    
+    return hist, fhd, enl1d, enl2d, cr
 
 def pixel_diversity_indices(rhs, interval=5, max_height=None):
     """
@@ -41,22 +75,17 @@ def pixel_diversity_indices(rhs, interval=5, max_height=None):
         rhs = rhs.values
     if max_height is None:
         max_height = MAX_HEIGHT
-    rhs_arr = np.asarray(rhs, dtype=np.float32)
-    rhs_arr = rhs_arr[np.isfinite(rhs_arr)]
-    n_bins = int(MAX_HEIGHT / interval)
-    hist, bins = np.histogram(rhs_arr[rhs_arr > 0], bins=n_bins, range=(0, MAX_HEIGHT)) # negative values are ignored
-    print(f"[pixel_diversity_indices] rhs_arr: {rhs_arr}")
-    print(f"[pixel_diversity_indices] hist: {hist}")
-    print(f"[pixel_diversity_indices] bins: {bins}")
+    hist, bins = pixel_hist(rhs, interval, max_height)
     p = hist / hist.sum()
     mask = p > 0
     fhd = -np.sum(p[mask] * np.log(p[mask]))#.astype(np.float32)
     enl1d = np.exp(fhd)
     enl2d = np.float32(1.0 / np.sum(p[mask] ** 2))
+    rh25 = max(0, rhs[25])
     if rhs[98] <= 0:
         cr = 0
     else:
-        cr = (rhs[98] - rhs[25])/rhs[98]
+        cr = (rhs[98] - rh25)/rhs[98]
     
     return fhd, enl1d, enl2d, cr
 
@@ -120,7 +149,8 @@ def _chunk_diversity(tile, bin_width=5):
     entropy[nodata_mask] = NODATA_OUT
     enl1d[nodata_mask] = NODATA_OUT
     enl2d[nodata_mask] = NODATA_OUT
-    cr = (tile[98] - tile[25])/(tile[98] + 1e-6)
+    rh25 = np.maximum(0, tile[25])
+    cr = (tile[98] - rh25)/(tile[98] + 1e-6)
     cr[nodata_mask] = NODATA_OUT
     return entropy, enl1d, enl2d, cr
 

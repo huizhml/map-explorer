@@ -5,7 +5,7 @@ GATE_HOST="hendrixgate${gate_num}fl"
  
 case $1 in
 1)
-  port=${2:-8000}
+  port=${2:-8006}
   echo "Forwarding port $port for backend via $GATE_HOST"
   ssh -N -L $port:localhost:$port "$GATE_HOST"
   ;;

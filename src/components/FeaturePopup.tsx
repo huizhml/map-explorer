@@ -813,6 +813,11 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const finalX = position.x + dragPosition.x;
   const finalY = position.y + dragPosition.y;
   const tileName = properties.Name || properties.name || 'Unknown tile';
+  const isTileFeature = Boolean(
+    (typeof properties.Name === 'string' && properties.Name.trim() !== '') ||
+    (typeof properties.name === 'string' && properties.name.trim() !== '')
+  );
+  const featurePropertyEntries = Object.entries(properties).filter(([key]) => key !== 'geometry');
   const sectionCardSx = {
     mx: 2,
     mt: 2,
@@ -902,355 +907,387 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
 
       {/* Scrollable Content Area */}
       <Box sx={{ overflow: 'auto', flex: 1, pb: 2 }}>
-        <Box sx={{ px: 2, pt: 1.5 }}>
-          <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.78rem' }}>
-            Tile
-          </Typography>
-          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-            {tileName}
-          </Typography>
-        </Box>
-
-        <Box sx={sectionCardSx}>
-          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 2.25 }}>
-            VSM
-          </Typography>
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>
-            <FormControl size="small" fullWidth>
-              <InputLabel>Source</InputLabel>
-              <Select
-                value={predSource}
-                label="Source"
-                onChange={(e) => setPredSource(e.target.value as 'blended' | 'original')}
-                MenuProps={{ sx: { zIndex: 2100 } }}
-                sx={inputSx}
-              >
-                <MenuItem value="blended">blended</MenuItem>
-                <MenuItem value="original">original</MenuItem>
-              </Select>
-            </FormControl>
-            <TextField
-              label="RH index"
-              type="number"
-              value={rhIndex}
-              onChange={(e) => setRhIndex(e.target.value)}
-              size="small"
-              fullWidth
-              sx={inputSx}
-            />
-          </Box>
-
-          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-            Percentiles
-          </Typography>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', mb: 2 }}>
-            <FormControlLabel
-              sx={{ m: 0 }}
-              control={<Checkbox size="small" checked={qChoice === '5%'} onChange={() => setQChoice('5%')} />}
-              label={<Typography variant="body2">5%</Typography>}
-            />
-            <FormControlLabel
-              sx={{ m: 0 }}
-              control={<Checkbox size="small" checked={qChoice === 'median'} onChange={() => setQChoice('median')} />}
-              label={<Typography variant="body2">median</Typography>}
-            />
-            <FormControlLabel
-              sx={{ m: 0 }}
-              control={<Checkbox size="small" checked={qChoice === '95%'} onChange={() => setQChoice('95%')} />}
-              label={<Typography variant="body2">95%</Typography>}
-            />
-          </Box>
-
-          <Button
-            variant="contained"
-            fullWidth
-            onClick={handleLoadPrediction}
-            disabled={predLoading}
-            startIcon={predLoading ? <CircularProgress size={16} color="inherit" /> : null}
-            sx={filledButtonSx}
-          >
-            {predLoading ? 'Loading...' : 'Load'}
-          </Button>
-
-          {predError && (
-            <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-              {predError}
+        {isTileFeature && (
+          <Box sx={{ px: 2, pt: 1.5 }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.78rem' }}>
+              Tile
             </Typography>
-          )}
-          {predResult && (
-            <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
-              <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
-                Prediction COG loaded
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+              {tileName}
+            </Typography>
+          </Box>
+        )}
+
+        {!isTileFeature && (
+          <Box sx={sectionCardSx}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1.5 }}>
+              Properties
+            </Typography>
+            {featurePropertyEntries.length === 0 ? (
+              <Typography variant="body2" color="text.secondary">
+                No properties available.
               </Typography>
-              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 0.5 }}>
-                Tile: {predResult.tile_name} | Year: {predResult.year || year}
+            ) : (
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr', gap: 1 }}>
+                {featurePropertyEntries.map(([key, value]) => (
+                  <Box key={key} sx={{ p: 1.25, borderRadius: 1.5, bgcolor: '#f5f7fb', border: '1px solid', borderColor: 'divider' }}>
+                    <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.3 }}>
+                      {key}
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-word' }}>
+                      {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                    </Typography>
+                  </Box>
+                ))}
+              </Box>
+            )}
+          </Box>
+        )}
+
+        {isTileFeature && (
+          <>
+            <Box sx={sectionCardSx}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 2.25 }}>
+                VSM
               </Typography>
-            </Box>
-          )}
 
-          <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 2.5, mb: 1.25 }}>
-            Diversity indices
-          </Typography>
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
-            <Button
-              variant="contained"
-              onClick={handleLoadDiversityIndices}
-              disabled={entropyLoading}
-              startIcon={entropyLoading ? <CircularProgress size={16} color="inherit" /> : null}
-              sx={filledButtonSx}
-            >
-              {entropyLoading ? 'Loading...' : 'Load Diversity'}
-            </Button>
-            <Button
-              variant="contained"
-              onClick={handleLoadCR}
-              disabled={crLoading}
-              startIcon={crLoading ? <CircularProgress size={16} color="inherit" /> : null}
-              sx={filledButtonSx}
-            >
-              {crLoading ? 'Loading...' : 'Load CR'}
-            </Button>
-          </Box>
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Source</InputLabel>
+                  <Select
+                    value={predSource}
+                    label="Source"
+                    onChange={(e) => setPredSource(e.target.value as 'blended' | 'original')}
+                    MenuProps={{ sx: { zIndex: 2100 } }}
+                    sx={inputSx}
+                  >
+                    <MenuItem value="blended">blended</MenuItem>
+                    <MenuItem value="original">original</MenuItem>
+                  </Select>
+                </FormControl>
+                <TextField
+                  label="RH index"
+                  type="number"
+                  value={rhIndex}
+                  onChange={(e) => setRhIndex(e.target.value)}
+                  size="small"
+                  fullWidth
+                  sx={inputSx}
+                />
+              </Box>
 
-          {(entropyError || crError) && (
-            <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-              {entropyError || crError}
-            </Typography>
-          )}
-          {(entropyResult || crResult) && (
-            <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
-              {entropyResult && (
-                <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
-                  Diversity indices loaded
-                </Typography>
-              )}
-              {crResult && (
-                <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700, mt: entropyResult ? 0.5 : 0 }}>
-                  CR loaded
-                </Typography>
-              )}
-            </Box>
-          )}
-
-          <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 2.5, mb: 1.25 }}>
-            Reference data
-          </Typography>
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
-            <Button
-              variant="contained"
-              onClick={handleLoadALS}
-              disabled={alsLoading}
-              startIcon={alsLoading ? <CircularProgress size={16} color="inherit" /> : null}
-              sx={filledButtonSx}
-            >
-              {alsLoading ? 'Loading...' : 'Load ALS'}
-            </Button>
-            <Button
-              variant="contained"
-              onClick={handleLoadGEDI}
-              disabled={gediLoading}
-              startIcon={gediLoading ? <CircularProgress size={16} color="inherit" /> : null}
-              sx={filledButtonSx}
-            >
-              {gediLoading ? 'Loading...' : 'Load GEDI'}
-            </Button>
-          </Box>
-
-          {(alsError || gediError) && (
-            <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-              {alsError || gediError}
-            </Typography>
-          )}
-          {(alsResult || gediResult) && (
-            <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
-              {alsResult && (
-                <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
-                  ALS loaded
-                </Typography>
-              )}
-              {gediResult && (
-                <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700, mt: alsResult ? 0.5 : 0 }}>
-                  GEDI loaded ({gediResult.sampled_count} / {gediResult.total_count})
-                </Typography>
-              )}
-            </Box>
-          )}
-        </Box>
-
-        <Box sx={sectionCardSx}>
-          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 2.25 }}>
-            Check auxiliary data
-          </Typography>
-
-          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.25 }}>
-            Query Sentinel-2 Images
-          </Typography>
-
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
-            <TextField
-              label="Year"
-              type="number"
-              value={year}
-              onChange={(e) => setYear(e.target.value)}
-              size="small"
-              fullWidth
-              sx={inputSx}
-              inputProps={{ min: 2015, max: new Date().getFullYear() }}
-            />
-            <TextField
-              label="Max Cloud %"
-              type="number"
-              value={maxCloudCover}
-              onChange={(e) => setMaxCloudCover(e.target.value)}
-              size="small"
-              fullWidth
-              sx={inputSx}
-              placeholder="Any"
-              inputProps={{ min: 0, max: 100, step: 0.1 }}
-            />
-          </Box>
-
-          {hasGrowingMonths && (
-            <Box sx={{ mt: 1.25 }}>
-              <Tooltip title={`Filter images to only show those captured during months: ${displayGrowingMonths}`} placement="top">
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                Percentiles
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', mb: 2 }}>
                 <FormControlLabel
                   sx={{ m: 0 }}
-                  control={
-                    <Checkbox
-                      checked={useGrowingMonths}
-                      onChange={(e) => setUseGrowingMonths(e.target.checked)}
-                      size="small"
-                    />
-                  }
-                  label={<Typography variant="body2">Filter by growing months ({displayGrowingMonths})</Typography>}
+                  control={<Checkbox size="small" checked={qChoice === '5%'} onChange={() => setQChoice('5%')} />}
+                  label={<Typography variant="body2">5%</Typography>}
                 />
-              </Tooltip>
-            </Box>
-          )}
+                <FormControlLabel
+                  sx={{ m: 0 }}
+                  control={<Checkbox size="small" checked={qChoice === 'median'} onChange={() => setQChoice('median')} />}
+                  label={<Typography variant="body2">median</Typography>}
+                />
+                <FormControlLabel
+                  sx={{ m: 0 }}
+                  control={<Checkbox size="small" checked={qChoice === '95%'} onChange={() => setQChoice('95%')} />}
+                  label={<Typography variant="body2">95%</Typography>}
+                />
+              </Box>
 
-          <Button
-            variant="contained"
-            fullWidth
-            onClick={handleQuerySentinel2}
-            disabled={loading || !properties?.Name}
-            startIcon={loading ? <CircularProgress size={16} color="inherit" /> : null}
-            sx={{ ...filledButtonSx, mt: 1.5 }}
-          >
-            {loading ? 'Querying...' : 'Query'}
-          </Button>
+              <Button
+                variant="contained"
+                fullWidth
+                onClick={handleLoadPrediction}
+                disabled={predLoading}
+                startIcon={predLoading ? <CircularProgress size={16} color="inherit" /> : null}
+                sx={filledButtonSx}
+              >
+                {predLoading ? 'Loading...' : 'Load'}
+              </Button>
 
-          <Button
-            variant="contained"
-            fullWidth
-            onClick={handleLoadDistanceMap}
-            disabled={distMapLoading}
-            startIcon={distMapLoading ? <CircularProgress size={16} color="inherit" /> : null}
-            sx={{ ...filledButtonSx, mt: 1.5 }}
-          >
-            {distMapLoading ? 'Loading...' : 'Load Distance Map'}
-          </Button>
+              {predError && (
+                <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+                  {predError}
+                </Typography>
+              )}
+              {predResult && (
+                <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
+                  <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
+                    Prediction COG loaded
+                  </Typography>
+                  <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 0.5 }}>
+                    Tile: {predResult.tile_name} | Year: {predResult.year || year}
+                  </Typography>
+                </Box>
+              )}
 
-          {(error || distMapError) && (
-            <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-              {error || distMapError}
-            </Typography>
-          )}
-          {distMapResult && (
-            <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
-              <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
-                Distance map loaded
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 2.5, mb: 1.25 }}>
+                Diversity indices
               </Typography>
-              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 0.5 }}>
-                Tile: {distMapResult.tile_name}
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+                <Button
+                  variant="contained"
+                  onClick={handleLoadDiversityIndices}
+                  disabled={entropyLoading}
+                  startIcon={entropyLoading ? <CircularProgress size={16} color="inherit" /> : null}
+                  sx={filledButtonSx}
+                >
+                  {entropyLoading ? 'Loading...' : 'Load Diversity'}
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={handleLoadCR}
+                  disabled={crLoading}
+                  startIcon={crLoading ? <CircularProgress size={16} color="inherit" /> : null}
+                  sx={filledButtonSx}
+                >
+                  {crLoading ? 'Loading...' : 'Load CR'}
+                </Button>
+              </Box>
+
+              {(entropyError || crError) && (
+                <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+                  {entropyError || crError}
+                </Typography>
+              )}
+              {(entropyResult || crResult) && (
+                <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
+                  {entropyResult && (
+                    <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
+                      Diversity indices loaded
+                    </Typography>
+                  )}
+                  {crResult && (
+                    <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700, mt: entropyResult ? 0.5 : 0 }}>
+                      CR loaded
+                    </Typography>
+                  )}
+                </Box>
+              )}
+
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 2.5, mb: 1.25 }}>
+                Reference data
               </Typography>
-            </Box>
-          )}
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+                <Button
+                  variant="contained"
+                  onClick={handleLoadALS}
+                  disabled={alsLoading}
+                  startIcon={alsLoading ? <CircularProgress size={16} color="inherit" /> : null}
+                  sx={filledButtonSx}
+                >
+                  {alsLoading ? 'Loading...' : 'Load ALS'}
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={handleLoadGEDI}
+                  disabled={gediLoading}
+                  startIcon={gediLoading ? <CircularProgress size={16} color="inherit" /> : null}
+                  sx={filledButtonSx}
+                >
+                  {gediLoading ? 'Loading...' : 'Load GEDI'}
+                </Button>
+              </Box>
 
-          <Collapse in={showImages && sentinel2Images.length > 0}>
-            <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
-              <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 700 }}>
-                {(() => {
-                  const hasFilters = filteredImages.length !== sentinel2Images.length;
-                  if (hasFilters) {
-                    const activeFilters = [];
-                    if (maxCloudCover.trim() !== '' && !isNaN(parseFloat(maxCloudCover))) {
-                      activeFilters.push(`cloud cover ≤ ${maxCloudCover}%`);
-                    }
-                    if (useGrowingMonths && hasGrowingMonths) {
-                      activeFilters.push('growing months');
-                    }
-                    return `Showing ${filteredImages.length} of ${sentinel2Images.length} images`;
-                  }
-                  return `Found ${sentinel2Images.length} images`;
-                })()}
+              {(alsError || gediError) && (
+                <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+                  {alsError || gediError}
+                </Typography>
+              )}
+              {(alsResult || gediResult) && (
+                <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
+                  {alsResult && (
+                    <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
+                      ALS loaded
+                    </Typography>
+                  )}
+                  {gediResult && (
+                    <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700, mt: alsResult ? 0.5 : 0 }}>
+                      GEDI loaded ({gediResult.sampled_count} / {gediResult.total_count})
+                    </Typography>
+                  )}
+                </Box>
+              )}
+            </Box>
+
+            <Box sx={sectionCardSx}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 2.25 }}>
+                Check auxiliary data
               </Typography>
-              <MaterialReactTable table={table} />
+
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1.25 }}>
+                Query Sentinel-2 Images
+              </Typography>
+
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+                <TextField
+                  label="Year"
+                  type="number"
+                  value={year}
+                  onChange={(e) => setYear(e.target.value)}
+                  size="small"
+                  fullWidth
+                  sx={inputSx}
+                  inputProps={{ min: 2015, max: new Date().getFullYear() }}
+                />
+                <TextField
+                  label="Max Cloud %"
+                  type="number"
+                  value={maxCloudCover}
+                  onChange={(e) => setMaxCloudCover(e.target.value)}
+                  size="small"
+                  fullWidth
+                  sx={inputSx}
+                  placeholder="Any"
+                  inputProps={{ min: 0, max: 100, step: 0.1 }}
+                />
+              </Box>
+
+              {hasGrowingMonths && (
+                <Box sx={{ mt: 1.25 }}>
+                  <Tooltip title={`Filter images to only show those captured during months: ${displayGrowingMonths}`} placement="top">
+                    <FormControlLabel
+                      sx={{ m: 0 }}
+                      control={
+                        <Checkbox
+                          checked={useGrowingMonths}
+                          onChange={(e) => setUseGrowingMonths(e.target.checked)}
+                          size="small"
+                        />
+                      }
+                      label={<Typography variant="body2">Filter by growing months ({displayGrowingMonths})</Typography>}
+                    />
+                  </Tooltip>
+                </Box>
+              )}
+
+              <Button
+                variant="contained"
+                fullWidth
+                onClick={handleQuerySentinel2}
+                disabled={loading || !properties?.Name}
+                startIcon={loading ? <CircularProgress size={16} color="inherit" /> : null}
+                sx={{ ...filledButtonSx, mt: 1.5 }}
+              >
+                {loading ? 'Querying...' : 'Query'}
+              </Button>
+
+              <Button
+                variant="contained"
+                fullWidth
+                onClick={handleLoadDistanceMap}
+                disabled={distMapLoading}
+                startIcon={distMapLoading ? <CircularProgress size={16} color="inherit" /> : null}
+                sx={{ ...filledButtonSx, mt: 1.5 }}
+              >
+                {distMapLoading ? 'Loading...' : 'Load Distance Map'}
+              </Button>
+
+              {(error || distMapError) && (
+                <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
+                  {error || distMapError}
+                </Typography>
+              )}
+              {distMapResult && (
+                <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
+                  <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
+                    Distance map loaded
+                  </Typography>
+                  <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mt: 0.5 }}>
+                    Tile: {distMapResult.tile_name}
+                  </Typography>
+                </Box>
+              )}
+
+              <Collapse in={showImages && sentinel2Images.length > 0}>
+                <Box sx={{ mt: 2, pt: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 700 }}>
+                    {(() => {
+                      const hasFilters = filteredImages.length !== sentinel2Images.length;
+                      if (hasFilters) {
+                        const activeFilters = [];
+                        if (maxCloudCover.trim() !== '' && !isNaN(parseFloat(maxCloudCover))) {
+                          activeFilters.push(`cloud cover ≤ ${maxCloudCover}%`);
+                        }
+                        if (useGrowingMonths && hasGrowingMonths) {
+                          activeFilters.push('growing months');
+                        }
+                        return `Showing ${filteredImages.length} of ${sentinel2Images.length} images`;
+                      }
+                      return `Found ${sentinel2Images.length} images`;
+                    })()}
+                  </Typography>
+                  <MaterialReactTable table={table} />
+                </Box>
+              </Collapse>
+
+              {showImages && filteredImages.length === 0 && !loading && !error && (
+                <Typography variant="caption" sx={{ mt: 1.25, display: 'block', color: 'text.secondary' }}>
+                  {sentinel2Images.length === 0
+                    ? 'No images found for the specified year.'
+                    : (() => {
+                        const activeFilters = [];
+                        if (maxCloudCover.trim() !== '' && !isNaN(parseFloat(maxCloudCover))) {
+                          activeFilters.push(`cloud cover ≤ ${maxCloudCover}%`);
+                        }
+                        if (useGrowingMonths && hasGrowingMonths) {
+                          activeFilters.push('growing months');
+                        }
+                        return activeFilters.length > 0
+                          ? `No images found matching filters: ${activeFilters.join(', ')}.`
+                          : 'No images found.';
+                      })()}
+                </Typography>
+              )}
             </Box>
-          </Collapse>
 
-          {showImages && filteredImages.length === 0 && !loading && !error && (
-            <Typography variant="caption" sx={{ mt: 1.25, display: 'block', color: 'text.secondary' }}>
-              {sentinel2Images.length === 0
-                ? 'No images found for the specified year.'
-                : (() => {
-                    const activeFilters = [];
-                    if (maxCloudCover.trim() !== '' && !isNaN(parseFloat(maxCloudCover))) {
-                      activeFilters.push(`cloud cover ≤ ${maxCloudCover}%`);
-                    }
-                    if (useGrowingMonths && hasGrowingMonths) {
-                      activeFilters.push('growing months');
-                    }
-                    return activeFilters.length > 0
-                      ? `No images found matching filters: ${activeFilters.join(', ')}.`
-                      : 'No images found.';
-                  })()}
-            </Typography>
-          )}
-        </Box>
+            <Box
+              sx={{
+                px: 2,
+                pt: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 1.5,
+              }}
+            >
+              <Typography variant="h6" sx={{ fontWeight: 700, fontSize: '1.05rem' }}>
+                Tile Offset
+              </Typography>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={handleGetXYOffset}
+                disabled={offsetLoading || !properties?.Name || !coordinates}
+                startIcon={offsetLoading ? <CircularProgress size={16} /> : null}
+                sx={outlinedButtonSx}
+              >
+                {offsetLoading ? 'Calculating...' : 'Get XY Offset'}
+              </Button>
+            </Box>
 
-        <Box
-          sx={{
-            px: 2,
-            pt: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 1.5,
-          }}
-        >
-          <Typography variant="h6" sx={{ fontWeight: 700, fontSize: '1.05rem' }}>
-            Tile Offset
-          </Typography>
-          <Button
-            variant="outlined"
-            size="small"
-            onClick={handleGetXYOffset}
-            disabled={offsetLoading || !properties?.Name || !coordinates}
-            startIcon={offsetLoading ? <CircularProgress size={16} /> : null}
-            sx={outlinedButtonSx}
-          >
-            {offsetLoading ? 'Calculating...' : 'Get XY Offset'}
-          </Button>
-        </Box>
-
-        {offsetError && (
-          <Typography variant="caption" color="error" sx={{ mt: 1, px: 2, display: 'block' }}>
-            {offsetError}
-          </Typography>
-        )}
-        {offsetResult && offsetResult.success && (
-          <Box sx={{ mx: 2, mt: 1.25, p: 1.5, bgcolor: '#f5f7fb', borderRadius: 2 }}>
-            <Typography variant="caption" sx={{ display: 'block', fontWeight: 700, mb: 0.5 }}>
-              Column & Row Offset
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
-              Column: {offsetResult.offset.column_pixels.toFixed(2)} px ({offsetResult.offset.column_normalized.toFixed(4)})
-            </Typography>
-            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
-              Row: {offsetResult.offset.row_pixels.toFixed(2)} px ({offsetResult.offset.row_normalized.toFixed(4)})
-            </Typography>
-          </Box>
+            {offsetError && (
+              <Typography variant="caption" color="error" sx={{ mt: 1, px: 2, display: 'block' }}>
+                {offsetError}
+              </Typography>
+            )}
+            {offsetResult && offsetResult.success && (
+              <Box sx={{ mx: 2, mt: 1.25, p: 1.5, bgcolor: '#f5f7fb', borderRadius: 2 }}>
+                <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
+                  Column & Row Offset
+                </Typography>
+                <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
+                  Column: {offsetResult.offset.column_pixels.toFixed(2)} px ({offsetResult.offset.column_normalized.toFixed(4)})
+                </Typography>
+                <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary' }}>
+                  Row: {offsetResult.offset.row_pixels.toFixed(2)} px ({offsetResult.offset.row_normalized.toFixed(4)})
+                </Typography>
+              </Box>
+            )}
+          </>
         )}
       </Box>
 

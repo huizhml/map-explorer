@@ -292,6 +292,7 @@ export function GediPointPopup({ data, onClose }: GediPointPopupProps) {
 
   const [justAdded, setJustAdded] = useState(false);
   const vsmYear = useMapStore((s) => s.vsmYear);
+  const diversityHeightBinM = useMapStore((s) => s.diversityHeightBinM);
   const addSavedGediPoint = useMapStore((s) => s.addSavedGediPoint);
   const savedGediPoints = useMapStore((s) => s.savedGediPoints);
   const { values: rhValues, keys: rhKeys } = extractRhValues(data.properties);
@@ -321,7 +322,7 @@ export function GediPointPopup({ data, onClose }: GediPointPopupProps) {
       try {
         const resp = await fetch(apiUrl('/auxiliary/gedi/point-profile'), {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rh_values: rhValues, fhd_interval: 5 }),
+          body: JSON.stringify({ rh_values: rhValues, fhd_interval: diversityHeightBinM }),
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const json = await resp.json();
@@ -333,13 +334,13 @@ export function GediPointPopup({ data, onClose }: GediPointPopupProps) {
       }
     })();
     return () => { cancelled = true; };
-  }, [data]);
+  }, [data, diversityHeightBinM]);
 
   useEffect(() => {
     let cancelled = false;
     setCogLoading(true);
     setCogProfile(null);
-    fetchVerticalProfile(lon, lat, vsmYear).then((res) => {
+    fetchVerticalProfile(lon, lat, vsmYear, diversityHeightBinM).then((res) => {
       if (cancelled) return;
       if (res.success && res.profile) {
         const rhCurve = res.profile
@@ -358,7 +359,7 @@ export function GediPointPopup({ data, onClose }: GediPointPopupProps) {
       setCogLoading(false);
     }).catch(() => { if (!cancelled) setCogLoading(false); });
     return () => { cancelled = true; };
-  }, [lon, lat, vsmYear]);
+  }, [lon, lat, vsmYear, diversityHeightBinM]);
 
   const rhMax = rhValues.length > 0 ? Math.max(...rhValues) : 0;
   const gediProfileFiltered = profile?.vertical_profile?.filter(d => d.z >= -20 && d.z <= 50) ?? [];

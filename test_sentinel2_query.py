@@ -6,7 +6,7 @@ import requests
 import json
 
 # Test the Sentinel-2 query endpoint
-url = "http://localhost:8000/sentinel2/query"
+url = "http://localhost:8006/sentinel2/query"
 
 # Example extent in EPSG:3857 (Web Mercator) - Denmark area
 # These coordinates are approximately around Copenhagen, Denmark
@@ -56,7 +56,7 @@ try:
         print(response.text)
         
 except requests.exceptions.ConnectionError:
-    print("\n❌ Connection Error: Is the backend running on http://localhost:8000?")
+    print("\n❌ Connection Error: Is the backend running on http://localhost:8006?")
 except requests.exceptions.Timeout:
     print("\n❌ Timeout: Request took too long")
 except Exception as e:

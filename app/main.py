@@ -68,7 +68,7 @@ def get_rh_tile_url(rh: int):
     encoded = quote(f"file://{mosaic_path}", safe="")
     # Note: Adjust rescale/colormap as needed.
     tile_url = (
-        f"http://localhost:8000/mosaicjson/tiles/{{z}}/{{x}}/{{y}}@1x?url={encoded}"
+        f"http://localhost:8006/mosaicjson/tiles/{{z}}/{{x}}/{{y}}@1x?url={encoded}"
     )
 
     return {"tile_url": tile_url}
@@ -107,7 +107,7 @@ def get_xarray_tile_url(
         ds_url = f"file://{os.path.abspath(ds_url)}"
 
     encoded = quote(ds_url, safe="")
-    base = f"http://localhost:8000/xarray/tiles/{{z}}/{{x}}/{{y}}?url={encoded}&variable={quote(variable)}&lon={quote(lon)}&lat={quote(lat)}"
+    base = f"http://localhost:8006/xarray/tiles/{{z}}/{{x}}/{{y}}?url={encoded}&variable={quote(variable)}&lon={quote(lon)}&lat={quote(lat)}"
 
     params = []
     if rescale:

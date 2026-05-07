@@ -66,7 +66,7 @@ def main():
         if geoparquet_ok:
             print("\n🎉 All tests passed! GeoParquet setup is working correctly.")
             print("\nNext steps:")
-            print("1. Start the backend: cd backend && uvicorn app:app --reload --port 8000")
+            print("1. Start the backend: cd backend && uvicorn app:app --reload --port 8006")
             print("2. Start the frontend: npm run dev")
             print("3. Open http://localhost:9020 and test GeoParquet visualization")
         else:

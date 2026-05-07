@@ -40,6 +40,7 @@ const createBaseMapSources = (): Record<string, XYZ | OSM> => {
     esriWorldImagery: new XYZ({
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       attributions: '© Esri',
+      crossOrigin: 'anonymous',
       maxZoom: 19,
     }),
     googleSatellite: new XYZ({
@@ -50,31 +51,37 @@ const createBaseMapSources = (): Record<string, XYZ | OSM> => {
         'https://mt3.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
       ],
       attributions: '© Google',
+      crossOrigin: 'anonymous',
       maxZoom: 20,
     }),
     esriWorldTopo: new XYZ({
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
       attributions: '© Esri',
+      crossOrigin: 'anonymous',
       maxZoom: 19,
     }),
     esriTerrain: new XYZ({
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}',
       attributions: '© Esri',
+      crossOrigin: 'anonymous',
       maxZoom: 19,
     }),
     openTopoMap: new XYZ({
       url: 'https://{a-c}.tile.opentopomap.org/{z}/{x}/{y}.png',
       attributions: '© OpenTopoMap',
+      crossOrigin: 'anonymous',
       maxZoom: 17,
     }),
     cartoPositron: new XYZ({
       url: 'https://{a-c}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
       attributions: '© CARTO',
+      crossOrigin: 'anonymous',
       maxZoom: 20,
     }),
     cartoDarkMatter: new XYZ({
       url: 'https://{a-c}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
       attributions: '© CARTO',
+      crossOrigin: 'anonymous',
       maxZoom: 20,
     }),
   };

@@ -5,7 +5,7 @@ Test script for Sentinel-2 tile search endpoint
 import requests
 
 # Test the tile coordinates endpoint
-url = "http://localhost:8000/sentinel2/tile-coordinates"
+url = "http://localhost:8006/sentinel2/tile-coordinates"
 
 # Test various MGRS tiles
 test_tiles = [
@@ -39,7 +39,7 @@ for tile_name in test_tiles:
             print(f"❌ HTTP Error {response.status_code}")
             
     except requests.exceptions.ConnectionError:
-        print("❌ Connection Error: Is the backend running on http://localhost:8000?")
+        print("❌ Connection Error: Is the backend running on http://localhost:8006?")
         break
     except requests.exceptions.Timeout:
         print("❌ Timeout: Request took too long")

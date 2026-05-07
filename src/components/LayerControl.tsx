@@ -43,7 +43,7 @@ import {
   MyLocation as MyLocationIcon,
 } from '@mui/icons-material';
 import { useMapStore, type ConditionalStyle } from '../stores/mapStore';
-import { PALETTES, type PaletteName } from './Sidebar';
+import { PALETTES, type PaletteName } from '../constants/palettes';
 import { getDefaultRescaleForRh } from '../constants/predictions';
 import {
   DIVERSITY_INDICES_BAND_NAMES,
@@ -902,6 +902,129 @@ export function LayerControl({
                                     sx={{ width: '50%' }}
                                   />
                                 </Box>
+
+                                <FormControlLabel
+                                  control={(
+                                    <Switch
+                                      size="small"
+                                      checked={Boolean(fgbStyleOptions.clusterPoints)}
+                                      onChange={(e) => updateFgbStyleOption({ clusterPoints: e.target.checked })}
+                                    />
+                                  )}
+                                  label={<Typography variant="caption">Cluster points (recommended for large datasets)</Typography>}
+                                />
+
+                                <FormControl size="small" fullWidth>
+                                  <InputLabel>Color by column</InputLabel>
+                                  <Select
+                                    value={fgbStyleOptions.colorByProperty || ''}
+                                    label="Color by column"
+                                    onChange={(e) => {
+                                      const prop = String(e.target.value);
+                                      const range = prop ? fgbInfo?.numericPropertyRanges?.[prop] : undefined;
+                                      updateFgbStyleOption({
+                                        colorByProperty: prop,
+                                        colorScaleType: 'continuous',
+                                        colorRangeMin: range?.min ?? null,
+                                        colorRangeMax: range?.max ?? null,
+                                      });
+                                    }}
+                                  >
+                                    <MenuItem value="">
+                                      <em>None</em>
+                                    </MenuItem>
+                                    {fgbInfo?.properties?.map((prop: string) => (
+                                      <MenuItem key={prop} value={prop}>{prop}</MenuItem>
+                                    ))}
+                                  </Select>
+                                </FormControl>
+
+                                {fgbStyleOptions.colorByProperty && (
+                                  <>
+                                    <FormControl size="small" fullWidth>
+                                      <InputLabel>Color scale</InputLabel>
+                                      <Select
+                                        value={fgbStyleOptions.colorScaleType || 'continuous'}
+                                        label="Color scale"
+                                        onChange={(e) => {
+                                          const scaleType = String(e.target.value) as 'continuous' | 'discrete';
+                                          const prop = fgbStyleOptions.colorByProperty;
+                                          const range = prop ? fgbInfo?.numericPropertyRanges?.[prop] : undefined;
+                                          updateFgbStyleOption({
+                                            colorScaleType: scaleType,
+                                            colorRangeMin: scaleType === 'continuous' ? (range?.min ?? fgbStyleOptions.colorRangeMin) : null,
+                                            colorRangeMax: scaleType === 'continuous' ? (range?.max ?? fgbStyleOptions.colorRangeMax) : null,
+                                          });
+                                        }}
+                                      >
+                                        <MenuItem value="continuous">Continuous</MenuItem>
+                                        <MenuItem value="discrete">Discrete</MenuItem>
+                                      </Select>
+                                    </FormControl>
+
+                                    <FormControl size="small" fullWidth>
+                                      <InputLabel>Palette</InputLabel>
+                                      <Select
+                                        value={fgbStyleOptions.colorPalette || 'Viridis'}
+                                        label="Palette"
+                                        onChange={(e) => updateFgbStyleOption({ colorPalette: String(e.target.value) })}
+                                      >
+                                        {Object.keys(PALETTES).map((paletteName) => (
+                                          <MenuItem key={paletteName} value={paletteName}>{paletteName}</MenuItem>
+                                        ))}
+                                      </Select>
+                                    </FormControl>
+                                    {fgbStyleOptions.colorScaleType !== 'discrete' ? (
+                                      <>
+                                        <Box sx={{ display: 'flex', gap: 1 }}>
+                                          <TextField
+                                            label="Color min"
+                                            type="number"
+                                            size="small"
+                                            value={fgbStyleOptions.colorRangeMin ?? ''}
+                                            onChange={(e) => {
+                                              const v = e.target.value;
+                                              updateFgbStyleOption({ colorRangeMin: v === '' ? null : Number(v) });
+                                            }}
+                                            sx={{ width: '50%' }}
+                                          />
+                                          <TextField
+                                            label="Color max"
+                                            type="number"
+                                            size="small"
+                                            value={fgbStyleOptions.colorRangeMax ?? ''}
+                                            onChange={(e) => {
+                                              const v = e.target.value;
+                                              updateFgbStyleOption({ colorRangeMax: v === '' ? null : Number(v) });
+                                            }}
+                                            sx={{ width: '50%' }}
+                                          />
+                                        </Box>
+                                        <Button
+                                          size="small"
+                                          variant="outlined"
+                                          onClick={() => {
+                                            const prop = fgbStyleOptions.colorByProperty;
+                                            if (!prop) return;
+                                            const range = fgbInfo?.numericPropertyRanges?.[prop];
+                                            if (range) {
+                                              updateFgbStyleOption({
+                                                colorRangeMin: range.min,
+                                                colorRangeMax: range.max,
+                                              });
+                                            }
+                                          }}
+                                        >
+                                          Reset range to data min/max
+                                        </Button>
+                                      </>
+                                    ) : (
+                                      <Typography variant="caption" color="text.secondary">
+                                        Discrete mode maps each unique value in the selected column to a palette color.
+                                      </Typography>
+                                    )}
+                                  </>
+                                )}
                               </Box>
                             </Box>
                           </Collapse>

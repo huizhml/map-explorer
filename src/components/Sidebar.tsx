@@ -1,12 +1,15 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
 import {
   Box,
   Typography,
   Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
   styled,
   TextField,
   List,
-  ListItem,
   ListItemText,
   ListItemButton,
   Checkbox,
@@ -19,6 +22,7 @@ import {
   MenuItem,
   Alert,
   Collapse,
+  Tooltip,
 } from '@mui/material';
 import {
   Layers as LayersIcon,
@@ -32,10 +36,24 @@ import {
   FolderOpen as FolderOpenIcon,
   ArrowUpward as ArrowUpwardIcon,
   CreateNewFolder as CreateNewFolderIcon,
+  DeleteOutline as DeleteOutlineIcon,
+  BookmarkBorder as BookmarkBorderIcon,
+  Refresh as RefreshIcon,
+  MyLocation as MyLocationIcon,
+  InfoOutlined as InfoOutlinedIcon,
+  SettingsOutlined as SettingsOutlinedIcon,
+  SaveAltOutlined as SaveAltOutlinedIcon,
+  LightModeOutlined as LightModeOutlinedIcon,
+  DarkModeOutlined as DarkModeOutlinedIcon,
+  OpenInFull as OpenInFullIcon,
 } from '@mui/icons-material';
 import type { VsmQChoice } from '../constants/predictions';
 import type { FigureLayerOverrides } from '../containers/SidebarContainer';
 import { apiUrl } from '../utils/apiBase';
+import type { SavedFeature } from '../services/savedFeaturesApi';
+import { SavedFeaturePlots } from './SavedFeaturePlots';
+import { useMapStore } from '../stores/mapStore';
+import { DIVERSITY_HEIGHT_BIN_OPTIONS } from '../constants/diversityMetrics';
 
 export interface VsmLayerEntryDisplay {
   year: number;
@@ -55,15 +73,25 @@ interface SidebarProps {
   onVsmQChoiceChange: (q: VsmQChoice) => void;
   // Drawing tools props
   drawingActive: boolean;
-  drawingMode: 'tiles' | 'figures';
+  drawingMode: 'tiles' | 'figures' | 'figures_db';
   onGetTiles: () => void;
   onCreateFiguresDraw: () => void;
+  onCreateDbFiguresDraw: () => void;
+  onSaveFiguresToDb: (payload: { name: string; description: string; category: string }) => void;
+  savingFiguresToDb: boolean;
+  figuresToDbMessage: string | null;
+  figuresToDbError: string | null;
   selectedTiles: string[];
   figureSelectionReady: boolean;
   figureFormat: 'jpg' | 'png' | 'pdf';
   onFigureFormatChange: (format: 'jpg' | 'png' | 'pdf') => void;
   figureOutputFolder: string;
   onFigureOutputFolderChange: (folder: string) => void;
+  /** Editable base filename (no extension); backend sanitizes. Empty omits filename_stem → auto layer+location naming. */
+  figureFilenameStem: string;
+  onFigureFilenameStemChange: (stem: string) => void;
+  /** Current automatic stem for “Use default name”. */
+  suggestedFigureFilenameStem: string;
   availableFigureLayers: Array<{
     id: string;
     name: string;
@@ -83,39 +111,289 @@ interface SidebarProps {
   figureSaveError: string | null;
   /** Inspect mode: map clicks sample rasters; bottom-right panel shows values */
   inspectMode: boolean;
-  inspectKind: 'layers' | 'vertical_profile';
+  inspectKind: 'layers' | 'vertical_profile' | 'vertical_profile_line';
   onInspectModeChange: (active: boolean) => void;
   onVerticalProfileClick: () => void;
+  onVerticalProfileLineClick: () => void;
+  savedMapFeatures: SavedFeature[];
+  savedFeaturesLoading: boolean;
+  savedFeaturesError: string | null;
+  onReloadSavedFeatures: () => void;
+  deletingSavedFeatureId: number | null;
+  onDeleteSavedFeature: (id: number) => void;
+  onJumpToFeature: (feature: SavedFeature) => void;
   // File upload
   onUploadFile: (file: File) => Promise<void>;
   uploadingFile: boolean;
+  onLoadForestNaturalnessData: () => void;
 }
 
-// Common palettes for visualization
-export const PALETTES = {
-  'Grayscale': ['#000000', '#FFFFFF'],
-  'Viridis': ['#440154', '#414487', '#2a788e', '#22a884', '#7ad151', '#fde725'],
-  'Magma': ['#000004', '#3b0f70', '#8c2981', '#de4968', '#fe9f6d', '#fcfdbf'],
-  'RdYlBu': ['#313695', '#74add1', '#fed976', '#feb24c', '#fd8d3c', '#f03b20'],
-  'Terrain': ['#333399', '#79b3d4', '#a3e0b2', '#cde49c', '#e7d19a', '#c4a173'],
-  'Spectral': ['#9e0142', '#f46d43', '#fee08b', '#90ed7d', '#5e4fa2'],
-};
-
-export type PaletteName = keyof typeof PALETTES;
-
-const SidebarContainer = styled(Box)(({ theme }) => ({
+const SidebarContainer = styled(Box)(() => ({
   position: 'absolute',
-  left: 0,
-  top: 0,
-  bottom: 0,
-  width: '320px',
-  backgroundColor: '#fff',
-  boxShadow: theme.shadows[3],
+  left: 12,
+  top: 12,
+  bottom: 12,
+  width: 'fit-content',
   zIndex: 1000,
   display: 'flex',
-  flexDirection: 'column',
-  overflow: 'hidden'
+  alignItems: 'stretch',
+  gap: 0,
+  pointerEvents: 'auto',
 }));
+
+type SidebarSurfaceMode = 'dark' | 'light';
+
+type SidebarThemeTokens = {
+  railBg: string;
+  panelBg: string;
+  panelBgAlt: string;
+  border: string;
+  borderStrong: string;
+  textPrimary: string;
+  textSecondary: string;
+  textMuted: string;
+  accent: string;
+  accentSoft: string;
+  accentBorder: string;
+  buttonBg: string;
+  buttonHover: string;
+  fieldBg: string;
+  fieldText: string;
+  fieldLabel: string;
+  cardBg: string;
+  cardHover: string;
+  cardActive: string;
+  success: string;
+  shadow: string;
+};
+
+const SIDEBAR_THEME: Record<SidebarSurfaceMode, SidebarThemeTokens> = {
+  dark: {
+    railBg: 'linear-gradient(180deg, #14141b 0%, #101016 100%)',
+    panelBg: 'linear-gradient(180deg, #1a1a24 0%, #15151d 100%)',
+    panelBgAlt: '#111119',
+    border: 'rgba(255,255,255,0.08)',
+    borderStrong: 'rgba(255,255,255,0.16)',
+    textPrimary: '#f4f4fa',
+    textSecondary: 'rgba(238,238,247,0.72)',
+    textMuted: 'rgba(238,238,247,0.48)',
+    accent: '#6c5ce7',
+    accentSoft: 'rgba(162,155,254,0.16)',
+    accentBorder: 'rgba(162,155,254,0.38)',
+    buttonBg: 'rgba(255,255,255,0.04)',
+    buttonHover: 'rgba(255,255,255,0.08)',
+    fieldBg: '#111119',
+    fieldText: '#ececf5',
+    fieldLabel: 'rgba(238,238,247,0.52)',
+    cardBg: '#15151d',
+    cardHover: '#1b1b25',
+    cardActive: 'rgba(162,155,254,0.12)',
+    success: '#82e5aa',
+    shadow: '0 18px 42px rgba(0,0,0,0.28)',
+  },
+  light: {
+    railBg: 'linear-gradient(180deg, #ffffff 0%, #f6f7fb 100%)',
+    panelBg: 'linear-gradient(180deg, #ffffff 0%, #f7f8fc 100%)',
+    panelBgAlt: '#f1f4fb',
+    border: 'rgba(32,41,71,0.12)',
+    borderStrong: 'rgba(32,41,71,0.2)',
+    textPrimary: '#172033',
+    textSecondary: 'rgba(23,32,51,0.78)',
+    textMuted: 'rgba(23,32,51,0.5)',
+    accent: '#5b4ee8',
+    accentSoft: 'rgba(91,78,232,0.12)',
+    accentBorder: 'rgba(91,78,232,0.26)',
+    buttonBg: 'rgba(23,32,51,0.03)',
+    buttonHover: 'rgba(23,32,51,0.07)',
+    fieldBg: '#ffffff',
+    fieldText: '#172033',
+    fieldLabel: 'rgba(23,32,51,0.5)',
+    cardBg: '#ffffff',
+    cardHover: '#f4f6fb',
+    cardActive: 'rgba(91,78,232,0.1)',
+    success: '#1f8f4e',
+    shadow: '0 18px 42px rgba(31, 45, 74, 0.16)',
+  },
+};
+
+function HoverHelp({ title, ui }: { title: string; ui: SidebarThemeTokens }) {
+  return (
+    <Tooltip title={title} arrow placement="top">
+      <IconButton component="span" size="small" sx={{ color: ui.textMuted }} aria-label="More information">
+        <InfoOutlinedIcon fontSize="inherit" />
+      </IconButton>
+    </Tooltip>
+  );
+}
+
+function SectionLabel({ children, ui }: { children: ReactNode; ui: SidebarThemeTokens }) {
+  return (
+    <Typography
+      variant="caption"
+      sx={{
+        display: 'block',
+        mb: 0.75,
+        color: ui.textMuted,
+        fontSize: '0.7rem',
+        fontWeight: 700,
+        letterSpacing: '0.1em',
+        textTransform: 'uppercase',
+      }}
+    >
+      {children}
+    </Typography>
+  );
+}
+
+function RailButton({
+  active,
+  label,
+  icon,
+  onClick,
+  ui,
+}: {
+  active: boolean;
+  label: string;
+  icon: ReactNode;
+  onClick: () => void;
+  ui: SidebarThemeTokens;
+}) {
+  return (
+    <Tooltip title={label} placement="right" arrow>
+      <Box
+        component="button"
+        type="button"
+        onClick={onClick}
+        sx={{
+          width: 42,
+          minHeight: 48,
+          px: 0.5,
+          py: 0.75,
+          border: 'none',
+          borderRadius: 2.5,
+          background: active ? ui.accentSoft : 'transparent',
+          color: active ? ui.accent : ui.textMuted,
+          cursor: 'pointer',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 0.5,
+          transition: 'background-color 120ms ease, color 120ms ease, transform 120ms ease',
+          '&:hover': {
+            background: active ? ui.accentSoft : ui.buttonHover,
+            color: active ? ui.accent : ui.textSecondary,
+            transform: 'translateY(-1px)',
+          },
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, lineHeight: 1 }}>
+          {icon}
+        </Box>
+        <Typography sx={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.02em', lineHeight: 1.1 }}>
+          {label}
+        </Typography>
+      </Box>
+    </Tooltip>
+  );
+}
+
+function SelectionChip({
+  label,
+  active,
+  onClick,
+  ui,
+}: {
+  label: ReactNode;
+  active: boolean;
+  onClick: () => void;
+  ui: SidebarThemeTokens;
+}) {
+  return (
+    <Box
+      component="button"
+      type="button"
+      onClick={onClick}
+      sx={{
+        px: 1.25,
+        py: 0.65,
+        borderRadius: 1.5,
+        border: '1px solid',
+        borderColor: active ? ui.accentBorder : ui.border,
+        background: active ? ui.accentSoft : ui.buttonBg,
+        color: active ? ui.accent : ui.textSecondary,
+        fontSize: '0.75rem',
+        fontWeight: active ? 700 : 500,
+        lineHeight: 1.2,
+        cursor: 'pointer',
+        transition: 'background-color 120ms ease, border-color 120ms ease, color 120ms ease',
+        '&:hover': {
+          background: active ? ui.accentSoft : ui.buttonHover,
+          borderColor: active ? ui.accentBorder : ui.borderStrong,
+        },
+      }}
+    >
+      {label}
+    </Box>
+  );
+}
+
+function PanelActionCard({
+  icon,
+  label,
+  description,
+  active = false,
+  onClick,
+  ui,
+}: {
+  icon: ReactNode;
+  label: string;
+  description: string;
+  active?: boolean;
+  onClick: () => void;
+  ui: SidebarThemeTokens;
+}) {
+  return (
+    <Box
+      component="button"
+      type="button"
+      onClick={onClick}
+      sx={{
+        p: 1.4,
+        borderRadius: 2.5,
+        border: '1px solid',
+        borderColor: active ? ui.accentBorder : ui.border,
+        background: active ? ui.cardActive : ui.cardBg,
+        color: ui.textPrimary,
+        cursor: 'pointer',
+        textAlign: 'left',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 0.8,
+        transition: 'background-color 120ms ease, border-color 120ms ease, transform 120ms ease',
+        '&:hover': {
+          background: active ? ui.cardActive : ui.cardHover,
+          transform: 'translateY(-1px)',
+        },
+      }}
+    >
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Box sx={{ color: active ? ui.accent : ui.textMuted, display: 'flex', alignItems: 'center', fontSize: 18 }}>
+          {icon}
+        </Box>
+        <HoverHelp title={description} ui={ui} />
+      </Box>
+      <Box>
+        <Typography sx={{ fontSize: '0.9rem', fontWeight: 700, color: ui.textPrimary }}>
+          {label}
+        </Typography>
+        <Typography sx={{ mt: 0.35, fontSize: '0.78rem', color: ui.textMuted, lineHeight: 1.45 }}>
+          {description}
+        </Typography>
+      </Box>
+    </Box>
+  );
+}
 
 export function Sidebar({
   onAddLayer,
@@ -130,12 +408,20 @@ export function Sidebar({
   drawingMode,
   onGetTiles,
   onCreateFiguresDraw,
+  onCreateDbFiguresDraw,
+  onSaveFiguresToDb,
+  savingFiguresToDb,
+  figuresToDbMessage,
+  figuresToDbError,
   selectedTiles,
   figureSelectionReady,
   figureFormat,
   onFigureFormatChange,
   figureOutputFolder,
   onFigureOutputFolderChange,
+  figureFilenameStem,
+  onFigureFilenameStemChange,
+  suggestedFigureFilenameStem,
   availableFigureLayers,
   selectedFigureLayerIds,
   onToggleFigureLayer,
@@ -149,12 +435,30 @@ export function Sidebar({
   inspectKind,
   onInspectModeChange,
   onVerticalProfileClick,
+  onVerticalProfileLineClick,
+  savedMapFeatures,
+  savedFeaturesLoading,
+  savedFeaturesError,
+  onReloadSavedFeatures,
+  deletingSavedFeatureId,
+  onDeleteSavedFeature,
+  onJumpToFeature,
   onUploadFile,
   uploadingFile,
+  onLoadForestNaturalnessData,
 }: SidebarProps) {
+  const diversityHeightBinM = useMapStore((s) => s.diversityHeightBinM);
+  const setDiversityHeightBinM = useMapStore((s) => s.setDiversityHeightBinM);
   const [showAddedInfo, setShowAddedInfo] = useState(true);
   const [expandedFigureLayer, setExpandedFigureLayer] = useState<string | null>(null);
+  const [activePanel, setActivePanel] = useState<'layers' | 'tools' | 'saved' | 'export' | null>('layers');
+  const [surfaceMode, setSurfaceMode] = useState<SidebarSurfaceMode>('dark');
+  const [plotViewerFeature, setPlotViewerFeature] = useState<SavedFeature | null>(null);
+  const [plotViewerRect, setPlotViewerRect] = useState({ x: 120, y: 120, width: 720, height: 520 });
+  const [plotViewerDragMode, setPlotViewerDragMode] = useState<'move' | 'resize' | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const plotViewerDragRef = useRef<{ mouseX: number; mouseY: number; rect: typeof plotViewerRect } | null>(null);
+  const plotViewerPanelRef = useRef<HTMLDivElement | null>(null);
 
   const [showFolderBrowser, setShowFolderBrowser] = useState(false);
   const [browsingPath, setBrowsingPath] = useState('');
@@ -162,6 +466,31 @@ export function Sidebar({
   const [loadingDirs, setLoadingDirs] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [showNewFolder, setShowNewFolder] = useState(false);
+  const [savedSearch, setSavedSearch] = useState('');
+  const [expandedSavedId, setExpandedSavedId] = useState<number | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [savedCategoryFilter, setSavedCategoryFilter] = useState<string>('');
+  const [savedTypeFilter, setSavedTypeFilter] = useState<string>('');
+  const [openDbSaveDialog, setOpenDbSaveDialog] = useState(false);
+  const [dbFeatureName, setDbFeatureName] = useState('');
+  const [dbFeatureCategory, setDbFeatureCategory] = useState('area_images');
+  const [dbFeatureDescription, setDbFeatureDescription] = useState('');
+
+  const savedCategories = Array.from(new Set(savedMapFeatures.map((f) => f.category).filter(Boolean))) as string[];
+
+  const filteredSavedFeatures = savedMapFeatures.filter((f) => {
+    if (savedTypeFilter && f.geometry.type !== savedTypeFilter) return false;
+    if (savedCategoryFilter && f.category !== savedCategoryFilter) return false;
+    if (savedSearch.trim()) {
+      const q = savedSearch.trim().toLowerCase();
+      try {
+        if (!new RegExp(q, 'i').test(f.name)) return false;
+      } catch {
+        if (!f.name.toLowerCase().includes(q)) return false;
+      }
+    }
+    return true;
+  });
 
   const fetchDirs = useCallback(async (dirPath: string) => {
     setLoadingDirs(true);
@@ -213,452 +542,1272 @@ export function Sidebar({
     return () => clearTimeout(t);
   }, [addedVsmLayers]);
 
+  useEffect(() => {
+    if (!plotViewerDragMode || !plotViewerDragRef.current) return;
+
+    const handleMove = (event: MouseEvent) => {
+      const start = plotViewerDragRef.current;
+      const panelEl = plotViewerPanelRef.current;
+      if (!start || !panelEl) return;
+      const dx = event.clientX - start.mouseX;
+      const dy = event.clientY - start.mouseY;
+
+      if (plotViewerDragMode === 'move') {
+        const maxX = Math.max(24, window.innerWidth - start.rect.width - 24);
+        const maxY = Math.max(24, window.innerHeight - start.rect.height - 24);
+        const nextRect = {
+          ...start.rect,
+          x: Math.min(Math.max(24, start.rect.x + dx), maxX),
+          y: Math.min(Math.max(24, start.rect.y + dy), maxY),
+        };
+        panelEl.style.left = `${nextRect.x}px`;
+        panelEl.style.top = `${nextRect.y}px`;
+        return;
+      }
+
+      const nextRect = {
+        ...start.rect,
+        width: Math.max(480, Math.min(window.innerWidth - start.rect.x - 24, start.rect.width + dx)),
+        height: Math.max(360, Math.min(window.innerHeight - start.rect.y - 24, start.rect.height + dy)),
+      };
+      panelEl.style.width = `${nextRect.width}px`;
+      panelEl.style.height = `${nextRect.height}px`;
+    };
+
+    const handleUp = () => {
+      const start = plotViewerDragRef.current;
+      const panelEl = plotViewerPanelRef.current;
+      if (start && panelEl) {
+        setPlotViewerRect({
+          x: Math.round(parseFloat(panelEl.style.left || `${start.rect.x}`)),
+          y: Math.round(parseFloat(panelEl.style.top || `${start.rect.y}`)),
+          width: Math.round(parseFloat(panelEl.style.width || `${start.rect.width}`)),
+          height: Math.round(parseFloat(panelEl.style.height || `${start.rect.height}`)),
+        });
+      }
+      setPlotViewerDragMode(null);
+      plotViewerDragRef.current = null;
+      document.body.style.userSelect = '';
+    };
+
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, [plotViewerDragMode]);
+
+  const ui = SIDEBAR_THEME[surfaceMode];
+  const plotViewerUi = SIDEBAR_THEME.light;
+  const openPlotViewer = useCallback((feature: SavedFeature) => {
+    const width = Math.max(520, Math.round(window.innerWidth * 0.5));
+    const height = Math.max(400, Math.round(window.innerHeight * 0.5));
+    setPlotViewerRect({
+      width,
+      height,
+      x: Math.max(24, Math.round((window.innerWidth - width) / 2)),
+      y: Math.max(24, Math.round((window.innerHeight - height) / 2)),
+    });
+    setPlotViewerFeature(feature);
+    setPlotViewerDragMode(null);
+    plotViewerDragRef.current = null;
+  }, []);
+
   return (
     <SidebarContainer>
-      <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-        <Typography variant="h6" component="h1">
-          Map Explorer
-        </Typography>
+      <Box
+        sx={{
+          width: 58,
+          borderTopLeftRadius: 4,
+          borderBottomLeftRadius: 4,
+          borderTopRightRadius: activePanel ? 0 : 4,
+          borderBottomRightRadius: activePanel ? 0 : 4,
+          background: ui.railBg,
+          border: `1px solid ${ui.border}`,
+          boxShadow: ui.shadow,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          p: 1,
+          gap: 0.5,
+          overflow: 'hidden',
+        }}
+      >
+        <RailButton
+          active={activePanel === 'layers'}
+          label="Layers"
+          icon={<LayersIcon fontSize="inherit" />}
+          onClick={() => setActivePanel(activePanel === 'layers' ? null : 'layers')}
+          ui={ui}
+        />
+        <RailButton
+          active={activePanel === 'tools'}
+          label="Tools"
+          icon={<SettingsOutlinedIcon fontSize="inherit" />}
+          onClick={() => setActivePanel(activePanel === 'tools' ? null : 'tools')}
+          ui={ui}
+        />
+        <RailButton
+          active={activePanel === 'saved'}
+          label="Saved"
+          icon={<BookmarkBorderIcon fontSize="inherit" />}
+          onClick={() => setActivePanel(activePanel === 'saved' ? null : 'saved')}
+          ui={ui}
+        />
+        <RailButton
+          active={activePanel === 'export'}
+          label="Export"
+          icon={<SaveAltOutlinedIcon fontSize="inherit" />}
+          onClick={() => setActivePanel(activePanel === 'export' ? null : 'export')}
+          ui={ui}
+        />
+        <IconButton
+          size="small"
+          onClick={() => setSurfaceMode(surfaceMode === 'dark' ? 'light' : 'dark')}
+          aria-label={surfaceMode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          sx={{
+            mt: 'auto',
+            color: ui.textMuted,
+            border: `1px solid ${ui.border}`,
+            backgroundColor: ui.buttonBg,
+            '&:hover': { backgroundColor: ui.buttonHover },
+          }}
+        >
+          {surfaceMode === 'dark' ? <LightModeOutlinedIcon fontSize="small" /> : <DarkModeOutlinedIcon fontSize="small" />}
+        </IconButton>
       </Box>
 
-      <Box sx={{ p: 2, flex: 1, overflowY: 'auto' }}>
-
-        {/* VSM Predictions Section */}
-        <Box sx={{ mt: 3 }}>
-          <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <LayersIcon />Explore VSM
-          </Typography>
-          <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-              <TextField
-                label="Year"
-                type="number"
-                value={vsmYear}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value);
-                  if (!isNaN(v)) onVsmYearChange(v);
-                }}
-                size="small"
-                sx={{ width: 80 }}
-                inputProps={{ min: 2015, max: 2030 }}
-              />
-              <TextField
-                label="RH index"
-                type="number"
-                value={vsmRhIndex}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value);
-                  if (!isNaN(v)) onVsmRhIndexChange(v);
-                }}
-                size="small"
-                sx={{ width: 90 }}
-              />
-            </Box>
-            <Box>
-              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 0.5 }}>
-                Quantiles
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
-                <FormControlLabel
-                  control={<Checkbox size="small" checked={vsmQChoice === '5%'} onChange={() => onVsmQChoiceChange('5%')} />}
-                  label={<Typography variant="caption">5%</Typography>}
-                />
-                <FormControlLabel
-                  control={<Checkbox size="small" checked={vsmQChoice === 'median'} onChange={() => onVsmQChoiceChange('median')} />}
-                  label={<Typography variant="caption">median</Typography>}
-                />
-                <FormControlLabel
-                  control={<Checkbox size="small" checked={vsmQChoice === '95%'} onChange={() => onVsmQChoiceChange('95%')} />}
-                  label={<Typography variant="caption">95%</Typography>}
-                />
-              </Box>
-            </Box>
-            <Box>
-              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 0.5 }}>
-                Intervals
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
-                <FormControlLabel
-                  control={<Checkbox size="small" checked={vsmQChoice === '95%-5%'} onChange={() => onVsmQChoiceChange('95%-5%')} />}
-                  label={<Typography variant="caption">95%-5%</Typography>}
-                />
-                <FormControlLabel
-                  control={<Checkbox size="small" checked={vsmQChoice === '95%-50%'} onChange={() => onVsmQChoiceChange('95%-50%')} />}
-                  label={<Typography variant="caption">95%-50%</Typography>}
-                />
-                <FormControlLabel
-                  control={<Checkbox size="small" checked={vsmQChoice === '50%-5%'} onChange={() => onVsmQChoiceChange('50%-5%')} />}
-                  label={<Typography variant="caption">50%-5%</Typography>}
-                />
-              </Box>
-            </Box>
-            <Box>
-              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 0.5 }}>
-                Skewness
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
-                <FormControlLabel
-                  control={<Checkbox size="small" checked={vsmQChoice === 'skewness'} onChange={() => onVsmQChoiceChange('skewness')} />}
-                  label={
-                    <Typography variant="caption" component="span">
-                      (Q<sub>0.95</sub> − Q<sub>0.50</sub>) − (Q<sub>0.50</sub> − Q<sub>0.05</sub>)
-                    </Typography>
-                  }
-                />
-              </Box>
-            </Box>
-          </Box>
-          <Box sx={{ mt: 1 }}>
-            <Button variant="outlined" color="primary" onClick={onAddLayer} fullWidth>
-              Add layer
-            </Button>
-          </Box>
-          {addedVsmLayers.length > 0 && showAddedInfo && (
-            <Box sx={{ mt: 1, display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
-              <Typography variant="caption" sx={{ flex: 1, color: 'text.secondary' }}>
-                Added: {addedVsmLayers.map((e) => `${e.year} (RH${e.rhIndex}, ${e.qChoice})`).join('; ')}
-              </Typography>
-              <IconButton size="small" onClick={() => setShowAddedInfo(false)} aria-label="Dismiss" sx={{ mt: -0.5, mr: -0.5 }}>
-                <CloseIcon fontSize="small" />
-              </IconButton>
-            </Box>
-          )}
-        </Box>
-
-        {/* Inspect Section */}
-        <Box sx={{ mt: 3 }}>
-          <Button
-            variant={inspectMode && inspectKind === 'layers' ? 'contained' : 'outlined'}
-            color="secondary"
-            onClick={() => onInspectModeChange(!inspectMode || inspectKind !== 'layers')}
-            fullWidth
-            startIcon={<SearchIcon />}
-          >
-            {inspectMode && inspectKind === 'layers' ? 'Inspect (on)' : 'Inspect'}
-          </Button>
-          <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: 'text.secondary' }}>
-            {inspectMode && inspectKind === 'layers'
-              ? 'Click the map — all raster values in the panel bottom-right (visible + hidden)'
-              : 'Sample all COG layers at the clicked point (visible + hidden)'}
-          </Typography>
-          <Button
-            variant={inspectMode && inspectKind === 'vertical_profile' ? 'contained' : 'outlined'}
-            color="secondary"
-            onClick={onVerticalProfileClick}
-            fullWidth
-            startIcon={<ShowChartIcon />}
-            sx={{ mt: 1.5 }}
-          >
-            {inspectMode && inspectKind === 'vertical_profile'
-              ? 'Inspect vertical profile (on)'
-              : 'Inspect vertical profile'}
-          </Button>
-          <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: 'text.secondary' }}>
-            {inspectMode && inspectKind === 'vertical_profile'
-              ? `Click the map — original RH0–RH100 (Q1) for year ${vsmYear}`
-              : 'Original prediction COGs (Q1); year from above; click again to turn off'}
-          </Typography>
-        </Box>
-
-        {/* Upload File Section */}
-        <Box sx={{ mt: 3 }}>
-          <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <UploadFileIcon /> Upload File
-          </Typography>
-          <Box sx={{ mt: 1.5 }}>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv,.tsv,.geojson,.json,.fgb,.zip"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) onUploadFile(f);
-                e.target.value = '';
-              }}
-            />
-            <Button
-              variant="outlined"
-              color="primary"
-              fullWidth
-              startIcon={uploadingFile ? <CircularProgress size={18} /> : <UploadFileIcon />}
-              disabled={uploadingFile}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              {uploadingFile ? 'Loading…' : 'Upload file'}
-            </Button>
-            <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: 'text.secondary' }}>
-              CSV, GeoJSON, FlatGeobuf, or Shapefile (zipped)
+      {activePanel && (
+        <Box
+          sx={{
+            width: { xs: 280, sm: 306 },
+            ml: '-1px',
+            borderTopRightRadius: 4,
+            borderBottomRightRadius: 4,
+            borderTopLeftRadius: 0,
+            borderBottomLeftRadius: 0,
+            background: ui.panelBg,
+            border: `1px solid ${ui.border}`,
+            boxShadow: ui.shadow,
+            color: ui.textSecondary,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}
+        >
+          <Box sx={{ px: 2, py: 1.75, borderBottom: `1px solid ${ui.border}` }}>
+            <Typography sx={{ fontSize: '1rem', fontWeight: 800, letterSpacing: '-0.01em', color: ui.textPrimary }}>
+              {activePanel === 'layers' && 'Explore VSM'}
+              {activePanel === 'tools' && 'Tools'}
+              {activePanel === 'saved' && 'Saved'}
+              {activePanel === 'export' && 'Export'}
             </Typography>
           </Box>
-        </Box>
 
-        {/* Drawing Tools Section */}
-        <Box sx={{ mt: 3 }}>
-          <Typography variant="h6" component="h2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <CropFreeIcon /> Drawing Tools
-          </Typography>
-          <Box sx={{ mt: 2 }}>
-            <Button
-              variant={drawingActive && drawingMode === 'tiles' ? 'contained' : 'outlined'}
-              color={drawingActive && drawingMode === 'tiles' ? 'warning' : 'primary'}
-              onClick={onGetTiles}
-              fullWidth
-              startIcon={<CropFreeIcon />}
-            >
-              {drawingActive && drawingMode === 'tiles' ? 'Drawing... (click to cancel)' : 'Get Tiles'}
-            </Button>
-            {drawingActive && drawingMode === 'tiles' && (
-              <Typography variant="caption" sx={{ mt: 1, display: 'block', color: 'text.secondary' }}>
-                Draw a rectangle on the map to select tiles
-              </Typography>
-            )}
-            <Button
-              variant={drawingActive && drawingMode === 'figures' ? 'contained' : 'outlined'}
-              color={drawingActive && drawingMode === 'figures' ? 'warning' : 'secondary'}
-              onClick={onCreateFiguresDraw}
-              fullWidth
-              startIcon={<CropFreeIcon />}
-              sx={{ mt: 1 }}
-            >
-              {drawingActive && drawingMode === 'figures' ? 'Drawing figure area... (click to cancel)' : 'Create figures'}
-            </Button>
-            <Typography variant="caption" sx={{ mt: 1, display: 'block', color: 'text.secondary' }}>
-              Draw a rectangle, choose layers, format, and output folder
-            </Typography>
-            {figureSelectionReady && (
-              <Typography variant="caption" sx={{ mt: 0.5, display: 'block', color: 'success.main' }}>
-                Figure area selected
-              </Typography>
-            )}
-          </Box>
-          {selectedTiles.length > 0 && (
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="body2" sx={{ fontWeight: 500, mb: 1 }}>
-                Selected tiles ({selectedTiles.length}):
-              </Typography>
-              <Box sx={{ maxHeight: 200, overflowY: 'auto' }}>
-                <List dense disablePadding>
-                  {selectedTiles.map((tile) => (
-                    <ListItem key={tile} disablePadding sx={{ py: 0.25 }}>
-                      <ListItemText
-                        primary={tile}
-                        primaryTypographyProps={{ variant: 'body2', fontFamily: 'monospace' }}
-                      />
-                    </ListItem>
-                  ))}
-                </List>
-              </Box>
-            </Box>
-          )}
-          <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                <TextField
-                  label="Output folder"
-                  size="small"
+          <Box sx={{ p: 2, overflowY: 'auto', flex: 1 }}>
+            {activePanel === 'layers' && (
+              <Box>
+                <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+                  <TextField
+                    label="Year"
+                    type="number"
+                    value={vsmYear}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value);
+                      if (!isNaN(v)) onVsmYearChange(v);
+                    }}
+                    size="small"
+                    fullWidth
+                    inputProps={{ min: 2015, max: 2030 }}
+                    sx={{
+                      '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
+                      '& .MuiInputLabel-root': { color: ui.fieldLabel },
+                    }}
+                  />
+                  <TextField
+                    label="RH index"
+                    type="number"
+                    value={vsmRhIndex}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value);
+                      if (!isNaN(v)) onVsmRhIndexChange(v);
+                    }}
+                    size="small"
+                    fullWidth
+                    sx={{
+                      '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
+                      '& .MuiInputLabel-root': { color: ui.fieldLabel },
+                    }}
+                  />
+                </Box>
+
+                <SectionLabel ui={ui}>Quantiles</SectionLabel>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 1.75 }}>
+                  <SelectionChip label="5%" active={vsmQChoice === '5%'} onClick={() => onVsmQChoiceChange('5%')} ui={ui} />
+                  <SelectionChip label="Median" active={vsmQChoice === 'median'} onClick={() => onVsmQChoiceChange('median')} ui={ui} />
+                  <SelectionChip label="95%" active={vsmQChoice === '95%'} onClick={() => onVsmQChoiceChange('95%')} ui={ui} />
+                </Box>
+
+                <SectionLabel ui={ui}>Intervals</SectionLabel>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 1.75 }}>
+                  <SelectionChip label="95%-5%" active={vsmQChoice === '95%-5%'} onClick={() => onVsmQChoiceChange('95%-5%')} ui={ui} />
+                  <SelectionChip label="95%-50%" active={vsmQChoice === '95%-50%'} onClick={() => onVsmQChoiceChange('95%-50%')} ui={ui} />
+                  <SelectionChip label="50%-5%" active={vsmQChoice === '50%-5%'} onClick={() => onVsmQChoiceChange('50%-5%')} ui={ui} />
+                </Box>
+
+                <SectionLabel ui={ui}>Skewness</SectionLabel>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2 }}>
+                  <SelectionChip
+                    label={
+                      <span>
+                        (Q<sub>0.95</sub> - Q<sub>0.50</sub>) - (Q<sub>0.50</sub> - Q<sub>0.05</sub>)
+                      </span>
+                    }
+                    active={vsmQChoice === 'skewness'}
+                    onClick={() => onVsmQChoiceChange('skewness')}
+                    ui={ui}
+                  />
+                </Box>
+
+                <Button
+                  variant="outlined"
+                  onClick={onAddLayer}
                   fullWidth
-                  value={figureOutputFolder}
-                  onChange={(e) => onFigureOutputFolderChange(e.target.value)}
-                  placeholder="/maps/projects/dereeco/data/gvs"
-                />
-                <IconButton size="small" onClick={handleOpenBrowser} title="Browse folders">
-                  <FolderOpenIcon fontSize="small" />
-                </IconButton>
-              </Box>
-              <Collapse in={showFolderBrowser}>
-                <Box sx={{ mt: 0.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 0.5 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
-                    <IconButton size="small" onClick={handleGoUp} title="Go up">
-                      <ArrowUpwardIcon fontSize="small" />
-                    </IconButton>
-                    <Typography variant="caption" sx={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={browsingPath}>
-                      {browsingPath || '/'}
+                  sx={{
+                    borderStyle: 'dashed',
+                    borderColor: ui.borderStrong,
+                    color: ui.textSecondary,
+                    py: 1,
+                    '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
+                  }}
+                >
+                  + Add Layer
+                </Button>
+
+                <Button
+                  variant="outlined"
+                  onClick={onLoadForestNaturalnessData}
+                  fullWidth
+                  sx={{
+                    mt: 1,
+                    borderStyle: 'dashed',
+                    borderColor: ui.borderStrong,
+                    color: ui.textSecondary,
+                    py: 1,
+                    textTransform: 'none',
+                    '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
+                  }}
+                >
+                  Load forest naturalness data
+                </Button>
+
+                {addedVsmLayers.length > 0 && showAddedInfo && (
+                  <Box
+                    sx={{
+                      mt: 1.25,
+                      p: 1.1,
+                      borderRadius: 2,
+                      backgroundColor: ui.buttonBg,
+                      border: `1px solid ${ui.border}`,
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 0.5,
+                    }}
+                  >
+                    <Typography variant="caption" sx={{ flex: 1, color: ui.textMuted, lineHeight: 1.45 }}>
+                      Added: {addedVsmLayers.map((e) => `${e.year} (RH${e.rhIndex}, ${e.qChoice})`).join('; ')}
                     </Typography>
+                    <IconButton size="small" onClick={() => setShowAddedInfo(false)} aria-label="Dismiss" sx={{ color: ui.textMuted, mt: -0.4, mr: -0.4 }}>
+                      <CloseIcon fontSize="small" />
+                    </IconButton>
                   </Box>
-                  <Box sx={{ maxHeight: 180, overflowY: 'auto', border: '1px solid', borderColor: 'grey.200', borderRadius: 0.5 }}>
-                    {loadingDirs ? (
-                      <Box sx={{ display: 'flex', justifyContent: 'center', p: 1 }}><CircularProgress size={18} /></Box>
-                    ) : dirEntries.length === 0 ? (
-                      <Typography variant="caption" color="text.secondary" sx={{ p: 1, display: 'block' }}>No subdirectories</Typography>
-                    ) : (
-                      <List dense disablePadding>
-                        {dirEntries.map((dir) => (
-                          <ListItemButton key={dir} onClick={() => handleSelectDir(dir)} sx={{ py: 0.25 }}>
-                            <ListItemText primary={dir} primaryTypographyProps={{ variant: 'caption' }} />
-                          </ListItemButton>
-                        ))}
-                      </List>
+                )}
+              </Box>
+            )}
+
+            {activePanel === 'tools' && (
+              <Box>                
+                <Box sx={{ mt: 1.5 }}>
+                  <SectionLabel ui={ui}>Diversity metrics</SectionLabel>
+                  <FormControl size="small" fullWidth sx={{ mt: 0.5 }}>
+                    <InputLabel id="diversity-height-bin-label">Height bin (m)</InputLabel>
+                    <Select
+                      labelId="diversity-height-bin-label"
+                      label="Height bin (m)"
+                      value={diversityHeightBinM}
+                      onChange={(e) => setDiversityHeightBinM(Number(e.target.value))}
+                    >
+                      {DIVERSITY_HEIGHT_BIN_OPTIONS.map((m) => (
+                        <MenuItem key={m} value={m}>{m} m</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: ui.textMuted, lineHeight: 1.4 }}>
+                    FHD, ENL, and CR: one global step for height bins (GEDI compare, V-Profile, transect). Change and re-sample to apply.
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
+                  <PanelActionCard
+                    icon={<SearchIcon fontSize="inherit" />}
+                    label={inspectMode && inspectKind === 'layers' ? 'Inspect On' : 'Inspect'}
+                    description={inspectMode && inspectKind === 'layers'
+                      ? 'Click the map to send all raster values, including hidden layers, to the inspect panel.'
+                      : 'Sample all COG layers at the clicked location, including hidden layers.'}
+                    active={inspectMode && inspectKind === 'layers'}
+                    onClick={() => onInspectModeChange(!inspectMode || inspectKind !== 'layers')}
+                    ui={ui}
+                  />
+                  <PanelActionCard
+                    icon={<ShowChartIcon fontSize="inherit" />}
+                    label={inspectMode && inspectKind === 'vertical_profile' ? 'V-Profile On' : 'V-Profile'}
+                    description={inspectMode && inspectKind === 'vertical_profile'
+                      ? `Click the map to sample the original RH0-RH100 (Q1) profile for ${vsmYear}.`
+                      : 'Inspect a single vertical profile from the original prediction COGs.'}
+                    active={inspectMode && inspectKind === 'vertical_profile'}
+                    onClick={onVerticalProfileClick}
+                    ui={ui}
+                  />
+                  <PanelActionCard
+                    icon={<ShowChartIcon fontSize="inherit" />}
+                    label={inspectMode && inspectKind === 'vertical_profile_line' ? 'Transect On' : 'Transect'}
+                    description={inspectMode && inspectKind === 'vertical_profile_line'
+                      ? `Draw a line on the map to sample full RH0-RH100 profiles for ${vsmYear}.`
+                      : 'Draw a transect to sample multiple vertical profiles along a line.'}
+                    active={inspectMode && inspectKind === 'vertical_profile_line'}
+                    onClick={onVerticalProfileLineClick}
+                    ui={ui}
+                  />
+                  <PanelActionCard
+                    icon={uploadingFile ? <CircularProgress size={18} color="inherit" /> : <UploadFileIcon fontSize="inherit" />}
+                    label={uploadingFile ? 'Uploading' : 'Upload'}
+                    description='Import CSV, GeoJSON, FlatGeobuf, or zipped Shapefiles.'
+                    active={uploadingFile}
+                    onClick={() => fileInputRef.current?.click()}
+                    ui={ui}
+                  />
+                  <PanelActionCard
+                    icon={<CropFreeIcon fontSize="inherit" />}
+                    label={drawingActive && drawingMode === 'tiles' ? 'Tiles On' : 'Tiles'}
+                    description={drawingActive && drawingMode === 'tiles'
+                      ? 'Drag a rectangle on the map to select tiles.'
+                      : 'Start rectangle drawing to collect tile IDs from the map.'}
+                    active={drawingActive && drawingMode === 'tiles'}
+                    onClick={onGetTiles}
+                    ui={ui}
+                  />
+                  <PanelActionCard
+                    icon={<CropFreeIcon fontSize="inherit" />}
+                    label={drawingActive && drawingMode === 'figures_db' ? 'DB Images On' : 'DB Images'}
+                    description={drawingActive && drawingMode === 'figures_db'
+                      ? 'Drag a rectangle, then save polygon + extracted images to database.'
+                      : 'Draw a rectangle and save area images to the database.'}
+                    active={drawingActive && drawingMode === 'figures_db'}
+                    onClick={onCreateDbFiguresDraw}
+                    ui={ui}
+                  />
+                </Box>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,.tsv,.geojson,.json,.fgb,.zip"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) onUploadFile(f);
+                    e.target.value = '';
+                  }}
+                />
+
+                {(figureSelectionReady || selectedTiles.length > 0) && (
+                  <Box
+                    sx={{
+                      mt: 1.5,
+                      p: 1.1,
+                      borderRadius: 2,
+                      backgroundColor: ui.buttonBg,
+                      border: `1px solid ${ui.border}`,
+                    }}
+                  >
+                    {figureSelectionReady && (
+                      <Typography variant="caption" sx={{ display: 'block', color: '#82e5aa', mb: selectedTiles.length > 0 ? 0.75 : 0 }}>
+                        Figure area selected
+                      </Typography>
+                    )}
+                    {selectedTiles.length > 0 && (
+                      <Typography variant="caption" sx={{ color: ui.textMuted }}>
+                        Selected tiles ({selectedTiles.length}): {selectedTiles.slice(0, 4).join(', ')}
+                        {selectedTiles.length > 4 ? '…' : ''}
+                      </Typography>
                     )}
                   </Box>
-                  <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5 }}>
-                    <Button size="small" variant="contained" onClick={handleConfirmFolder} sx={{ flex: 1, textTransform: 'none', fontSize: '0.7rem' }}>
-                      Select this folder
+                )}
+                {((drawingMode === 'figures_db') || (figureSelectionReady && drawingMode !== 'figures')) && (
+                  <Box sx={{ mt: 1.1 }}>
+                    <SectionLabel ui={ui}>Layers To Save</SectionLabel>
+                    <Box sx={{ maxHeight: 260, overflowY: 'auto', border: `1px solid ${ui.border}`, borderRadius: 2, p: 1, backgroundColor: ui.panelBgAlt }}>
+                      {availableFigureLayers.length === 0 ? (
+                        <Typography variant="caption" sx={{ color: ui.textMuted }}>
+                          No exportable layers found
+                        </Typography>
+                      ) : (
+                        availableFigureLayers.map((layer) => {
+                          const isChecked = selectedFigureLayerIds.includes(layer.id);
+                          const isExpanded = expandedFigureLayer === layer.id;
+                          const ovr = figureLayerOverrides[layer.id];
+                          const hasBands = layer.bandNames && layer.bandNames.length > 1;
+                          return (
+                            <Box key={layer.id} sx={{ mb: 0.75, borderRadius: 1.5, border: `1px solid ${ui.border}`, backgroundColor: isChecked ? ui.accentSoft : ui.buttonBg }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', px: 0.5 }}>
+                                <Checkbox
+                                  size="small"
+                                  checked={isChecked}
+                                  onChange={() => onToggleFigureLayer(layer.id)}
+                                  sx={{ color: ui.textMuted }}
+                                />
+                                <Typography
+                                  variant="caption"
+                                  sx={{ flex: 1, cursor: 'pointer', userSelect: 'none', color: ui.textPrimary }}
+                                  onClick={() => setExpandedFigureLayer(isExpanded ? null : layer.id)}
+                                >
+                                  {layer.name}
+                                  {hasBands && ` (${layer.bandNames!.length} bands)`}
+                                </Typography>
+                                <IconButton size="small" onClick={() => setExpandedFigureLayer(isExpanded ? null : layer.id)} sx={{ color: ui.textMuted }}>
+                                  {isExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+                                </IconButton>
+                              </Box>
+                              <Collapse in={isExpanded}>
+                                <Box sx={{ pl: 1.75, pr: 1, pb: 1, display: 'flex', flexDirection: 'column', gap: 0.9 }}>
+                                  {hasBands && (
+                                    <>
+                                      <Typography variant="caption" sx={{ color: ui.textMuted }}>Bands</Typography>
+                                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.25 }}>
+                                        {layer.bandNames!.map((bname, idx) => {
+                                          const bi = idx + 1;
+                                          const selected = ovr?.selectedBands?.includes(bi) ?? false;
+                                          return (
+                                            <FormControlLabel
+                                              key={bi}
+                                              control={
+                                                <Checkbox
+                                                  size="small"
+                                                  checked={selected}
+                                                  onChange={() => {
+                                                    const prev = ovr?.selectedBands ?? [];
+                                                    const next = selected ? prev.filter((b) => b !== bi) : [...prev, bi];
+                                                    onUpdateFigureLayerOverride(layer.id, { selectedBands: next });
+                                                  }}
+                                                  sx={{ color: ui.textMuted }}
+                                                />
+                                              }
+                                              label={<Typography variant="caption" sx={{ color: ui.textPrimary }}>{bname}</Typography>}
+                                              sx={{ m: 0, mr: 0.5 }}
+                                            />
+                                          );
+                                        })}
+                                      </Box>
+                                    </>
+                                  )}
+                                </Box>
+                              </Collapse>
+                            </Box>
+                          );
+                        })
+                      )}
+                    </Box>
+                  </Box>
+                )}
+
+                <Box sx={{ mt: 1.1 }}>
+                  {figuresToDbError && <Alert severity="error" sx={{ mb: 0.75 }}>{figuresToDbError}</Alert>}
+                  {figuresToDbMessage && <Alert severity="success" sx={{ mb: 0.75 }}>{figuresToDbMessage}</Alert>}
+                  <Button
+                    variant="contained"
+                    onClick={() => setOpenDbSaveDialog(true)}
+                    disabled={savingFiguresToDb || !figureSelectionReady}
+                    startIcon={savingFiguresToDb ? <CircularProgress size={16} color="inherit" /> : undefined}
+                    sx={{
+                      width: '100%',
+                      textTransform: 'none',
+                      borderRadius: 2,
+                      py: 0.95,
+                      background: `linear-gradient(135deg, ${ui.accent} 0%, #a29bfe 100%)`,
+                    }}
+                  >
+                    {savingFiguresToDb ? 'Saving to database...' : 'Save area images to DB'}
+                  </Button>
+                </Box>
+
+                <Dialog open={openDbSaveDialog} onClose={savingFiguresToDb ? undefined : () => setOpenDbSaveDialog(false)} maxWidth="sm" fullWidth>
+                  <DialogTitle>Save area feature to database</DialogTitle>
+                  <DialogContent>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                      Geometry type: Polygon
+                    </Typography>
+                    <TextField
+                      autoFocus
+                      required
+                      fullWidth
+                      margin="dense"
+                      label="Name"
+                      value={dbFeatureName}
+                      onChange={(event) => setDbFeatureName(event.target.value)}
+                    />
+                    <TextField
+                      fullWidth
+                      margin="dense"
+                      label="Category"
+                      value={dbFeatureCategory}
+                      onChange={(event) => setDbFeatureCategory(event.target.value)}
+                    />
+                    <TextField
+                      fullWidth
+                      margin="dense"
+                      label="Description"
+                      multiline
+                      minRows={3}
+                      value={dbFeatureDescription}
+                      onChange={(event) => setDbFeatureDescription(event.target.value)}
+                    />
+                  </DialogContent>
+                  <DialogActions>
+                    <Button onClick={() => setOpenDbSaveDialog(false)} disabled={savingFiguresToDb}>Cancel</Button>
+                    <Button
+                      onClick={() => {
+                        onSaveFiguresToDb({
+                          name: dbFeatureName.trim(),
+                          description: dbFeatureDescription.trim(),
+                          category: dbFeatureCategory.trim(),
+                        });
+                        setOpenDbSaveDialog(false);
+                      }}
+                      variant="contained"
+                      disabled={savingFiguresToDb || !dbFeatureName.trim()}
+                    >
+                      {savingFiguresToDb ? 'Saving...' : 'Save'}
                     </Button>
-                    <IconButton size="small" onClick={() => { setShowNewFolder(!showNewFolder); }} title="New folder">
-                      <CreateNewFolderIcon fontSize="small" />
+                  </DialogActions>
+                </Dialog>
+              </Box>
+            )}
+
+            {activePanel === 'saved' && (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+                {/* Header row */}
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography sx={{ fontSize: '0.8rem', color: ui.accent, fontWeight: 700 }}>
+                    {filteredSavedFeatures.length}{filteredSavedFeatures.length !== savedMapFeatures.length ? `/${savedMapFeatures.length}` : ''} items
+                  </Typography>
+                  <IconButton
+                    size="small"
+                    onClick={onReloadSavedFeatures}
+                    disabled={savedFeaturesLoading}
+                    aria-label="Reload saved features"
+                    sx={{ color: ui.textMuted }}
+                  >
+                    {savedFeaturesLoading ? <CircularProgress size={16} /> : <RefreshIcon fontSize="small" />}
+                  </IconButton>
+                </Box>
+
+                {savedFeaturesError && (
+                  <Alert severity="error" sx={{ py: 0.5 }}>
+                    {savedFeaturesError}
+                  </Alert>
+                )}
+
+                {/* Search input */}
+                <TextField
+                  size="small"
+                  fullWidth
+                  placeholder="Search by name (regex ok)"
+                  value={savedSearch}
+                  onChange={(e) => setSavedSearch(e.target.value)}
+                  slotProps={{
+                    input: {
+                      endAdornment: savedSearch
+                        ? (
+                          <IconButton size="small" onClick={() => setSavedSearch('')} sx={{ color: ui.textMuted }}>
+                            <CloseIcon fontSize="inherit" />
+                          </IconButton>
+                        )
+                        : null,
+                    },
+                  }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      backgroundColor: ui.fieldBg,
+                      color: ui.fieldText,
+                      fontSize: '0.85rem',
+                      '& fieldset': { borderColor: ui.border },
+                      '&:hover fieldset': { borderColor: ui.borderStrong },
+                    },
+                    '& .MuiOutlinedInput-input::placeholder': { color: ui.textMuted, opacity: 1 },
+                  }}
+                />
+
+                {/* Filter row: type + category */}
+                <Box sx={{ display: 'flex', gap: 0.75 }}>
+                  <FormControl size="small" sx={{ flex: 1 }}>
+                    <Select
+                      displayEmpty
+                      value={savedTypeFilter}
+                      onChange={(e) => setSavedTypeFilter(e.target.value)}
+                      sx={{
+                        fontSize: '0.82rem',
+                        backgroundColor: ui.fieldBg,
+                        color: savedTypeFilter ? ui.textPrimary : ui.textMuted,
+                        '& .MuiOutlinedInput-notchedOutline': { borderColor: ui.border },
+                        '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: ui.borderStrong },
+                        '& .MuiSelect-icon': { color: ui.textMuted },
+                      }}
+                    >
+                      <MenuItem value=""><em style={{ color: ui.textMuted, fontStyle: 'normal' }}>All types</em></MenuItem>
+                      <MenuItem value="Point">Point</MenuItem>
+                      <MenuItem value="LineString">LineString</MenuItem>
+                      <MenuItem value="Polygon">Polygon</MenuItem>
+                    </Select>
+                  </FormControl>
+
+                  <FormControl size="small" sx={{ flex: 1 }}>
+                    <Select
+                      displayEmpty
+                      value={savedCategoryFilter}
+                      onChange={(e) => setSavedCategoryFilter(e.target.value)}
+                      sx={{
+                        fontSize: '0.82rem',
+                        backgroundColor: ui.fieldBg,
+                        color: savedCategoryFilter ? ui.textPrimary : ui.textMuted,
+                        '& .MuiOutlinedInput-notchedOutline': { borderColor: ui.border },
+                        '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: ui.borderStrong },
+                        '& .MuiSelect-icon': { color: ui.textMuted },
+                      }}
+                    >
+                      <MenuItem value=""><em style={{ color: ui.textMuted, fontStyle: 'normal' }}>All categories</em></MenuItem>
+                      {savedCategories.map((cat) => (
+                        <MenuItem key={cat} value={cat}>{cat}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Box>
+
+                {savedMapFeatures.length === 0 && !savedFeaturesLoading && !savedFeaturesError && (
+                  <Typography variant="body2" sx={{ color: ui.textMuted }}>
+                    No saved locations yet. Use inspect tools and save from the panel.
+                  </Typography>
+                )}
+
+                {savedMapFeatures.length > 0 && filteredSavedFeatures.length === 0 && (
+                  <Typography variant="body2" sx={{ color: ui.textMuted }}>
+                    No matches. Clear filters to see all {savedMapFeatures.length} items.
+                  </Typography>
+                )}
+
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+                  {filteredSavedFeatures.map((feature) => {
+                    const isExpanded = expandedSavedId === feature.id;
+                    const isConfirmingDelete = confirmDeleteId === feature.id;
+                    const isDeleting = deletingSavedFeatureId === feature.id;
+                    return (
+                      <Box
+                        key={feature.id}
+                        sx={{
+                          background: ui.panelBgAlt,
+                          borderRadius: 2,
+                          border: `1px solid ${isExpanded ? ui.accentBorder : ui.border}`,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {/* Header row — text clicks expand; buttons right-aligned */}
+                        <Box
+                          sx={{
+                            px: 1.2, py: 0.75,
+                            display: 'flex', alignItems: 'center', gap: 0.5,
+                          }}
+                        >
+                          {/* Clickable text area */}
+                          <Box
+                            onClick={() => { setExpandedSavedId(isExpanded ? null : feature.id); setConfirmDeleteId(null); }}
+                            sx={{ minWidth: 0, flex: 1, cursor: 'pointer', py: 0.25 }}
+                          >
+                            <Typography sx={{ fontSize: '0.875rem', fontWeight: 700, color: ui.textPrimary }} noWrap>
+                              {feature.name}
+                            </Typography>
+                            <Typography sx={{ mt: 0.15, fontSize: '0.76rem', color: ui.textMuted }}>
+                              {feature.geometry.type}{feature.category ? ` · ${feature.category}` : ''} · {new Date(feature.created_at).toLocaleDateString()}
+                            </Typography>
+                          </Box>
+
+                          {/* Right-aligned action buttons */}
+                          <Tooltip title="Jump to feature" placement="top" arrow>
+                            <IconButton
+                              size="small"
+                              onClick={() => onJumpToFeature(feature)}
+                              sx={{ color: ui.accent, flexShrink: 0 }}
+                            >
+                              <MyLocationIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+
+                          {isConfirmingDelete ? (
+                            <>
+                              <Button
+                                size="small"
+                                variant="contained"
+                                color="error"
+                                disabled={isDeleting}
+                                onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); onDeleteSavedFeature(feature.id); }}
+                                sx={{ minWidth: 0, px: 0.75, py: 0.2, fontSize: '0.75rem', flexShrink: 0 }}
+                              >
+                                {isDeleting ? <CircularProgress size={13} /> : 'Yes'}
+                              </Button>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                                sx={{ minWidth: 0, px: 0.75, py: 0.2, fontSize: '0.75rem', flexShrink: 0, borderColor: ui.border, color: ui.textSecondary }}
+                              >
+                                No
+                              </Button>
+                            </>
+                          ) : (
+                            <Tooltip title="Delete" placement="top" arrow>
+                              <IconButton
+                                size="small"
+                                disabled={isDeleting}
+                                onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(feature.id); }}
+                                sx={{ color: ui.textMuted, flexShrink: 0 }}
+                              >
+                                {isDeleting ? <CircularProgress size={14} /> : <DeleteOutlineIcon fontSize="small" />}
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                        </Box>
+
+                        {/* Expanded: details */}
+                        {isExpanded && (
+                          <Box sx={{ px: 1.5, pb: 1.2, borderTop: `1px solid ${ui.border}` }}>
+                            <Typography sx={{ mt: 0.8, mb: 0.35, fontSize: '0.68rem', color: ui.textMuted, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                              Description
+                            </Typography>
+                            <Typography sx={{ fontSize: '0.82rem', color: feature.description ? ui.textSecondary : ui.textMuted, fontStyle: feature.description ? 'normal' : 'italic', whiteSpace: 'pre-wrap' }}>
+                              {feature.description || 'No description'}
+                            </Typography>
+
+                            {(feature.metadata?.tile_name || feature.metadata?.year || feature.metadata?.source || feature.metadata?.sample_count || feature.metadata?.total_length_m) && (
+                              <Box sx={{ mt: 1.1 }}>
+                                <Typography sx={{ mb: 0.5, fontSize: '0.68rem', color: ui.textMuted, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                                  Metadata
+                                </Typography>
+                                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                  {feature.metadata?.tile_name && (
+                                    <Box sx={{ px: 0.8, py: 0.35, borderRadius: 999, backgroundColor: ui.buttonBg, border: `1px solid ${ui.border}` }}>
+                                      <Typography sx={{ fontSize: '0.72rem', color: ui.textSecondary }}>
+                                        Tile: {feature.metadata.tile_name}
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                  {feature.metadata?.year != null && (
+                                    <Box sx={{ px: 0.8, py: 0.35, borderRadius: 999, backgroundColor: ui.buttonBg, border: `1px solid ${ui.border}` }}>
+                                      <Typography sx={{ fontSize: '0.72rem', color: ui.textSecondary }}>
+                                        Year: {feature.metadata.year}
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                  {feature.metadata?.source && (
+                                    <Box sx={{ px: 0.8, py: 0.35, borderRadius: 999, backgroundColor: ui.buttonBg, border: `1px solid ${ui.border}` }}>
+                                      <Typography sx={{ fontSize: '0.72rem', color: ui.textSecondary }}>
+                                        Source: {feature.metadata.source}
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                  {feature.metadata?.sample_count != null && (
+                                    <Box sx={{ px: 0.8, py: 0.35, borderRadius: 999, backgroundColor: ui.buttonBg, border: `1px solid ${ui.border}` }}>
+                                      <Typography sx={{ fontSize: '0.72rem', color: ui.textSecondary }}>
+                                        Samples: {feature.metadata.sample_count}
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                  {feature.metadata?.total_length_m != null && (
+                                    <Box sx={{ px: 0.8, py: 0.35, borderRadius: 999, backgroundColor: ui.buttonBg, border: `1px solid ${ui.border}` }}>
+                                      <Typography sx={{ fontSize: '0.72rem', color: ui.textSecondary }}>
+                                        Length: {Math.round(feature.metadata.total_length_m)} m
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                </Box>
+                              </Box>
+                            )}
+
+                            {feature.plot_data && (
+                              <Box sx={{ mt: 1.1 }}>
+                                <Typography sx={{ mb: 0.5, fontSize: '0.68rem', color: ui.textMuted, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                                  Plot View
+                                </Typography>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  startIcon={<OpenInFullIcon fontSize="small" />}
+                                  onClick={() => openPlotViewer(feature)}
+                                  sx={{
+                                    textTransform: 'none',
+                                    borderColor: ui.accentBorder,
+                                    color: ui.accent,
+                                    backgroundColor: ui.accentSoft,
+                                    '&:hover': {
+                                      borderColor: ui.accentBorder,
+                                      backgroundColor: ui.buttonHover,
+                                    },
+                                  }}
+                                >
+                                  View plots
+                                </Button>
+                              </Box>
+                            )}
+                          </Box>
+                        )}
+                      </Box>
+                    );
+                  })}
+                </Box>
+              </Box>
+            )}
+
+            {activePanel === 'export' && (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+                <PanelActionCard
+                  icon={<CropFreeIcon fontSize="inherit" />}
+                  label={drawingActive && drawingMode === 'figures' ? 'Figures On' : 'Figures'}
+                  description={drawingActive && drawingMode === 'figures'
+                    ? 'Drag a rectangle on the map to define the export area.'
+                    : 'Drag a rectangle on the map to define the export area.'}
+                  active={drawingActive && drawingMode === 'figures'}
+                  onClick={onCreateFiguresDraw}
+                  ui={ui}
+                />
+
+                <Box>
+                  <SectionLabel ui={ui}>Output</SectionLabel>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      value={figureOutputFolder}
+                      onChange={(e) => onFigureOutputFolderChange(e.target.value)}
+                      placeholder="/maps/projects/dereeco/data/gvs"
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          backgroundColor: ui.fieldBg,
+                          color: ui.fieldText,
+                          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                          fontSize: '0.82rem',
+                        },
+                      }}
+                    />
+                    <IconButton size="small" onClick={handleOpenBrowser} title="Browse folders" sx={{ color: ui.textMuted }}>
+                      <FolderOpenIcon fontSize="small" />
                     </IconButton>
                   </Box>
-                  <Collapse in={showNewFolder}>
-                    <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5 }}>
-                      <TextField
-                        size="small"
-                        placeholder="New folder name"
-                        value={newFolderName}
-                        onChange={(e) => setNewFolderName(e.target.value)}
-                        sx={{ flex: 1 }}
-                        inputProps={{ style: { fontSize: '0.75rem', padding: '4px 8px' } }}
-                        onKeyDown={(e) => { if (e.key === 'Enter') handleCreateFolder(); }}
-                      />
-                      <Button size="small" variant="outlined" onClick={handleCreateFolder} sx={{ textTransform: 'none', fontSize: '0.7rem', minWidth: 0 }}>
-                        Create
-                      </Button>
-                    </Box>
-                  </Collapse>
-                </Box>
-              </Collapse>
-            </Box>
-            <FormControl size="small" fullWidth>
-              <InputLabel>Figure format</InputLabel>
-              <Select
-                value={figureFormat}
-                label="Figure format"
-                onChange={(e) => onFigureFormatChange(e.target.value as 'jpg' | 'png' | 'pdf')}
-              >
-                <MenuItem value="png">PNG</MenuItem>
-                <MenuItem value="jpg">JPG</MenuItem>
-                <MenuItem value="pdf">PDF</MenuItem>
-              </Select>
-            </FormControl>
-            <Typography variant="body2" sx={{ fontWeight: 500 }}>
-              Layers to save:
-            </Typography>
-            <Box sx={{ maxHeight: 400, overflowY: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1 }}>
-              {availableFigureLayers.length === 0 ? (
-                <Typography variant="caption" color="text.secondary">
-                  No exportable layers found
-                </Typography>
-              ) : (
-                availableFigureLayers.map((layer) => {
-                  const isChecked = selectedFigureLayerIds.includes(layer.id);
-                  const isExpanded = expandedFigureLayer === layer.id;
-                  const ovr = figureLayerOverrides[layer.id];
-                  const hasBands = layer.bandNames && layer.bandNames.length > 1;
-                  return (
-                    <Box key={layer.id} sx={{ mb: 0.5 }}>
-                      <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                        <Checkbox
-                          size="small"
-                          checked={isChecked}
-                          onChange={() => onToggleFigureLayer(layer.id)}
-                        />
-                        <Typography
-                          variant="caption"
-                          sx={{ flex: 1, cursor: 'pointer', userSelect: 'none' }}
-                          onClick={() => setExpandedFigureLayer(isExpanded ? null : layer.id)}
-                        >
-                          {layer.name}
-                          {hasBands && ` (${layer.bandNames!.length} bands)`}
+                  <Collapse in={showFolderBrowser}>
+                    <Box sx={{ mt: 0.75, border: `1px solid ${ui.border}`, borderRadius: 2, p: 0.75, backgroundColor: ui.panelBgAlt }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.75 }}>
+                        <IconButton size="small" onClick={handleGoUp} title="Go up" sx={{ color: ui.textMuted }}>
+                          <ArrowUpwardIcon fontSize="small" />
+                        </IconButton>
+                        <Typography variant="caption" sx={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: ui.textMuted }} title={browsingPath}>
+                          {browsingPath || '/'}
                         </Typography>
-                        <IconButton size="small" onClick={() => setExpandedFigureLayer(isExpanded ? null : layer.id)}>
-                          {isExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+                      </Box>
+                      <Box sx={{ maxHeight: 180, overflowY: 'auto', border: `1px solid ${ui.border}`, borderRadius: 1.5 }}>
+                        {loadingDirs ? (
+                          <Box sx={{ display: 'flex', justifyContent: 'center', p: 1 }}><CircularProgress size={18} /></Box>
+                        ) : dirEntries.length === 0 ? (
+                          <Typography variant="caption" sx={{ p: 1, display: 'block', color: ui.textMuted }}>No subdirectories</Typography>
+                        ) : (
+                          <List dense disablePadding>
+                            {dirEntries.map((dir) => (
+                              <ListItemButton key={dir} onClick={() => handleSelectDir(dir)} sx={{ py: 0.35 }}>
+                                <ListItemText primary={dir} primaryTypographyProps={{ variant: 'caption', color: ui.textPrimary }} />
+                              </ListItemButton>
+                            ))}
+                          </List>
+                        )}
+                      </Box>
+                      <Box sx={{ display: 'flex', gap: 0.5, mt: 0.75 }}>
+                        <Button size="small" variant="contained" onClick={handleConfirmFolder} sx={{ flex: 1, textTransform: 'none', backgroundColor: ui.accent }}>
+                          Select folder
+                        </Button>
+                        <IconButton size="small" onClick={() => { setShowNewFolder(!showNewFolder); }} title="New folder" sx={{ color: ui.textMuted }}>
+                          <CreateNewFolderIcon fontSize="small" />
                         </IconButton>
                       </Box>
-                      <Collapse in={isExpanded}>
-                        <Box sx={{ pl: 4, pr: 1, pb: 1, display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-                          {hasBands && (
-                            <>
-                              <Typography variant="caption" color="text.secondary">Bands:</Typography>
-                              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0 }}>
-                                {layer.bandNames!.map((bname, idx) => {
-                                  const bi = idx + 1;
-                                  const selected = ovr?.selectedBands?.includes(bi) ?? false;
-                                  return (
-                                    <FormControlLabel
-                                      key={bi}
-                                      control={
-                                        <Checkbox
-                                          size="small"
-                                          checked={selected}
-                                          onChange={() => {
-                                            const prev = ovr?.selectedBands ?? [];
-                                            const next = selected ? prev.filter((b) => b !== bi) : [...prev, bi];
-                                            onUpdateFigureLayerOverride(layer.id, { selectedBands: next });
-                                          }}
-                                        />
-                                      }
-                                      label={<Typography variant="caption">{bname}</Typography>}
-                                      sx={{ m: 0, mr: 0.5 }}
-                                    />
-                                  );
-                                })}
-                              </Box>
-                            </>
-                          )}
-                          <FormControl size="small" fullWidth>
-                            <InputLabel>Colormap</InputLabel>
-                            <Select
-                              value={ovr?.colormap ?? ''}
-                              label="Colormap"
-                              onChange={(e) => onUpdateFigureLayerOverride(layer.id, { colormap: e.target.value || undefined })}
-                            >
-                              <MenuItem value=""><em>Default</em></MenuItem>
-                              {['viridis','inferno','magma','plasma','cividis','greens','blues','reds','greys',
-                                'ylgn','ylgnbu','gnbu','bugn','pubu','rdylgn','spectral','rdbu','oranges',
-                                'ylgn_r','spectral_r','rdbu_r'].map((cm) => (
-                                <MenuItem key={cm} value={cm}>{cm}</MenuItem>
-                              ))}
-                            </Select>
-                          </FormControl>
-                          <Box sx={{ display: 'flex', gap: 0.5 }}>
-                            <TextField
-                              label="Min"
-                              type="number"
-                              size="small"
-                              value={ovr?.rescaleMin ?? ''}
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                onUpdateFigureLayerOverride(layer.id, { rescaleMin: v === '' ? undefined : parseFloat(v) });
-                              }}
-                              placeholder="auto"
-                              sx={{ flex: 1 }}
-                              inputProps={{ step: 'any' }}
-                            />
-                            <TextField
-                              label="Max"
-                              type="number"
-                              size="small"
-                              value={ovr?.rescaleMax ?? ''}
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                onUpdateFigureLayerOverride(layer.id, { rescaleMax: v === '' ? undefined : parseFloat(v) });
-                              }}
-                              placeholder="auto"
-                              sx={{ flex: 1 }}
-                              inputProps={{ step: 'any' }}
-                            />
-                          </Box>
+                      <Collapse in={showNewFolder}>
+                        <Box sx={{ display: 'flex', gap: 0.5, mt: 0.75 }}>
+                          <TextField
+                            size="small"
+                            placeholder="New folder name"
+                            value={newFolderName}
+                            onChange={(e) => setNewFolderName(e.target.value)}
+                            sx={{ flex: 1, '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText } }}
+                            inputProps={{ style: { fontSize: '0.75rem', padding: '6px 8px' } }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleCreateFolder(); }}
+                          />
+                          <Button size="small" variant="outlined" onClick={handleCreateFolder} sx={{ textTransform: 'none', minWidth: 0, color: ui.textSecondary, borderColor: ui.borderStrong }}>
+                            Create
+                          </Button>
                         </Box>
                       </Collapse>
                     </Box>
-                  );
-                })
-              )}
-            </Box>
-            {figureSaveError && <Alert severity="error">{figureSaveError}</Alert>}
-            {figureSaveMessage && <Alert severity="success">{figureSaveMessage}</Alert>}
-            <Button
-              variant="contained"
-              color="secondary"
-              onClick={onSaveFigures}
-              disabled={savingFigures || !figureSelectionReady || selectedFigureLayerIds.length === 0}
-              startIcon={savingFigures ? <CircularProgress size={18} color="inherit" /> : undefined}
-            >
-              {savingFigures ? 'Saving figures...' : 'Save figures'}
-            </Button>
+                  </Collapse>
+                </Box>
+
+                <Box>
+                  <SectionLabel ui={ui}>File name</SectionLabel>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    value={figureFilenameStem}
+                    onChange={(e) => onFigureFilenameStemChange(e.target.value)}
+                    placeholder={suggestedFigureFilenameStem || 'layer_lat_lon…'}
+                    helperText="Base name without extension; format is added automatically. Clear the field to use automatic names from layer + location."
+                    FormHelperTextProps={{ sx: { color: ui.textMuted, fontSize: '0.68rem', mt: 0.35 } }}
+                    sx={{
+                      '& .MuiOutlinedInput-root': {
+                        backgroundColor: ui.fieldBg,
+                        color: ui.fieldText,
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        fontSize: '0.82rem',
+                      },
+                    }}
+                  />
+                  <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 0.35 }}>
+                    <Button
+                      size="small"
+                      variant="text"
+                      disabled={!suggestedFigureFilenameStem}
+                      onClick={() => onFigureFilenameStemChange(suggestedFigureFilenameStem)}
+                      sx={{ textTransform: 'none', fontSize: '0.72rem', color: ui.accent, minHeight: 0, py: 0.25 }}
+                    >
+                      Use default name
+                    </Button>
+                  </Box>
+                </Box>
+
+                <Box>
+                  <SectionLabel ui={ui}>Format</SectionLabel>
+                  <Box sx={{ display: 'flex', gap: 0.75 }}>
+                    {(['pdf', 'png', 'jpg'] as const).map((format) => {
+                      const active = figureFormat === format;
+                      return (
+                        <Box
+                          key={format}
+                          component="button"
+                          type="button"
+                          onClick={() => onFigureFormatChange(format)}
+                          sx={{
+                            flex: 1,
+                            py: 0.9,
+                            borderRadius: 1.75,
+                            border: '1px solid',
+                            borderColor: active ? ui.accentBorder : ui.border,
+                            background: active ? ui.accentSoft : ui.fieldBg,
+                            color: active ? ui.accent : ui.textSecondary,
+                            fontSize: '0.82rem',
+                            fontWeight: 700,
+                            textTransform: 'uppercase',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {format}
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                </Box>
+
+                <Box>
+                  <SectionLabel ui={ui}>Layers To Save</SectionLabel>
+                  <Box sx={{ maxHeight: 380, overflowY: 'auto', border: `1px solid ${ui.border}`, borderRadius: 2, p: 1, backgroundColor: ui.panelBgAlt }}>
+                    {availableFigureLayers.length === 0 ? (
+                      <Typography variant="caption" sx={{ color: ui.textMuted }}>
+                        No exportable layers found
+                      </Typography>
+                    ) : (
+                      availableFigureLayers.map((layer) => {
+                        const isChecked = selectedFigureLayerIds.includes(layer.id);
+                        const isExpanded = expandedFigureLayer === layer.id;
+                        const ovr = figureLayerOverrides[layer.id];
+                        const hasBands = layer.bandNames && layer.bandNames.length > 1;
+                        return (
+                          <Box key={layer.id} sx={{ mb: 0.75, borderRadius: 1.5, border: `1px solid ${ui.border}`, backgroundColor: isChecked ? ui.accentSoft : ui.buttonBg }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', px: 0.5 }}>
+                              <Checkbox
+                                size="small"
+                                checked={isChecked}
+                                onChange={() => onToggleFigureLayer(layer.id)}
+                                sx={{ color: ui.textMuted }}
+                              />
+                              <Typography
+                                variant="caption"
+                                sx={{ flex: 1, cursor: 'pointer', userSelect: 'none', color: ui.textPrimary }}
+                                onClick={() => setExpandedFigureLayer(isExpanded ? null : layer.id)}
+                              >
+                                {layer.name}
+                                {hasBands && ` (${layer.bandNames!.length} bands)`}
+                              </Typography>
+                              <IconButton size="small" onClick={() => setExpandedFigureLayer(isExpanded ? null : layer.id)} sx={{ color: ui.textMuted }}>
+                                {isExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+                              </IconButton>
+                            </Box>
+                            <Collapse in={isExpanded}>
+                              <Box sx={{ pl: 1.75, pr: 1, pb: 1, display: 'flex', flexDirection: 'column', gap: 0.9 }}>
+                                {hasBands && (
+                                  <>
+                                    <Typography variant="caption" sx={{ color: ui.textMuted }}>Bands</Typography>
+                                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.25 }}>
+                                      {layer.bandNames!.map((bname, idx) => {
+                                        const bi = idx + 1;
+                                        const selected = ovr?.selectedBands?.includes(bi) ?? false;
+                                        return (
+                                          <FormControlLabel
+                                            key={bi}
+                                            control={
+                                              <Checkbox
+                                                size="small"
+                                                checked={selected}
+                                                onChange={() => {
+                                                  const prev = ovr?.selectedBands ?? [];
+                                                  const next = selected ? prev.filter((b) => b !== bi) : [...prev, bi];
+                                                  onUpdateFigureLayerOverride(layer.id, { selectedBands: next });
+                                                }}
+                                                sx={{ color: ui.textMuted }}
+                                              />
+                                            }
+                                            label={<Typography variant="caption" sx={{ color: ui.textPrimary }}>{bname}</Typography>}
+                                            sx={{ m: 0, mr: 0.5 }}
+                                          />
+                                        );
+                                      })}
+                                    </Box>
+                                  </>
+                                )}
+                                <FormControl size="small" fullWidth>
+                                  <InputLabel sx={{ color: ui.fieldLabel }}>Colormap</InputLabel>
+                                  <Select
+                                    value={ovr?.colormap ?? ''}
+                                    label="Colormap"
+                                    onChange={(e) => onUpdateFigureLayerOverride(layer.id, { colormap: e.target.value || undefined })}
+                                    sx={{ backgroundColor: ui.fieldBg, color: ui.fieldText }}
+                                  >
+                                    <MenuItem value=""><em>Default</em></MenuItem>
+                                    {['viridis','inferno','magma','plasma','cividis','greens','blues','reds','greys',
+                                      'ylgn','ylgnbu','gnbu','bugn','pubu','rdylgn','spectral','rdbu','oranges',
+                                      'ylgn_r','spectral_r','rdbu_r'].map((cm) => (
+                                      <MenuItem key={cm} value={cm}>{cm}</MenuItem>
+                                    ))}
+                                  </Select>
+                                </FormControl>
+                                <Box sx={{ display: 'flex', gap: 0.5 }}>
+                                  <TextField
+                                    label="Min"
+                                    type="number"
+                                    size="small"
+                                    value={ovr?.rescaleMin ?? ''}
+                                    onChange={(e) => {
+                                      const v = e.target.value;
+                                      onUpdateFigureLayerOverride(layer.id, { rescaleMin: v === '' ? undefined : parseFloat(v) });
+                                    }}
+                                    placeholder="auto"
+                                    sx={{ flex: 1, '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText }, '& .MuiInputLabel-root': { color: ui.fieldLabel } }}
+                                    inputProps={{ step: 'any' }}
+                                  />
+                                  <TextField
+                                    label="Max"
+                                    type="number"
+                                    size="small"
+                                    value={ovr?.rescaleMax ?? ''}
+                                    onChange={(e) => {
+                                      const v = e.target.value;
+                                      onUpdateFigureLayerOverride(layer.id, { rescaleMax: v === '' ? undefined : parseFloat(v) });
+                                    }}
+                                    placeholder="auto"
+                                    sx={{ flex: 1, '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText }, '& .MuiInputLabel-root': { color: ui.fieldLabel } }}
+                                    inputProps={{ step: 'any' }}
+                                  />
+                                </Box>
+                              </Box>
+                            </Collapse>
+                          </Box>
+                        );
+                      })
+                    )}
+                  </Box>
+                </Box>
+
+                {figureSaveError && <Alert severity="error">{figureSaveError}</Alert>}
+                {figureSaveMessage && <Alert severity="success">{figureSaveMessage}</Alert>}
+
+                <Button
+                  variant="contained"
+                  onClick={onSaveFigures}
+                  disabled={savingFigures || !figureSelectionReady || selectedFigureLayerIds.length === 0}
+                  startIcon={savingFigures ? <CircularProgress size={18} color="inherit" /> : undefined}
+                  sx={{
+                    py: 1.1,
+                    borderRadius: 2,
+                    textTransform: 'none',
+                    fontWeight: 800,
+                    background: `linear-gradient(135deg, ${ui.accent} 0%, #a29bfe 100%)`,
+                    color: '#fff',
+                  }}
+                >
+                  {savingFigures ? 'Saving figures...' : 'Save figures'}
+                </Button>
+              </Box>
+            )}
           </Box>
         </Box>
-      </Box>
+      )}
+
+      {plotViewerFeature?.plot_data && (
+        <Box
+          sx={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1400,
+            pointerEvents: 'none',
+          }}
+        >
+          <Box
+            ref={plotViewerPanelRef}
+            sx={{
+              position: 'absolute',
+              left: plotViewerRect.x,
+              top: plotViewerRect.y,
+              width: plotViewerRect.width,
+              height: plotViewerRect.height,
+              display: 'flex',
+              flexDirection: 'column',
+              borderRadius: 3,
+              overflow: 'hidden',
+              background: plotViewerUi.panelBg,
+              border: `1px solid ${plotViewerUi.accentBorder}`,
+              boxShadow: plotViewerUi.shadow,
+              pointerEvents: 'auto',
+              minWidth: 480,
+              minHeight: 360,
+            }}
+          >
+            <Box
+              onMouseDown={(event) => {
+                if ((event.target as HTMLElement).closest('[data-plot-close="true"]')) return;
+                plotViewerDragRef.current = {
+                  mouseX: event.clientX,
+                  mouseY: event.clientY,
+                  rect: plotViewerRect,
+                };
+                document.body.style.userSelect = 'none';
+                setPlotViewerDragMode('move');
+              }}
+              sx={{
+                px: 2,
+                py: 1.2,
+                borderBottom: `1px solid ${plotViewerUi.border}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 1,
+                cursor: 'move',
+                userSelect: 'none',
+              }}
+            >
+              <Box sx={{ minWidth: 0 }}>
+                <Typography sx={{ fontSize: '0.95rem', fontWeight: 800, color: plotViewerUi.textPrimary }} noWrap>
+                  {plotViewerFeature.name}
+                </Typography>
+                <Typography sx={{ mt: 0.15, fontSize: '0.78rem', color: plotViewerUi.textMuted }} noWrap>
+                  {plotViewerFeature.geometry.type}
+                  {plotViewerFeature.category ? ` · ${plotViewerFeature.category}` : ''}
+                  {plotViewerFeature.metadata?.tile_name ? ` · Tile ${plotViewerFeature.metadata.tile_name}` : ''}
+                  {plotViewerFeature.metadata?.year != null ? ` · ${plotViewerFeature.metadata.year}` : ''}
+                </Typography>
+              </Box>
+              <IconButton
+                data-plot-close="true"
+                size="small"
+                onClick={() => setPlotViewerFeature(null)}
+                sx={{ color: plotViewerUi.textMuted }}
+              >
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            </Box>
+
+            <Box
+              sx={{
+                flex: 1,
+                minHeight: 0,
+                overflow: 'auto',
+                p: 2,
+              }}
+            >
+              {(plotViewerFeature.metadata?.tile_name || plotViewerFeature.metadata?.year || plotViewerFeature.metadata?.source || plotViewerFeature.metadata?.sample_count || plotViewerFeature.metadata?.total_length_m) && (
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.6, mb: 1.25 }}>
+                  {plotViewerFeature.metadata?.tile_name && (
+                    <Box sx={{ px: 0.85, py: 0.4, borderRadius: 999, backgroundColor: plotViewerUi.buttonBg, border: `1px solid ${plotViewerUi.border}` }}>
+                      <Typography sx={{ fontSize: '0.74rem', color: plotViewerUi.textSecondary }}>Tile: {plotViewerFeature.metadata.tile_name}</Typography>
+                    </Box>
+                  )}
+                  {plotViewerFeature.metadata?.year != null && (
+                    <Box sx={{ px: 0.85, py: 0.4, borderRadius: 999, backgroundColor: plotViewerUi.buttonBg, border: `1px solid ${plotViewerUi.border}` }}>
+                      <Typography sx={{ fontSize: '0.74rem', color: plotViewerUi.textSecondary }}>Year: {plotViewerFeature.metadata.year}</Typography>
+                    </Box>
+                  )}
+                  {plotViewerFeature.metadata?.source && (
+                    <Box sx={{ px: 0.85, py: 0.4, borderRadius: 999, backgroundColor: plotViewerUi.buttonBg, border: `1px solid ${plotViewerUi.border}` }}>
+                      <Typography sx={{ fontSize: '0.74rem', color: plotViewerUi.textSecondary }}>Source: {plotViewerFeature.metadata.source}</Typography>
+                    </Box>
+                  )}
+                  {plotViewerFeature.metadata?.sample_count != null && (
+                    <Box sx={{ px: 0.85, py: 0.4, borderRadius: 999, backgroundColor: plotViewerUi.buttonBg, border: `1px solid ${plotViewerUi.border}` }}>
+                      <Typography sx={{ fontSize: '0.74rem', color: plotViewerUi.textSecondary }}>Samples: {plotViewerFeature.metadata.sample_count}</Typography>
+                    </Box>
+                  )}
+                  {plotViewerFeature.metadata?.total_length_m != null && (
+                    <Box sx={{ px: 0.85, py: 0.4, borderRadius: 999, backgroundColor: plotViewerUi.buttonBg, border: `1px solid ${plotViewerUi.border}` }}>
+                      <Typography sx={{ fontSize: '0.74rem', color: plotViewerUi.textSecondary }}>Length: {Math.round(plotViewerFeature.metadata.total_length_m)} m</Typography>
+                    </Box>
+                  )}
+                </Box>
+              )}
+
+              <SavedFeaturePlots plotData={plotViewerFeature.plot_data} />
+            </Box>
+
+            <Box
+              onMouseDown={(event) => {
+                event.stopPropagation();
+                plotViewerDragRef.current = {
+                  mouseX: event.clientX,
+                  mouseY: event.clientY,
+                  rect: plotViewerRect,
+                };
+                document.body.style.userSelect = 'none';
+                setPlotViewerDragMode('resize');
+              }}
+              sx={{
+                position: 'absolute',
+                right: 0,
+                bottom: 0,
+                width: 22,
+                height: 22,
+                cursor: 'nwse-resize',
+                background: `linear-gradient(135deg, transparent 42%, ${plotViewerUi.textMuted} 44%, ${plotViewerUi.textMuted} 50%, transparent 52%)`,
+              }}
+            />
+          </Box>
+        </Box>
+      )}
     </SidebarContainer>
   );
-} 
+}

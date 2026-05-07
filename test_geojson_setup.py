@@ -76,7 +76,7 @@ def test_geojson_url():
 def test_backend_endpoints():
     """Test the backend GeoJSON endpoints."""
     try:
-        base_url = "http://localhost:8000"
+        base_url = "http://localhost:8006"
         test_url = "https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson"
         
         print(f"Testing backend endpoints at {base_url}")
@@ -137,7 +137,7 @@ def test_backend_endpoints():
         return True
         
     except requests.exceptions.ConnectionError:
-        print("❌ Backend not running. Start with: cd backend && uvicorn app:app --reload --port 8000")
+        print("❌ Backend not running. Start with: cd backend && uvicorn app:app --reload --port 8006")
         return False
     except Exception as e:
         print(f"❌ Backend test error: {e}")
@@ -162,7 +162,7 @@ def main():
             if backend_ok:
                 print("\n🎉 All tests passed! GeoJSON functionality is working correctly.")
                 print("\nNext steps:")
-                print("1. Start the backend: cd backend && uvicorn app:app --reload --port 8000")
+                print("1. Start the backend: cd backend && uvicorn app:app --reload --port 8006")
                 print("2. Start the frontend: npm run dev")
                 print("3. Open http://localhost:9020 and test GeoJSON visualization")
                 print("\nTry these sample URLs:")

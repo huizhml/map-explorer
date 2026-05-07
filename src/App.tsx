@@ -2,7 +2,7 @@ import React, { useCallback, useEffect } from 'react';
 import './App.css';
 import { MapComponent, type Map } from './components/Map';
 import { SidebarContainer } from './containers/SidebarContainer';
-import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
+import { ThemeProvider, createTheme, CssBaseline, Snackbar, Alert } from '@mui/material';
 import { LayerControl } from './components/LayerControl';
 import { FeaturePopup } from './components/FeaturePopup';
 import { TileSearch } from './components/TileSearch';
@@ -13,6 +13,8 @@ import { LayerManager } from './utils/LayerManager';
 import { useMapStore } from './stores/mapStore';
 import { InspectPanel } from './components/InspectPanel';
 import { SavedGediPointsList } from './components/SavedGediPointsList';
+import { SavedFeatureDialog } from './components/SavedFeatureDialog';
+import { createSavedFeature } from './services/savedFeaturesApi';
 
 import { useLayerLoaders } from './hooks/useLayerLoaders';
 import { useAutoLoadVSM } from './hooks/useAutoLoadVSM';
@@ -25,8 +27,19 @@ function App() {
   const {
     map, setMap, cogLayer, fgbLayer,
     layers, setLayers, popupProperties, popupPosition, popupGeometry, popupCoordinates,
-    layerManager, setLayerManager, closePopup, inspectMode, inspectPanel, setInspectPanel,
+    layerManager, setLayerManager, closePopup, inspectPanel, setInspectPanel,
+    featureDraft, setFeatureDraft, addSavedMapFeature, setFeatureCaptureType, savedMapFeatures,
   } = useMapStore();
+  const [savingFeature, setSavingFeature] = React.useState(false);
+  const [saveFeatureError, setSaveFeatureError] = React.useState<string | null>(null);
+  const [saveSuccessOpen, setSaveSuccessOpen] = React.useState(false);
+  const [saveSuccessName, setSaveSuccessName] = React.useState('');
+
+  useEffect(() => {
+    if (featureDraft) {
+      setSaveFeatureError(null);
+    }
+  }, [featureDraft]);
 
   // Initialize layer manager
   useEffect(() => {
@@ -89,13 +102,49 @@ function App() {
   // Hooks
   const { handleLoadSentinel2Image, handleLoadPredictionCOG, handleLoadAuxiliaryLayer, handleLoadGEDIPoints } = useLayerLoaders(updateLayersList);
   const { showZoomMessage, globalLayersRef } = useAutoLoadVSM(updateLayersList);
-  const { gediPointPopup, closeGediPopup, clearInspectPin } = useMapInteractions(updateLayersList);
+  const { gediPointPopup, closeGediPopup, clearInspectPin, clearInspectLine } = useMapInteractions(updateLayersList);
   const {
     handleToggleVisibility, handleChangeOpacity, handleChangeZIndex,
     handleChangePredictionRescale, handleChangePredictionColormap, handleChangeDiversityBandConfig,
     handleReorderLayers, handleRemoveLayer,
     handleLocateLayer, vectorFeatures, handleHighlightFeature, handleRemoveFeature,
   } = useLayerControls(updateLayersList, globalLayersRef);
+
+  const handleCancelFeatureDraft = useCallback(() => {
+    setSaveFeatureError(null);
+    setFeatureDraft(null);
+    setFeatureCaptureType(null);
+  }, [setFeatureDraft, setFeatureCaptureType]);
+
+  const handleSaveFeatureDraft = useCallback(async (payload: { name: string; description: string; category: string }) => {
+    if (!featureDraft) return;
+    setSaveFeatureError(null);
+    setSavingFeature(true);
+    try {
+      const saved = await createSavedFeature({
+        name: payload.name,
+        category: payload.category || undefined,
+        description: payload.description || undefined,
+        geometry: featureDraft.geometry,
+        metadata: featureDraft.metadata,
+        plot_data: featureDraft.plot_data,
+      });
+      addSavedMapFeature(saved);
+      setSaveSuccessName(saved.name);
+      setSaveSuccessOpen(true);
+      setFeatureDraft(null);
+      setFeatureCaptureType(null);
+    } catch (error) {
+      setSaveFeatureError(error instanceof Error ? error.message : 'Failed to save feature');
+    } finally {
+      setSavingFeature(false);
+    }
+  }, [featureDraft, addSavedMapFeature, setFeatureDraft, setFeatureCaptureType]);
+
+  const existingCategories = React.useMemo(
+    () => Array.from(new Set(savedMapFeatures.map((feature) => feature.category?.trim()).filter((value): value is string => Boolean(value)))).sort(),
+    [savedMapFeatures],
+  );
 
   return (
     <ThemeProvider theme={theme}>
@@ -151,14 +200,36 @@ function App() {
           onClose={closePopup}
         />
 
-        {inspectMode && inspectPanel && (
+        {inspectPanel && (
           <InspectPanel
             panel={inspectPanel}
-            onClose={() => { setInspectPanel(null); clearInspectPin(); }}
+            onClose={() => { setInspectPanel(null); clearInspectPin(); clearInspectLine(); }}
+            onSave={(draft) => { setSaveFeatureError(null); setFeatureDraft(draft); }}
           />
         )}
 
         <SavedGediPointsList />
+
+        <Snackbar
+          open={saveSuccessOpen}
+          autoHideDuration={3000}
+          onClose={() => setSaveSuccessOpen(false)}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        >
+          <Alert onClose={() => setSaveSuccessOpen(false)} severity="success" variant="filled" sx={{ width: '100%' }}>
+            "{saveSuccessName}" saved — check Saved Locations in the sidebar.
+          </Alert>
+        </Snackbar>
+
+        <SavedFeatureDialog
+          open={featureDraft != null}
+          geometryType={featureDraft?.geometry.type ?? null}
+          saving={savingFeature}
+          error={saveFeatureError}
+          existingCategories={existingCategories}
+          onCancel={handleCancelFeatureDraft}
+          onSubmit={handleSaveFeatureDraft}
+        />
       </div>
     </ThemeProvider>
   );

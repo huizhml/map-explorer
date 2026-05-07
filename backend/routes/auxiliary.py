@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from pathlib import Path
 import asyncio
@@ -25,7 +25,7 @@ from rasterio.windows import Window
 from rasterio.warp import transform_bounds
 
 import utils
-from utils import create_vrt, vertical_profile, pixel_diversity_indices
+from utils import MAX_HEIGHT, create_vrt, vertical_profile, pixel_diversity_indices
 
 try:
     import duckdb
@@ -251,6 +251,10 @@ class SaveFiguresRequest(BaseModel):
     output_dir: str
     format: Literal["jpg", "png", "pdf"] = "png"
     layers: List[FigureLayerSpec]
+    filename_stem: Optional[str] = Field(
+        None,
+        description="Optional base filename stem; auto layer+location naming when omitted.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +318,7 @@ async def gedi_point_profile(request: GEDIPointProfileRequest):
         return {"success": False, "error": "Need at least 3 RH values."}
 
     try:
-        x_vals, y_vals = vertical_profile(rhs, min_rh=-20, max_rh=50, step=1, window=3)
+        x_vals, y_vals = vertical_profile(rhs, min_rh=-20, max_rh=MAX_HEIGHT, step=1, window=3)
         vp = [{"z": _safe(float(z)), "value": _safe(float(v))} for z, v in zip(x_vals.tolist(), y_vals.tolist())]
     except Exception as e:
         vp = []
@@ -324,7 +328,11 @@ async def gedi_point_profile(request: GEDIPointProfileRequest):
         return None if (math.isnan(v) or math.isinf(v)) else v
 
     try:
-        raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(rhs, interval=request.fhd_interval, max_height=100)
+        raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(
+            rhs,
+            interval=request.fhd_interval,
+            max_height=MAX_HEIGHT,
+        )
         fhd = _safe_scalar(float(raw_fhd))
         enl1d = _safe_scalar(float(raw_enl1d))
         enl2d = _safe_scalar(float(raw_enl2d))
@@ -617,6 +625,10 @@ async def save_figures(request: SaveFiguresRequest):
     loc_tag = f"{center_lat:.4f}_{center_lon:.4f}".replace("-", "m")
     saved_files = []
     errors = []
+    custom_stem: Optional[str] = None
+    if request.filename_stem and request.filename_stem.strip():
+        custom_stem = _sanitize_name(request.filename_stem.strip())
+    n_layers = len(request.layers)
 
     def _save_one_figure(src, window, title: str, filename: str, cmap: Optional[str],
                          rmin: Optional[float], rmax: Optional[float], band_idx: Optional[int],
@@ -686,8 +698,14 @@ async def save_figures(request: SaveFiguresRequest):
                     for bs in layer.bands:
                         bname = bs.band_name or f"band{bs.band_index}"
                         title = f"{layer.name} — {bname}"
-                        base_name = _with_location_after_tile(layer.name)
-                        fname = f"{_sanitize_name(base_name)}_{_sanitize_name(bname)}.{request.format}"
+                        if custom_stem:
+                            if n_layers > 1:
+                                fname = f"{custom_stem}_{_sanitize_name(layer.name)}_{_sanitize_name(bname)}.{request.format}"
+                            else:
+                                fname = f"{custom_stem}_{_sanitize_name(bname)}.{request.format}"
+                        else:
+                            base_name = _with_location_after_tile(layer.name)
+                            fname = f"{_sanitize_name(base_name)}_{_sanitize_name(bname)}.{request.format}"
                         cmap = bs.colormap if bs.colormap is not None else layer.colormap
                         rmin = bs.rescale_min if bs.rescale_min is not None else layer.rescale_min
                         rmax = bs.rescale_max if bs.rescale_max is not None else layer.rescale_max
@@ -696,8 +714,14 @@ async def save_figures(request: SaveFiguresRequest):
                         )
                         saved_files.append(path)
                 else:
-                    base_name = _with_location_after_tile(layer.name)
-                    fname = f"{_sanitize_name(base_name)}.{request.format}"
+                    if custom_stem:
+                        if n_layers > 1:
+                            fname = f"{custom_stem}_{_sanitize_name(layer.name)}.{request.format}"
+                        else:
+                            fname = f"{custom_stem}.{request.format}"
+                    else:
+                        base_name = _with_location_after_tile(layer.name)
+                        fname = f"{_sanitize_name(base_name)}.{request.format}"
                     path = _save_one_figure(src, window, layer.name, fname,
                                             layer.colormap, layer.rescale_min, layer.rescale_max, None,
                                             is_sentinel, layer.rgb_bands)

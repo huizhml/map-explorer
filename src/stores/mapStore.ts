@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import type { Map } from 'ol';
 import type { WebGLTileLayer } from '../components/Map';
 import VectorLayer from 'ol/layer/Vector';
-import VectorSource from 'ol/source/Vector';
 import { Geometry } from 'ol/geom';
 import { LayerManager } from '../utils/LayerManager';
 import type { Layer } from '../components/LayerControl';
@@ -10,11 +9,42 @@ import type { VsmLayerEntry, VsmQChoice } from '../constants/predictions';
 import { getVsmLayerId } from '../constants/predictions';
 import type { InspectLayerRow } from '../utils/inspectPoint';
 import { API_BASE_URL } from '../utils/apiBase';
+import type { SavedFeature, SavedFeatureDraft, SavedFeatureGeometry, SavedFeatureGeometryType } from '../services/savedFeaturesApi';
+import { DEFAULT_DIVERSITY_HEIGHT_BIN_M, DIVERSITY_HEIGHT_BIN_OPTIONS } from '../constants/diversityMetrics';
+
+const DIVERSITY_HEIGHT_BIN_STORAGE_KEY = 'map-explorer-diversity-height-bin-m';
+
+function readStoredDiversityHeightBin(): number {
+  if (typeof window === 'undefined') return DEFAULT_DIVERSITY_HEIGHT_BIN_M;
+  try {
+    const raw = window.localStorage.getItem(DIVERSITY_HEIGHT_BIN_STORAGE_KEY);
+    if (raw == null) return DEFAULT_DIVERSITY_HEIGHT_BIN_M;
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && (DIVERSITY_HEIGHT_BIN_OPTIONS as readonly number[]).includes(n)) return n;
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_DIVERSITY_HEIGHT_BIN_M;
+}
 
 export type VerticalProfilePoint = {
   rh: number;
   value: number | null;
   missing?: boolean;
+};
+
+export type VerticalProfileLineSample = {
+  index: number;
+  distance_m: number;
+  lon: number;
+  lat: number;
+  profile: VerticalProfilePoint[];
+  vertical_profile_curve?: Array<{ z: number; value: number }>;
+  fhd?: number | null;
+  enl1d?: number | null;
+  enl2d?: number | null;
+  cr?: number | null;
+  tile_name?: string;
 };
 
 export type SavedGediPoint = {
@@ -26,6 +56,10 @@ export type SavedGediPoint = {
   savedAt: number;
 };
 
+export type SavedMapFeature = SavedFeature;
+export type SavedMapFeatureGeometry = SavedFeatureGeometry;
+export type SavedMapFeatureDraft = SavedFeatureDraft;
+
 export type InspectPanelState = {
   lon: number;
   lat: number;
@@ -33,7 +67,7 @@ export type InspectPanelState = {
   layers: InspectLayerRow[];
   /** New click in flight; displayed coords/values stay on last sample until resolved */
   pendingSample?: { lon: number; lat: number };
-  kind: 'layers' | 'vertical_profile';
+  kind: 'layers' | 'vertical_profile' | 'vertical_profile_line';
   verticalProfile?: VerticalProfilePoint[];
   verticalProfileCurve?: Array<{ z: number; value: number }>;
   profileMetrics?: {
@@ -42,7 +76,13 @@ export type InspectPanelState = {
     enl2d?: number | null;
     cr?: number | null;
   };
-  profileMeta?: { tileName: string; year: number; qIndex: number; source?: string };
+  profileMeta?: { tileName: string; year: number; qIndex: number; source?: string; maxHeight?: number; fhdInterval?: number };
+  transectProfile?: {
+    lineCoordinates: Array<[number, number]>;
+    sampleCount: number;
+    totalLengthMeters: number;
+    samples: VerticalProfileLineSample[];
+  };
   inspectError?: string | null;
 };
 
@@ -53,6 +93,8 @@ export interface FgbInfo {
   geometryTypes: string[];
   properties: string[];
   sampleProperties: Record<string, any>;
+  numericPropertyRanges?: Record<string, { min: number; max: number }>;
+  discretePropertyValues?: Record<string, string[]>;
 }
 
 export interface StyleOptions {
@@ -62,6 +104,12 @@ export interface StyleOptions {
   pointRadius: number;
   opacity: number;
   zIndex: number;
+  clusterPoints: boolean;
+  colorByProperty: string;
+  colorPalette: string;
+  colorScaleType: 'continuous' | 'discrete';
+  colorRangeMin: number | null;
+  colorRangeMax: number | null;
 }
 
 export interface ConditionalStyle {
@@ -114,8 +162,8 @@ interface MapStore {
   setPalette: (palette: string) => void;
 
   // FlatGeobuf Layer
-  fgbLayer: VectorLayer<VectorSource> | null;
-  setFgbLayer: (layer: VectorLayer<VectorSource> | null) => void;
+  fgbLayer: any | null;
+  setFgbLayer: (layer: any | null) => void;
   fgbUrl: string;
   setFgbUrl: (url: string) => void;
   fgbLoading: boolean;
@@ -161,8 +209,8 @@ interface MapStore {
   // Drawing tools
   drawingActive: boolean;
   setDrawingActive: (active: boolean) => void;
-  drawingMode: 'tiles' | 'figures';
-  setDrawingMode: (mode: 'tiles' | 'figures') => void;
+  drawingMode: 'tiles' | 'figures' | 'figures_db';
+  setDrawingMode: (mode: 'tiles' | 'figures' | 'figures_db') => void;
   selectedTiles: string[];
   setSelectedTiles: (tiles: string[]) => void;
   figureSelectionExtent: [number, number, number, number] | null;
@@ -171,10 +219,14 @@ interface MapStore {
   /** When true, map clicks open the inspect panel (layer sample or vertical RH profile) */
   inspectMode: boolean;
   setInspectMode: (active: boolean) => void;
-  inspectKind: 'layers' | 'vertical_profile';
-  setInspectKind: (k: 'layers' | 'vertical_profile') => void;
+  inspectKind: 'layers' | 'vertical_profile' | 'vertical_profile_line';
+  setInspectKind: (k: 'layers' | 'vertical_profile' | 'vertical_profile_line') => void;
   inspectPanel: InspectPanelState | null;
   setInspectPanel: (panel: InspectPanelState | null | ((prev: InspectPanelState | null) => InspectPanelState | null)) => void;
+
+  /** Height histogram bin width (m) for FHD / ENL / CR — must match API `fhd_interval`. */
+  diversityHeightBinM: number;
+  setDiversityHeightBinM: (m: number) => void;
 
   // Popup state
   popupProperties: Record<string, any> | null;
@@ -191,6 +243,16 @@ interface MapStore {
   addSavedGediPoint: (point: Omit<SavedGediPoint, 'id' | 'savedAt'>) => void;
   removeSavedGediPoint: (id: string) => void;
   clearSavedGediPoints: () => void;
+
+  // Saved map features (persisted in backend database)
+  savedMapFeatures: SavedMapFeature[];
+  setSavedMapFeatures: (features: SavedMapFeature[]) => void;
+  addSavedMapFeature: (feature: SavedMapFeature) => void;
+  removeSavedMapFeature: (id: number) => void;
+  featureCaptureType: SavedFeatureGeometryType | null;
+  setFeatureCaptureType: (captureType: SavedFeatureGeometryType | null) => void;
+  featureDraft: SavedMapFeatureDraft | null;
+  setFeatureDraft: (draft: SavedMapFeatureDraft | null) => void;
 
   // Highlight layer
   highlightLayer: VectorLayer<any> | null;
@@ -211,6 +273,12 @@ const defaultFgbStyleOptions: StyleOptions = {
   pointRadius: 5,
   opacity: 1,
   zIndex: 100,
+  clusterPoints: true,
+  colorByProperty: '',
+  colorPalette: 'Viridis',
+  colorScaleType: 'continuous',
+  colorRangeMin: null,
+  colorRangeMax: null,
 };
 
 export const useMapStore = create<MapStore>((set, get) => ({
@@ -307,16 +375,25 @@ export const useMapStore = create<MapStore>((set, get) => ({
   setInspectMode: (active) =>
     set((s) => ({
       inspectMode: active,
-      inspectPanel: null,
       inspectKind: active ? s.inspectKind : 'layers',
     })),
-  inspectKind: 'layers' as 'layers' | 'vertical_profile',
+  inspectKind: 'layers' as 'layers' | 'vertical_profile' | 'vertical_profile_line',
   setInspectKind: (k) => set({ inspectKind: k }),
   inspectPanel: null,
   setInspectPanel: (panel) =>
     set((state) => ({
       inspectPanel: typeof panel === 'function' ? panel(state.inspectPanel) : panel,
     })),
+
+  diversityHeightBinM: readStoredDiversityHeightBin(),
+  setDiversityHeightBinM: (m) => {
+    try {
+      window.localStorage.setItem(DIVERSITY_HEIGHT_BIN_STORAGE_KEY, String(m));
+    } catch {
+      /* ignore */
+    }
+    set({ diversityHeightBinM: m });
+  },
 
   // Popup state
   popupProperties: null,
@@ -342,6 +419,21 @@ export const useMapStore = create<MapStore>((set, get) => ({
       savedGediPoints: state.savedGediPoints.filter((p) => p.id !== id),
     })),
   clearSavedGediPoints: () => set({ savedGediPoints: [] }),
+
+  savedMapFeatures: [],
+  setSavedMapFeatures: (features) => set({ savedMapFeatures: features }),
+  addSavedMapFeature: (feature) =>
+    set((state) => ({
+      savedMapFeatures: [feature, ...state.savedMapFeatures.filter((f) => f.id !== feature.id)],
+    })),
+  removeSavedMapFeature: (id) =>
+    set((state) => ({
+      savedMapFeatures: state.savedMapFeatures.filter((feature) => feature.id !== id),
+    })),
+  featureCaptureType: null,
+  setFeatureCaptureType: (captureType) => set({ featureCaptureType: captureType }),
+  featureDraft: null,
+  setFeatureDraft: (draft) => set({ featureDraft: draft }),
 
   // Highlight layer
   highlightLayer: null,
@@ -393,4 +485,3 @@ export const useMapStore = create<MapStore>((set, get) => ({
     state.setConditionalStyles(state.conditionalStyles.filter((_, i) => i !== index));
   },
 }));
-

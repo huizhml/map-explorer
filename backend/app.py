@@ -20,6 +20,7 @@ from routes.sentinel2 import router as sentinel2_router
 from routes.predictions import router as predictions_router
 from routes.auxiliary import router as auxiliary_router
 from routes.geo import router as geo_router
+from routes.saved_features import router as saved_features_router, init_saved_features_db
 
 # ---------------------------------------------------------------------------
 # Startup env-var logging
@@ -33,6 +34,8 @@ _ENV_KEYS = [
     "CR_LOCAL_BASE_PATH", "PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE",
     "DIVERSITY_INDICES_LOCAL_BASE_PATH", "ALS_LOCAL_TEMPLATE",
     "GEDI_LOCAL_BASE_PATH",
+    "SAVED_FEATURE_IMAGES_ROOT",
+    "NATURALNESS_REF_DATA_PATH",
 ]
 print("=== Env vars ===")
 for k in _ENV_KEYS:
@@ -69,6 +72,7 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(title="Canopy Height – TiTiler with Mosaic + Viewer")
 app.add_middleware(CustomCORSMiddleware)
+init_saved_features_db()
 
 cog = TilerFactory(extensions=[cogViewerExtension()])
 app.include_router(cog.router, prefix="/cog", tags=["cog"])
@@ -108,3 +112,4 @@ app.include_router(sentinel2_router)
 app.include_router(predictions_router)
 app.include_router(auxiliary_router)
 app.include_router(geo_router)
+app.include_router(saved_features_router)

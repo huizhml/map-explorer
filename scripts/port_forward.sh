@@ -2,7 +2,7 @@
 
 case $1 in
 1)
-port=${2:-8000}
+port=${2:-8006}
 echo "Forwarding port $port for backend"
 ssh -N -f -R $port:localhost:$port hendrixgate01fl
 ;;

@@ -1,11 +1,18 @@
 import React from 'react';
-import { Sidebar, PALETTES, type PaletteName } from '../components/Sidebar';
+import { Sidebar } from '../components/Sidebar';
+import { PALETTES, type PaletteName } from '../constants/palettes';
 import GeoTIFF from 'ol/source/GeoTIFF';
 import WebGLTile from 'ol/layer/WebGLTile';
 import VectorLayer from 'ol/layer/Vector';
+import VectorImageLayer from 'ol/layer/VectorImage';
 import VectorSource from 'ol/source/Vector';
-import { Style, Fill, Stroke, Circle as CircleStyle } from 'ol/style';
-import { transformExtent } from 'ol/proj';
+import Cluster from 'ol/source/Cluster';
+import { Style, Fill, Stroke, Circle as CircleStyle, Text as TextStyle } from 'ol/style';
+import { transformExtent, fromLonLat } from 'ol/proj';
+import OLFeature from 'ol/Feature';
+import OLPoint from 'ol/geom/Point';
+import OLLineString from 'ol/geom/LineString';
+import OLPolygon from 'ol/geom/Polygon';
 
 import { unByKey } from 'ol/Observable';
 import { deserialize } from 'flatgeobuf/lib/mjs/ol';
@@ -13,12 +20,139 @@ import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore
 import { parseUploadedFile } from '../utils/parseUploadedFile';
 import { API_BASE_URL, apiUrl } from '../utils/apiBase';
 import { getDiversityBandRange } from '../constants/layerRanges';
+import { listSavedFeatures, deleteSavedFeature, type SavedFeature } from '../services/savedFeaturesApi';
+import { defaultFigureFilenameStem } from '../utils/figureFilenameStem';
 
 const max = 500;
+const MIN_CLUSTER_SIZE = 20;
+const LARGE_POINT_DATASET_SIZE = 100000;
+const CLUSTER_MAX_ZOOM = 6;
 
-function createColorRamp(colors: string[]) {
+function createColorRamp(colors: readonly string[]) {
   const stops = colors.map((color, i) => [i / (colors.length - 1) * max, color]).flat();
   return ['interpolate', ['linear'], ['band', 1], ...stops];
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function interpolateHexColor(color1: string, color2: string, t: number): string {
+  const c1 = color1.replace('#', '');
+  const c2 = color2.replace('#', '');
+  const r1 = parseInt(c1.substring(0, 2), 16);
+  const g1 = parseInt(c1.substring(2, 4), 16);
+  const b1 = parseInt(c1.substring(4, 6), 16);
+  const r2 = parseInt(c2.substring(0, 2), 16);
+  const g2 = parseInt(c2.substring(2, 4), 16);
+  const b2 = parseInt(c2.substring(4, 6), 16);
+  const r = Math.round(r1 + (r2 - r1) * t);
+  const g = Math.round(g1 + (g2 - g1) * t);
+  const b = Math.round(b1 + (b2 - b1) * t);
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+function colorFromPalette(value: number, min: number, max: number, paletteName: string): string {
+  const palette = PALETTES[(paletteName as PaletteName)] ?? PALETTES.Viridis;
+  if (!Number.isFinite(value) || !Number.isFinite(min) || !Number.isFinite(max)) return palette[0];
+  if (max <= min) return palette[0];
+  const ratio = clamp01((value - min) / (max - min));
+  const scaled = ratio * (palette.length - 1);
+  const lower = Math.floor(scaled);
+  const upper = Math.min(lower + 1, palette.length - 1);
+  const localT = scaled - lower;
+  return interpolateHexColor(palette[lower], palette[upper], localT);
+}
+
+function hexToRgbaColor(hex: string): string | null {
+  if (!hex) return null;
+  if (hex.length === 9 && hex.startsWith('#')) {
+    const r = parseInt(hex.substring(1, 3), 16);
+    const g = parseInt(hex.substring(3, 5), 16);
+    const b = parseInt(hex.substring(5, 7), 16);
+    const a = parseInt(hex.substring(7, 9), 16) / 255;
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+  if (hex.length === 7 && hex.startsWith('#')) {
+    const r = parseInt(hex.substring(1, 3), 16);
+    const g = parseInt(hex.substring(3, 5), 16);
+    const b = parseInt(hex.substring(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, 1)`;
+  }
+  return hex;
+}
+
+function buildFgbStyleKey(options: StyleOptions, geometryType: string, propertyColor: string | null): string {
+  return [
+    geometryType,
+    options.fillColor || '#ff000000',
+    options.strokeColor || '#000000',
+    options.strokeWidth || 2,
+    options.pointRadius || 5,
+    propertyColor || '',
+  ].join('|');
+}
+
+function getCachedFgbStyle(
+  cache: globalThis.Map<string, Style>,
+  options: StyleOptions,
+  geometryType: string,
+  propertyColor: string | null,
+): Style {
+  const cacheKey = buildFgbStyleKey(options, geometryType, propertyColor);
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const fillColor = hexToRgbaColor(options.fillColor || '#ff000000');
+  const strokeColor = hexToRgbaColor(options.strokeColor || '#000000');
+  const resolvedFillColor = propertyColor ? hexToRgbaColor(propertyColor) : fillColor;
+  const resolvedStrokeColor = propertyColor ? hexToRgbaColor(propertyColor) : strokeColor;
+  const fill = resolvedFillColor && resolvedFillColor.includes('rgba') && resolvedFillColor.endsWith(', 0)')
+    ? undefined
+    : new Fill({ color: resolvedFillColor || 'transparent' });
+
+  const style = new Style({
+    fill,
+    stroke: new Stroke({
+      color: resolvedStrokeColor || '#000000',
+      width: options.strokeWidth || 2,
+    }),
+    image: (geometryType === 'Point' || geometryType === 'MultiPoint')
+      ? new CircleStyle({
+          radius: options.pointRadius || 5,
+          fill,
+          stroke: new Stroke({
+            color: resolvedStrokeColor || '#000000',
+            width: options.strokeWidth || 2,
+          }),
+        })
+      : undefined,
+  });
+  cache.set(cacheKey, style);
+  return style;
+}
+
+function getCachedClusterStyle(
+  cache: globalThis.Map<number, Style>,
+  clusterSize: number,
+): Style {
+  const cached = cache.get(clusterSize);
+  if (cached) return cached;
+  const style = new Style({
+    image: new CircleStyle({
+      radius: Math.max(8, Math.min(20, 8 + Math.log2(clusterSize))),
+      fill: new Fill({ color: 'rgba(33, 150, 243, 0.75)' }),
+      stroke: new Stroke({ color: '#ffffff', width: 1.5 }),
+    }),
+    text: new TextStyle({
+      text: String(clusterSize),
+      fill: new Fill({ color: '#ffffff' }),
+      stroke: new Stroke({ color: 'rgba(0,0,0,0.45)', width: 2 }),
+      font: 'bold 12px sans-serif',
+    }),
+  });
+  cache.set(clusterSize, style);
+  return style;
 }
 
 export interface FigureLayerOverrides {
@@ -32,11 +166,20 @@ export function SidebarContainer() {
   const [uploadingFile, setUploadingFile] = React.useState(false);
   const [figureFormat, setFigureFormat] = React.useState<'jpg' | 'png' | 'pdf'>('pdf');
   const [figureOutputFolder, setFigureOutputFolder] = React.useState('/maps/projects/dereeco/data/gvs');
+  const [figureFilenameStem, setFigureFilenameStem] = React.useState('');
+  const lastExtentForStemRef = React.useRef<string | null>(null);
   const [selectedFigureLayerIds, setSelectedFigureLayerIds] = React.useState<string[]>([]);
   const [figureLayerOverrides, setFigureLayerOverrides] = React.useState<Record<string, FigureLayerOverrides>>({});
   const [savingFigures, setSavingFigures] = React.useState(false);
   const [figureSaveMessage, setFigureSaveMessage] = React.useState<string | null>(null);
   const [figureSaveError, setFigureSaveError] = React.useState<string | null>(null);
+  const [savingFiguresToDb, setSavingFiguresToDb] = React.useState(false);
+  const [figuresToDbMessage, setFiguresToDbMessage] = React.useState<string | null>(null);
+  const [figuresToDbError, setFiguresToDbError] = React.useState<string | null>(null);
+  const [deletingSavedFeatureId, setDeletingSavedFeatureId] = React.useState<number | null>(null);
+  const [savedFeaturesLoading, setSavedFeaturesLoading] = React.useState(false);
+  const [savedFeaturesError, setSavedFeaturesError] = React.useState<string | null>(null);
+  const highlightLayerRef = React.useRef<VectorLayer<VectorSource> | null>(null);
 
   // Zustand store
   const {
@@ -143,8 +286,9 @@ export function SidebarContainer() {
 
 
   // FlatGeobuf handlers
-  const handleLoadFGB = async () => {
-    if (!fgbUrl.trim() || !map) return;
+  const handleLoadFGB = async (urlOverride?: string) => {
+    const urlToLoad = (urlOverride ?? fgbUrl).trim();
+    if (!urlToLoad || !map) return;
 
     setFgbLoading(true);
     setFgbError(null);
@@ -167,14 +311,14 @@ export function SidebarContainer() {
 
       // Use proxy for cross-origin FlatGeobuf files to handle CORS
       // Skip proxy when URL already points to our backend
-      let fgbFileUrl = fgbUrl;
-      const isBackendUrl = fgbUrl.startsWith(`${API_BASE_URL}/`);
-      const isCrossOriginUrl = isCrossOrigin(fgbUrl);
+      let fgbFileUrl = urlToLoad;
+      const isBackendUrl = urlToLoad.startsWith(`${API_BASE_URL}/`);
+      const isCrossOriginUrl = isCrossOrigin(urlToLoad);
       
       if (isCrossOriginUrl && !isBackendUrl) {
-        fgbFileUrl = apiUrl(`/fgb/proxy?url=${encodeURIComponent(fgbUrl)}`);
+        fgbFileUrl = apiUrl(`/fgb/proxy?url=${encodeURIComponent(urlToLoad)}`);
         console.log('Cross-origin FlatGeobuf detected, using proxy:', {
-          original: fgbUrl,
+          original: urlToLoad,
           proxy: fgbFileUrl
         });
       } else {
@@ -197,6 +341,27 @@ export function SidebarContainer() {
         console.error('Error loading FlatGeobuf features:', error);
         setFgbError(`Failed to load features: ${error instanceof Error ? error.message : String(error)}`);
       }
+
+      const loadedFeatures = source.getFeatures();
+      const pointOnlyDataset = loadedFeatures.length > 0 && loadedFeatures.every((feature) => {
+        const geometryType = feature.getGeometry()?.getType();
+        return geometryType === 'Point' || geometryType === 'MultiPoint';
+      });
+      const canClusterDataset = pointOnlyDataset && loadedFeatures.length > 15000;
+      const clusterSource = canClusterDataset
+        ? new Cluster({
+            source,
+            distance: 36,
+            minDistance: 10,
+          })
+        : null;
+      const initialZoom = map.getView().getZoom() ?? 0;
+      const shouldUseClusterAtLoad = Boolean(
+        canClusterDataset && fgbStyleOptions.clusterPoints && initialZoom <= CLUSTER_MAX_ZOOM
+      );
+      const layerSource: VectorSource | Cluster = shouldUseClusterAtLoad && clusterSource
+        ? clusterSource
+        : source;
 
       // Helper function to evaluate conditional style
       const evaluateCondition = (feature: any, condition: any): boolean => {
@@ -261,67 +426,66 @@ export function SidebarContainer() {
         return fgbStyleOptions;
       };
 
-      // Helper function to convert hex color to rgba format for OpenLayers
-      const hexToRgba = (hex: string): string | null => {
-        if (!hex) return null;
-        // Handle 8-digit hex with alpha (#rrggbbaa)
-        if (hex.length === 9 && hex.startsWith('#')) {
-          const r = parseInt(hex.substring(1, 3), 16);
-          const g = parseInt(hex.substring(3, 5), 16);
-          const b = parseInt(hex.substring(5, 7), 16);
-          const a = parseInt(hex.substring(7, 9), 16) / 255;
-          return `rgba(${r}, ${g}, ${b}, ${a})`;
+      const getPropertyColor = (feature: any, options: StyleOptions): string | null => {
+        if (!options.colorByProperty) return null;
+        const rawValue = feature.get(options.colorByProperty);
+        if (rawValue === undefined || rawValue === null) return null;
+        if (options.colorScaleType === 'discrete') {
+          const valueKey = String(rawValue);
+          const discreteValues = currentFgbInfo?.discretePropertyValues?.[options.colorByProperty] ?? [];
+          const palette = PALETTES[(options.colorPalette as PaletteName)] ?? PALETTES.Viridis;
+          const valueIndex = discreteValues.indexOf(valueKey);
+          if (valueIndex >= 0) {
+            return palette[valueIndex % palette.length];
+          }
+          let hash = 0;
+          for (let i = 0; i < valueKey.length; i += 1) hash = ((hash << 5) - hash) + valueKey.charCodeAt(i);
+          return palette[Math.abs(hash) % palette.length];
         }
-        // Handle 6-digit hex (add full opacity)
-        if (hex.length === 7 && hex.startsWith('#')) {
-          const r = parseInt(hex.substring(1, 3), 16);
-          const g = parseInt(hex.substring(3, 5), 16);
-          const b = parseInt(hex.substring(5, 7), 16);
-          return `rgba(${r}, ${g}, ${b}, 1)`;
-        }
-        return hex; // Return as-is if already in rgba format
+        const value = Number(rawValue);
+        if (!Number.isFinite(value)) return null;
+        const numericRange = currentFgbInfo?.numericPropertyRanges?.[options.colorByProperty];
+        const min = options.colorRangeMin ?? numericRange?.min;
+        const max = options.colorRangeMax ?? numericRange?.max;
+        if (min == null || max == null) return null;
+        return colorFromPalette(value, min, max, options.colorPalette || 'Viridis');
       };
 
-      // Create style function
-      const createFgbStyle = (options: StyleOptions, geometryType: string) => {
-        const fillColor = hexToRgba(options.fillColor || '#ff000000');
-        const strokeColor = hexToRgba(options.strokeColor || '#000000');
-        
-        // If fill is fully transparent, set fill to undefined
-        const fill = fillColor && fillColor.includes('rgba') && fillColor.endsWith(', 0)') 
-          ? undefined 
-          : new Fill({ color: fillColor || 'transparent' });
-        
-        return new Style({
-          fill: fill,
-          stroke: new Stroke({
-            color: strokeColor || '#000000',
-            width: options.strokeWidth || 2,
-          }),
-          image: geometryType === 'Point' ? new CircleStyle({
-            radius: options.pointRadius || 5,
-            fill: fill,
-            stroke: new Stroke({
-              color: strokeColor || '#000000',
-              width: options.strokeWidth || 2,
-            }),
-          }) : undefined,
-        });
-      };
+      const styleCache = new globalThis.Map<string, Style>();
+      const clusterStyleCache = new globalThis.Map<number, Style>();
+
+      const useVectorImageLayer = pointOnlyDataset && loadedFeatures.length >= LARGE_POINT_DATASET_SIZE;
+      const FgbLayerClass = useVectorImageLayer ? VectorImageLayer : VectorLayer;
 
       // Create vector layer with FlatGeobuf source
-      const newVectorLayer = new VectorLayer({
-        source: source,
-        style: (feature) => {
+      const newVectorLayer = new FgbLayerClass({
+        source: layerSource,
+        style: (feature: any) => {
+          const clusterMembers = feature.get('features') as any[] | undefined;
+          const clusterSize = clusterMembers?.length ?? 0;
+          if (clusterSize >= MIN_CLUSTER_SIZE) {
+            return getCachedClusterStyle(clusterStyleCache, clusterSize);
+          }
+          if (clusterMembers && clusterMembers.length >= 1) {
+            const originalFeature = clusterMembers[0];
+            const geometryType = originalFeature.getGeometry()?.getType() || 'Point';
+            const styleOptions = getFeatureStyle(originalFeature);
+            return getCachedFgbStyle(styleCache, styleOptions, geometryType, getPropertyColor(originalFeature, styleOptions));
+          }
           const geometry = feature.getGeometry();
           if (!geometry) return undefined;
           const geometryType = geometry.getType();
           const styleOptions = getFeatureStyle(feature);
-          return createFgbStyle(styleOptions, geometryType);
+          return getCachedFgbStyle(styleCache, styleOptions, geometryType, getPropertyColor(feature, styleOptions));
         },
         opacity: fgbStyleOptions.opacity || 0.7,
         zIndex: fgbStyleOptions.zIndex || 100,
+        ...(useVectorImageLayer ? { imageRatio: 1 } : {}),
       });
+      newVectorLayer.set('rawSource', source);
+      newVectorLayer.set('clusterSource', clusterSource);
+      newVectorLayer.set('isPointOnlyDataset', pointOnlyDataset);
+      newVectorLayer.set('canClusterDataset', canClusterDataset);
 
       // Helper function to extract and set FGB info
       // This function updates the info incrementally as features are loaded
@@ -342,6 +506,13 @@ export function SidebarContainer() {
           const properties = existingInfo ? new Set<string>(existingInfo.properties || []) : new Set<string>();
           const geometryTypes = existingInfo ? new Set<string>(existingInfo.geometryTypes || []) : new Set<string>();
           const sampleProperties = existingInfo ? { ...existingInfo.sampleProperties } : {};
+          const numericPropertyRanges: Record<string, { min: number; max: number }> = {
+            ...(existingInfo?.numericPropertyRanges ?? {}),
+          };
+          const discretePropertyValues: Record<string, Set<string>> = {};
+          Object.entries(existingInfo?.discretePropertyValues ?? {}).forEach(([key, values]) => {
+            discretePropertyValues[key] = new Set(values);
+          });
           
           // Extract properties from ALL features to ensure we get all columns
           // Check all features to get all possible properties
@@ -359,6 +530,22 @@ export function SidebarContainer() {
                 if (!sampleProperties[key] && props[key] !== null && props[key] !== undefined) {
                   sampleProperties[key] = props[key];
                 }
+                const numericValue = Number(props[key]);
+                if (Number.isFinite(numericValue)) {
+                  const currentRange = numericPropertyRanges[key];
+                  if (!currentRange) {
+                    numericPropertyRanges[key] = { min: numericValue, max: numericValue };
+                  } else {
+                    numericPropertyRanges[key] = {
+                      min: Math.min(currentRange.min, numericValue),
+                      max: Math.max(currentRange.max, numericValue),
+                    };
+                  }
+                }
+                if (!discretePropertyValues[key]) discretePropertyValues[key] = new Set<string>();
+                if (discretePropertyValues[key].size < 200) {
+                  discretePropertyValues[key].add(String(props[key]));
+                }
               }
             });
           });
@@ -368,7 +555,11 @@ export function SidebarContainer() {
             featureCount: features.length,
             geometryTypes: Array.from(geometryTypes),
             properties: Array.from(properties).sort(), // Sort for better UX
-            sampleProperties: sampleProperties
+            sampleProperties: sampleProperties,
+            numericPropertyRanges,
+            discretePropertyValues: Object.fromEntries(
+              Object.entries(discretePropertyValues).map(([key, values]) => [key, Array.from(values).sort()]),
+            ),
           };
           
           // // Only log if properties changed or it's the first extraction
@@ -481,6 +672,13 @@ export function SidebarContainer() {
     setFgbError(null);
   };
 
+  const handleLoadForestNaturalnessData = React.useCallback(() => {
+    const naturalnessUrl = apiUrl('/fgb/naturalness');
+    setFgbUrl(naturalnessUrl);
+    setHasAutoLoadedFgb(true);
+    void handleLoadFGB(naturalnessUrl);
+  }, [handleLoadFGB, setFgbUrl, setHasAutoLoadedFgb]);
+
   // Auto-load FlatGeobuf once when map is ready
   React.useEffect(() => {
     if (map && !fgbLayer && !fgbLoading && !hasAutoLoadedFgb && fgbUrl) {
@@ -492,6 +690,32 @@ export function SidebarContainer() {
   // Update layer style when conditional styles or style options change
   React.useEffect(() => {
     if (!fgbLayer || !map) return;
+    let zoomKey: any = null;
+    const rawSource = fgbLayer.get('rawSource') as VectorSource | undefined;
+    const existingClusterSource = fgbLayer.get('clusterSource') as Cluster | null | undefined;
+    const isPointOnlyDataset = Boolean(fgbLayer.get('isPointOnlyDataset'));
+    const canClusterDataset = Boolean(fgbLayer.get('canClusterDataset')) || (
+      !!rawSource && isPointOnlyDataset && rawSource.getFeatures().length > 15000
+    );
+    if (rawSource && canClusterDataset) {
+      const clusterSource = existingClusterSource ?? new Cluster({ source: rawSource, distance: 36, minDistance: 10 });
+      if (!existingClusterSource) fgbLayer.set('clusterSource', clusterSource);
+
+      const applyClusterForZoom = () => {
+        const currentZoom = map.getView().getZoom() ?? 0;
+        const shouldUseCluster = Boolean(fgbStyleOptions.clusterPoints && currentZoom <= CLUSTER_MAX_ZOOM);
+        const currentSource = fgbLayer.getSource();
+        const currentlyClustered = currentSource instanceof Cluster;
+        if (shouldUseCluster && !currentlyClustered) {
+          fgbLayer.setSource(clusterSource);
+        } else if (!shouldUseCluster && currentlyClustered) {
+          fgbLayer.setSource(rawSource);
+        }
+      };
+
+      applyClusterForZoom();
+      zoomKey = map.getView().on('change:resolution', applyClusterForZoom);
+    }
 
     // Helper function to interpolate color from a palette
     const interpolateColorFromPalette = (min: number, max: number, value: number, paletteName: string): string => {
@@ -636,66 +860,59 @@ export function SidebarContainer() {
       return fgbStyleOptions;
     };
 
-    // Helper function to convert hex color to rgba format for OpenLayers
-    const hexToRgba = (hex: string): string | null => {
-      if (!hex) return null;
-      // Handle 8-digit hex with alpha (#rrggbbaa)
-      if (hex.length === 9 && hex.startsWith('#')) {
-        const r = parseInt(hex.substring(1, 3), 16);
-        const g = parseInt(hex.substring(3, 5), 16);
-        const b = parseInt(hex.substring(5, 7), 16);
-        const a = parseInt(hex.substring(7, 9), 16) / 255;
-        return `rgba(${r}, ${g}, ${b}, ${a})`;
+    const getPropertyColor = (feature: any, options: StyleOptions): string | null => {
+      if (!options.colorByProperty) return null;
+      const rawValue = feature.get(options.colorByProperty);
+      if (rawValue === undefined || rawValue === null) return null;
+      if (options.colorScaleType === 'discrete') {
+        const valueKey = String(rawValue);
+        const discreteValues = currentFgbInfo?.discretePropertyValues?.[options.colorByProperty] ?? [];
+        const palette = PALETTES[(options.colorPalette as PaletteName)] ?? PALETTES.Viridis;
+        const valueIndex = discreteValues.indexOf(valueKey);
+        if (valueIndex >= 0) {
+          return palette[valueIndex % palette.length];
+        }
+        let hash = 0;
+        for (let i = 0; i < valueKey.length; i += 1) hash = ((hash << 5) - hash) + valueKey.charCodeAt(i);
+        return palette[Math.abs(hash) % palette.length];
       }
-      // Handle 6-digit hex (add full opacity)
-      if (hex.length === 7 && hex.startsWith('#')) {
-        const r = parseInt(hex.substring(1, 3), 16);
-        const g = parseInt(hex.substring(3, 5), 16);
-        const b = parseInt(hex.substring(5, 7), 16);
-        return `rgba(${r}, ${g}, ${b}, 1)`;
-      }
-      return hex; // Return as-is if already in rgba format
+      const value = Number(rawValue);
+      if (!Number.isFinite(value)) return null;
+      const numericRange = currentFgbInfo?.numericPropertyRanges?.[options.colorByProperty];
+      const min = options.colorRangeMin ?? numericRange?.min;
+      const max = options.colorRangeMax ?? numericRange?.max;
+      if (min == null || max == null) return null;
+      return colorFromPalette(value, min, max, options.colorPalette || 'Viridis');
     };
 
-    // Create style function
-    const createFgbStyle = (options: StyleOptions, geometryType: string) => {
-      const fillColor = hexToRgba(options.fillColor || '#ff000000');
-      const strokeColor = hexToRgba(options.strokeColor || '#000000');
-      
-      // If fill is fully transparent, set fill to undefined
-      const fill = fillColor && fillColor.includes('rgba') && fillColor.endsWith(', 0)') 
-        ? undefined 
-        : new Fill({ color: fillColor || 'transparent' });
-      
-      return new Style({
-        fill: fill,
-        stroke: new Stroke({
-          color: strokeColor || '#000000',
-          width: options.strokeWidth || 2,
-        }),
-        image: geometryType === 'Point' ? new CircleStyle({
-          radius: options.pointRadius || 5,
-          fill: fill,
-          stroke: new Stroke({
-            color: strokeColor || '#000000',
-            width: options.strokeWidth || 2,
-          }),
-        }) : undefined,
-      });
-    };
+    const styleCache = new globalThis.Map<string, Style>();
+    const clusterStyleCache = new globalThis.Map<number, Style>();
 
     // Update the layer's style function
-    fgbLayer.setStyle((feature) => {
+    fgbLayer.setStyle((feature: any) => {
+      const clusterMembers = feature.get('features') as any[] | undefined;
+      if (clusterMembers && clusterMembers.length >= MIN_CLUSTER_SIZE) {
+        return getCachedClusterStyle(clusterStyleCache, clusterMembers.length);
+      }
+      if (clusterMembers && clusterMembers.length >= 1) {
+        const originalFeature = clusterMembers[0];
+        const geometryType = originalFeature.getGeometry()?.getType() || 'Point';
+        const styleOptions = getFeatureStyle(originalFeature);
+        return getCachedFgbStyle(styleCache, styleOptions, geometryType, getPropertyColor(originalFeature, styleOptions));
+      }
       const geometry = feature.getGeometry();
       if (!geometry) return undefined;
       const geometryType = geometry.getType();
       const styleOptions = getFeatureStyle(feature);
-      return createFgbStyle(styleOptions, geometryType);
+      return getCachedFgbStyle(styleCache, styleOptions, geometryType, getPropertyColor(feature, styleOptions));
     });
 
     // Trigger a redraw
     fgbLayer.changed();
-  }, [fgbLayer, enableConditionalRendering, conditionalStyles, fgbStyleOptions, map]);
+    return () => {
+      if (zoomKey) unByKey(zoomKey);
+    };
+  }, [fgbLayer, enableConditionalRendering, conditionalStyles, fgbStyleOptions, currentFgbInfo, map]);
 
   const {
     addVsmLayer,
@@ -716,7 +933,87 @@ export function SidebarContainer() {
     setInspectMode,
     inspectKind,
     setInspectKind,
+    savedMapFeatures,
+    setSavedMapFeatures,
+    addSavedMapFeature,
+    removeSavedMapFeature,
   } = useMapStore();
+
+  const handleReloadSavedFeatures = React.useCallback(async () => {
+    setSavedFeaturesLoading(true);
+    setSavedFeaturesError(null);
+    try {
+      const features = await listSavedFeatures();
+      setSavedMapFeatures(features);
+    } catch (err) {
+      setSavedFeaturesError(err instanceof Error ? err.message : 'Failed to load saved features');
+    } finally {
+      setSavedFeaturesLoading(false);
+    }
+  }, [setSavedMapFeatures]);
+
+  React.useEffect(() => {
+    void handleReloadSavedFeatures();
+  }, [handleReloadSavedFeatures]);
+
+  const handleJumpToFeature = React.useCallback((feature: SavedFeature) => {
+    if (!map) return;
+
+    // Remove previous highlight
+    if (highlightLayerRef.current) {
+      map.removeLayer(highlightLayerRef.current);
+      highlightLayerRef.current = null;
+    }
+
+    // Build OL geometry in EPSG:3857
+    const coords = feature.geometry.coordinates;
+    let olGeom: OLPoint | OLLineString | OLPolygon;
+    if (feature.geometry.type === 'Point') {
+      olGeom = new OLPoint(fromLonLat(coords as [number, number]));
+    } else if (feature.geometry.type === 'LineString') {
+      olGeom = new OLLineString((coords as [number, number][]).map((c) => fromLonLat(c)));
+    } else {
+      olGeom = new OLPolygon([(coords as [number, number][][])[0].map((c) => fromLonLat(c))]);
+    }
+
+    const olFeature = new OLFeature({ geometry: olGeom });
+    const highlightSource = new VectorSource({ features: [olFeature] });
+    const highlightLayer = new VectorLayer({
+      source: highlightSource,
+      style: new Style({
+        image: new CircleStyle({
+          radius: 9,
+          fill: new Fill({ color: 'rgba(255, 90, 30, 0.9)' }),
+          stroke: new Stroke({ color: '#ffffff', width: 2.5 }),
+        }),
+        stroke: new Stroke({ color: 'rgba(255, 90, 30, 0.9)', width: 3 }),
+        fill: new Fill({ color: 'rgba(255, 90, 30, 0.18)' }),
+      }),
+      zIndex: 9999,
+    });
+
+    map.addLayer(highlightLayer);
+    highlightLayerRef.current = highlightLayer;
+
+    // Fly to feature
+    if (feature.geometry.type === 'Point') {
+      map.getView().animate({ center: fromLonLat(coords as [number, number]), zoom: 14, duration: 800 });
+    } else {
+      map.getView().fit(highlightSource.getExtent(), { padding: [80, 80, 80, 80], duration: 800, maxZoom: 16 });
+    }
+  }, [map]);
+
+  const handleDeleteSavedFeature = React.useCallback(async (featureId: number) => {
+    setDeletingSavedFeatureId(featureId);
+    try {
+      await deleteSavedFeature(featureId);
+      removeSavedMapFeature(featureId);
+    } catch (err) {
+      console.error('Failed to delete saved feature:', err);
+    } finally {
+      setDeletingSavedFeatureId(null);
+    }
+  }, [removeSavedMapFeature]);
 
   const handleInspectModeChange = (active: boolean) => {
     if (active) {
@@ -733,6 +1030,16 @@ export function SidebarContainer() {
     }
     setDrawingActive(false);
     setInspectKind('vertical_profile');
+    setInspectMode(true);
+  };
+
+  const handleVerticalProfileLineClick = () => {
+    if (inspectMode && inspectKind === 'vertical_profile_line') {
+      setInspectMode(false);
+      return;
+    }
+    setDrawingActive(false);
+    setInspectKind('vertical_profile_line');
     setInspectMode(true);
   };
 
@@ -868,6 +1175,36 @@ export function SidebarContainer() {
       });
   }, [layers]);
 
+  const suggestedFigureFilenameStem = React.useMemo(() => {
+    if (!figureSelectionExtent) return '';
+    const selected = exportableFigureLayers.filter((l) => selectedFigureLayerIds.includes(l.id));
+    const first = selected[0];
+    if (!first) return '';
+    return defaultFigureFilenameStem(
+      figureSelectionExtent as [number, number, number, number],
+      first.name,
+    );
+  }, [figureSelectionExtent, exportableFigureLayers, selectedFigureLayerIds]);
+
+  React.useEffect(() => {
+    if (!figureSelectionExtent) {
+      lastExtentForStemRef.current = null;
+      return;
+    }
+    const selected = exportableFigureLayers.filter((l) => selectedFigureLayerIds.includes(l.id));
+    const first = selected[0];
+    if (!first) return;
+    const suggested = defaultFigureFilenameStem(
+      figureSelectionExtent as [number, number, number, number],
+      first.name,
+    );
+    const extKey = figureSelectionExtent.join(',');
+    if (extKey !== lastExtentForStemRef.current) {
+      lastExtentForStemRef.current = extKey;
+      setFigureFilenameStem(suggested);
+    }
+  }, [figureSelectionExtent, exportableFigureLayers, selectedFigureLayerIds]);
+
   React.useEffect(() => {
     setSelectedFigureLayerIds((prev) => prev.filter((id) => exportableFigureLayers.some((l) => l.id === id)));
   }, [exportableFigureLayers]);
@@ -919,6 +1256,17 @@ export function SidebarContainer() {
     setDrawingActive(next);
   };
 
+  const handleCreateDbFiguresDraw = () => {
+    const next = !(drawingActive && drawingMode === 'figures_db');
+    if (next) {
+      setInspectMode(false);
+      setDrawingMode('figures_db');
+      setFiguresToDbError(null);
+      setFiguresToDbMessage(null);
+    }
+    setDrawingActive(next);
+  };
+
   const handleSaveFigures = React.useCallback(async () => {
     setFigureSaveError(null);
     setFigureSaveMessage(null);
@@ -945,6 +1293,7 @@ export function SidebarContainer() {
           extent_3857: figureSelectionExtent,
           output_dir: figureOutputFolder.trim(),
           format: figureFormat,
+          ...(figureFilenameStem.trim() ? { filename_stem: figureFilenameStem.trim() } : {}),
           layers: selectedLayers.map((layer) => {
             const ovr = figureLayerOverrides[layer.id];
             const isDiversity = layer.layerSubType === 'diversity_indices';
@@ -1016,7 +1365,91 @@ export function SidebarContainer() {
     exportableFigureLayers,
     figureFormat,
     figureLayerOverrides,
+    figureFilenameStem,
     figureOutputFolder,
+    figureSelectionExtent,
+    selectedFigureLayerIds,
+  ]);
+
+  const handleSaveFiguresToDb = React.useCallback(async (featureInfo: { name: string; description: string; category: string }) => {
+    setFiguresToDbError(null);
+    setFiguresToDbMessage(null);
+    if (!figureSelectionExtent) {
+      setFiguresToDbError('Draw a rectangle first.');
+      return;
+    }
+    const layersToUse = exportableFigureLayers
+      .filter((layer) => selectedFigureLayerIds.includes(layer.id) || selectedFigureLayerIds.length === 0);
+    if (layersToUse.length === 0) {
+      setFiguresToDbError('No exportable layers found for image extraction.');
+      return;
+    }
+    try {
+      setSavingFiguresToDb(true);
+      const response = await fetch(apiUrl('/saved-features/area-images'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: featureInfo.name,
+          description: featureInfo.description || undefined,
+          category: featureInfo.category || undefined,
+          extent_3857: figureSelectionExtent,
+          format: figureFormat === 'jpg' ? 'jpg' : 'png',
+          layers: layersToUse.map((layer) => {
+            const ovr = figureLayerOverrides[layer.id];
+            const isDiversity = layer.layerSubType === 'diversity_indices';
+            const cmap = ovr?.colormap !== undefined ? ovr.colormap : layer.colormap;
+            const rmin = ovr?.rescaleMin !== undefined ? ovr.rescaleMin : layer.rescaleMin;
+            const rmax = ovr?.rescaleMax !== undefined ? ovr.rescaleMax : layer.rescaleMax;
+            const hasBands = ovr?.selectedBands && ovr.selectedBands.length > 0;
+            return {
+              layer_id: layer.id,
+              name: layer.name,
+              layer_type: layer.layerType,
+              url: layer.url,
+              rgb_bands: layer.rgbBands,
+              colormap: cmap,
+              rescale_min: rmin,
+              rescale_max: rmax,
+              bands: hasBands
+                ? ovr!.selectedBands.map((bi) => ({
+                    ...(isDiversity && ovr?.rescaleMin === undefined && ovr?.rescaleMax === undefined
+                      ? {
+                          rescale_min: getDiversityBandRange(bi)[0],
+                          rescale_max: getDiversityBandRange(bi)[1],
+                        }
+                      : {
+                          rescale_min: rmin,
+                          rescale_max: rmax,
+                        }),
+                    band_index: bi,
+                    band_name: layer.bandNames?.[bi - 1] ?? `Band ${bi}`,
+                    colormap: cmap,
+                  }))
+                : undefined,
+            };
+          }),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data?.feature) {
+        throw new Error(data?.error || `Failed to save area images (${response.status})`);
+      }
+      addSavedMapFeature(data.feature);
+      const imageCount = Array.isArray(data.feature?.plot_data?.image_exports)
+        ? data.feature.plot_data.image_exports.length
+        : 0;
+      setFiguresToDbMessage(`Saved area feature with ${imageCount} image(s) to database.`);
+    } catch (err: any) {
+      setFiguresToDbError(err?.message || 'Failed to save area images to database.');
+    } finally {
+      setSavingFiguresToDb(false);
+    }
+  }, [
+    addSavedMapFeature,
+    exportableFigureLayers,
+    figureFormat,
+    figureLayerOverrides,
     figureSelectionExtent,
     selectedFigureLayerIds,
   ]);
@@ -1035,12 +1468,20 @@ export function SidebarContainer() {
       drawingMode={drawingMode}
       onGetTiles={handleGetTiles}
       onCreateFiguresDraw={handleCreateFiguresDraw}
+      onCreateDbFiguresDraw={handleCreateDbFiguresDraw}
+      onSaveFiguresToDb={handleSaveFiguresToDb}
+      savingFiguresToDb={savingFiguresToDb}
+      figuresToDbMessage={figuresToDbMessage}
+      figuresToDbError={figuresToDbError}
       selectedTiles={selectedTiles}
       figureSelectionReady={!!figureSelectionExtent}
       figureFormat={figureFormat}
       onFigureFormatChange={setFigureFormat}
       figureOutputFolder={figureOutputFolder}
       onFigureOutputFolderChange={setFigureOutputFolder}
+      figureFilenameStem={figureFilenameStem}
+      onFigureFilenameStemChange={setFigureFilenameStem}
+      suggestedFigureFilenameStem={suggestedFigureFilenameStem}
       availableFigureLayers={exportableFigureLayers.map(({ id, name, bandNames, colormap, rescaleMin, rescaleMax, selectedBand }) => ({ id, name, bandNames, defaultColormap: colormap, defaultRescaleMin: rescaleMin, defaultRescaleMax: rescaleMax, defaultSelectedBand: selectedBand }))}
       selectedFigureLayerIds={selectedFigureLayerIds}
       onToggleFigureLayer={handleToggleFigureLayer}
@@ -1054,8 +1495,17 @@ export function SidebarContainer() {
       inspectKind={inspectKind}
       onInspectModeChange={handleInspectModeChange}
       onVerticalProfileClick={handleVerticalProfileClick}
+      onVerticalProfileLineClick={handleVerticalProfileLineClick}
+      savedMapFeatures={savedMapFeatures}
+      savedFeaturesLoading={savedFeaturesLoading}
+      savedFeaturesError={savedFeaturesError}
+      onReloadSavedFeatures={handleReloadSavedFeatures}
+      deletingSavedFeatureId={deletingSavedFeatureId}
+      onDeleteSavedFeature={handleDeleteSavedFeature}
+      onJumpToFeature={handleJumpToFeature}
       onUploadFile={handleUploadFile}
       uploadingFile={uploadingFile}
+      onLoadForestNaturalnessData={handleLoadForestNaturalnessData}
     />
   );
 } 

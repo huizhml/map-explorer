@@ -22,7 +22,7 @@
     // var rasterPath = 'file:///home/ksb781/data/GVS/Deploy/predictions_2020/32MQE_cog/RH98_Q1.cog.tif';
     // var titilerUrl = 'http://localhost:9020/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=' + encodeURIComponent(rasterPath);
     var mosaicJsonPath = 'file:///Users/hui/map-explorer/backend/mosaic_2020/rh1.mosaic.json';
-    var titilerUrl = 'http://localhost:8000/tiles/WebMercatorQuad/{z}/{x}/{y}@1x.png?url=' + encodeURIComponent(mosaicJsonPath);
+    var titilerUrl = 'http://localhost:8006/tiles/WebMercatorQuad/{z}/{x}/{y}@1x.png?url=' + encodeURIComponent(mosaicJsonPath);
 
     // Add the TiTiler raster overlay with some transparency
     L.tileLayer(titilerUrl, {

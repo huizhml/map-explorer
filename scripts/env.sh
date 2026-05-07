@@ -19,3 +19,7 @@ export PREDICTIONS_MOSAIC_LOCAL_PATH="/projects/dereeco/data/gvs/predictions/202
 export PREDICTIONS_BASE_URL="https://465001846.lumidata.eu/"
 export PREDICTIONS_REMOTE_PATH_TEMPLATE="{zone}-{year}/{tile}/RH{rh}_Q{q}.tif"
 export VERTICAL_PROFILE_WORKERS=16
+
+export SAVED_FEATURE_IMAGES_ROOT="/projects/dereeco/data/gvs/results/app_saved_images"
+export NATURALNESS_REF_DATA_PATH="/projects/dereeco/data/gvs/downstream_tasks/naturalness/reference_data_set_updated.fgb"
+

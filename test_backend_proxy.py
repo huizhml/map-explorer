@@ -21,7 +21,7 @@ def test_backend_proxy():
         # Test backend proxy
         print("1. Testing backend proxy endpoint...")
         response = requests.post(
-            "http://localhost:8000/geojson/proxy",
+            "http://localhost:8006/geojson/proxy",
             json={"url": test_url},
             timeout=30
         )
@@ -51,7 +51,7 @@ def test_backend_proxy():
             
     except requests.exceptions.ConnectionError:
         print("❌ Backend not running!")
-        print("   Start with: cd backend && uvicorn app:app --reload --port 8000")
+        print("   Start with: cd backend && uvicorn app:app --reload --port 8006")
         return False
     except Exception as e:
         print(f"❌ Test error: {e}")
@@ -96,6 +96,6 @@ if __name__ == "__main__":
     else:
         print("\n❌ Backend proxy needs attention.")
         print("Make sure:")
-        print("1. Backend is running on port 8000")
+        print("1. Backend is running on port 8006")
         print("2. All dependencies are installed: pip install -r backend/requirements.txt")
         print("3. Check backend logs for errors")

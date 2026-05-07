@@ -21,7 +21,7 @@ def test_proxy_with_json_body():
         
         # Test backend proxy with JSON body
         response = requests.post(
-            "http://localhost:8000/geojson/proxy",
+            "http://localhost:8006/geojson/proxy",
             json={"url": test_url},
             timeout=30
         )
@@ -54,7 +54,7 @@ def test_proxy_with_json_body():
             
     except requests.exceptions.ConnectionError:
         print("❌ Backend not running!")
-        print("   Start with: cd backend && uvicorn app:app --reload --port 8000")
+        print("   Start with: cd backend && uvicorn app:app --reload --port 8006")
         return False
     except Exception as e:
         print(f"❌ Test error: {e}")
@@ -73,12 +73,12 @@ if __name__ == "__main__":
     if success:
         print("\n🎉 Backend proxy is working with JSON body!")
         print("\nNext steps:")
-        print("1. Restart the backend: cd backend && uvicorn app:app --reload --port 8000")
+        print("1. Restart the backend: cd backend && uvicorn app:app --reload --port 8006")
         print("2. Try loading GeoJSON in the frontend")
         print("3. The proxy should now work without 422 errors")
     else:
         print("\n❌ Backend proxy needs attention.")
         print("Make sure:")
-        print("1. Backend is running on port 8000")
+        print("1. Backend is running on port 8006")
         print("2. Pydantic BaseModel is properly imported")
         print("3. Check backend logs for errors")
