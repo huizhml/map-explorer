@@ -201,6 +201,10 @@ interface MapStore {
   layerManager: LayerManager | null;
   setLayerManager: (manager: LayerManager | null) => void;
 
+  /** Transect heatmap: column index (sample along line) to show on the map; null hides the marker. */
+  transectHeatmapSampleIndex: number | null;
+  setTransectHeatmapSampleIndex: (index: number | null) => void;
+
   // Sentinel-2 layers
   sentinel2Layers: Sentinel2Layer[];
   setSentinel2Layers: (layers: Sentinel2Layer[] | ((prev: Sentinel2Layer[]) => Sentinel2Layer[])) => void;
@@ -345,6 +349,9 @@ export const useMapStore = create<MapStore>((set, get) => ({
   setLayers: (layers) => set({ layers }),
   layerManager: null,
   setLayerManager: (manager) => set({ layerManager: manager }),
+
+  transectHeatmapSampleIndex: null,
+  setTransectHeatmapSampleIndex: (index) => set({ transectHeatmapSampleIndex: index }),
 
   // Sentinel-2 layers
   sentinel2Layers: [],

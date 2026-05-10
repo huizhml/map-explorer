@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -45,6 +45,37 @@ interface InspectPanelProps {
 
 export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
   const diversityHeightBinM = useMapStore((s) => s.diversityHeightBinM);
+  const transectHeatmapSampleIndex = useMapStore((s) => s.transectHeatmapSampleIndex);
+  const setTransectHeatmapSampleIndex = useMapStore((s) => s.setTransectHeatmapSampleIndex);
+  /** Last index driven by the heatmap (locked ∨ hovered); restored when metrics hover ends. */
+  const transectHeatmapLocalRef = useRef<number | null>(null);
+  /** Non-null while the pointer is driving highlight from the metrics chart. */
+  const transectMetricsHoverRef = useRef<number | null>(null);
+  const [transectMetricsHoverIdx, setTransectMetricsHoverIdx] = useState<number | null>(null);
+
+  const onTransectHeatmapActiveColumn = useCallback((index: number | null) => {
+    transectHeatmapLocalRef.current = index;
+    if (transectMetricsHoverRef.current == null) {
+      setTransectHeatmapSampleIndex(index);
+    }
+  }, [setTransectHeatmapSampleIndex]);
+
+  const onTransectMetricsHoverSampleIndex = useCallback(
+    (index: number | null) => {
+      transectMetricsHoverRef.current = index;
+      setTransectMetricsHoverIdx(index);
+      if (index == null) {
+        setTransectHeatmapSampleIndex(transectHeatmapLocalRef.current);
+      } else {
+        setTransectHeatmapSampleIndex(index);
+      }
+    },
+    [setTransectHeatmapSampleIndex],
+  );
+
+  useEffect(() => {
+    return () => setTransectHeatmapSampleIndex(null);
+  }, [setTransectHeatmapSampleIndex]);
   const kind = panel.kind ?? 'layers';
   const {
     lon,
@@ -409,12 +440,16 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
                   dimmed={hasStaleVertical}
                   heatmapMaxHeight={profileMetaData?.heatmapMaxHeight ?? DEFAULT_HEATMAP_MAX_HEIGHT_M}
                   heightBinM={profileMetaData?.fhdInterval ?? diversityHeightBinM ?? DEFAULT_DIVERSITY_HEIGHT_BIN_M}
+                  metricsHoverIndex={transectMetricsHoverIdx}
+                  onActiveSampleIndexChange={onTransectHeatmapActiveColumn}
                 />
                 <TransectMetricsChart
                   samples={transectProfile!.samples}
                   xAxis={transectMetricXAxis}
                   onXAxisChange={setTransectMetricXAxis}
                   dimmed={hasStaleVertical}
+                  highlightSampleIndex={transectHeatmapSampleIndex}
+                  onHoverSampleIndexChange={onTransectMetricsHoverSampleIndex}
                 />
               </>
             )}

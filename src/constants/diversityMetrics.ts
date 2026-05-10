@@ -7,4 +7,4 @@ export const DEFAULT_DIVERSITY_HEIGHT_BIN_M = 5;
 export const DEFAULT_HEATMAP_MAX_HEIGHT_M = 50;
 
 /** Upper bound for transect energy (%) color scale; values above map to max color. */
-export const HEATMAP_COLORMAP_MAX = 5;
+export const HEATMAP_COLORMAP_MAX = 10;

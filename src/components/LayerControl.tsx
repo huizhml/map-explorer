@@ -60,7 +60,7 @@ export interface Layer {
   visible: boolean;
   opacity: number;
   zIndex: number;
-  type: 'cog' | 'fgb' | 'sentinel2' | 'prediction' | 'vector';
+  type: 'cog' | 'fgb' | 'sentinel2' | 'prediction' | 'vector' | 'earthengine';
   metadata?: Record<string, any>;
 }
 
@@ -387,11 +387,13 @@ export function LayerControl({
     const groups: {
       other: Layer[];
       sentinel2: Layer[];
+      earthengine: Layer[];
       predictions: Record<number, Layer[]>;
       vector: Layer[];
     } = {
       other: [],
       sentinel2: [],
+      earthengine: [],
       predictions: {},
       vector: [],
     };
@@ -409,6 +411,8 @@ export function LayerControl({
         }
       } else if (layer.type === 'sentinel2') {
         groups.sentinel2.push(layer);
+      } else if (layer.type === 'earthengine') {
+        groups.earthengine.push(layer);
       } else if (layer.type === 'vector') {
         groups.vector.push(layer);
       } else {
@@ -669,6 +673,32 @@ export function LayerControl({
                                   min={0}
                                   max={1}
                                   step={0.1}
+                                  size="small"
+                                  valueLabelDisplay="auto"
+                                  valueLabelFormat={(value) => `${Math.round(value * 100)}%`}
+                                />
+                              </Box>
+                            </Box>
+                          </Collapse>
+                        )}
+
+                        {/* Earth Engine raster */}
+                        {layer.type === 'earthengine' && (
+                          <Collapse in={showStyle}>
+                            <Box sx={{ mt: 2, p: 1.5, bgcolor: 'grey.50', borderRadius: 1 }}>
+                              <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 600 }}>
+                                Style Options
+                              </Typography>
+                              <Box>
+                                <Typography variant="caption" color="text.secondary" gutterBottom>
+                                  Layer Opacity: {Math.round(layer.opacity * 100)}%
+                                </Typography>
+                                <Slider
+                                  value={layer.opacity}
+                                  onChange={(_, value) => onChangeOpacity(layer.id, value as number)}
+                                  min={0}
+                                  max={1}
+                                  step={0.05}
                                   size="small"
                                   valueLabelDisplay="auto"
                                   valueLabelFormat={(value) => `${Math.round(value * 100)}%`}
@@ -1394,10 +1424,51 @@ export function LayerControl({
                 </>
               )}
 
+              {/* Earth Engine */}
+              {groupedLayers.earthengine.length > 0 && (
+                <>
+                  {(groupedLayers.other.length > 0 || groupedLayers.sentinel2.length > 0) && (
+                    <Divider sx={{ my: 1 }} />
+                  )}
+                  <Accordion
+                    expanded={expandedGroups['earthengine'] !== false}
+                    onChange={() => handleGroupToggle('earthengine')}
+                    sx={{ boxShadow: 'none', '&:before': { display: 'none' } }}
+                  >
+                    <AccordionSummary
+                      expandIcon={<ExpandMoreIcon />}
+                      sx={{
+                        minHeight: 48,
+                        '&.Mui-expanded': { minHeight: 48 },
+                        bgcolor: 'grey.100',
+                        px: 1.5,
+                      }}
+                    >
+                      <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                        Earth Engine ({groupedLayers.earthengine.length})
+                      </Typography>
+                    </AccordionSummary>
+                    <AccordionDetails sx={{ p: 0 }}>
+                      {groupedLayers.earthengine.map((layer, index) => {
+                        const globalIndex = layers.findIndex((l) => l.id === layer.id);
+                        return (
+                          <React.Fragment key={layer.id}>
+                            {index > 0 && <Divider />}
+                            {renderLayerItem(layer, globalIndex)}
+                          </React.Fragment>
+                        );
+                      })}
+                    </AccordionDetails>
+                  </Accordion>
+                </>
+              )}
+
               {/* Prediction Groups by RH Index */}
               {Object.keys(groupedLayers.predictions).length > 0 && (
                 <>
-                  {(groupedLayers.other.length > 0 || groupedLayers.sentinel2.length > 0) && (
+                  {(groupedLayers.other.length > 0 ||
+                    groupedLayers.sentinel2.length > 0 ||
+                    groupedLayers.earthengine.length > 0) && (
                     <Divider sx={{ my: 1 }} />
                   )}
                   {Object.entries(groupedLayers.predictions)
@@ -1444,7 +1515,10 @@ export function LayerControl({
               {/* Vector Layers Group */}
               {groupedLayers.vector.length > 0 && (
                 <>
-                  {(groupedLayers.other.length > 0 || groupedLayers.sentinel2.length > 0 || Object.keys(groupedLayers.predictions).length > 0) && (
+                  {(groupedLayers.other.length > 0 ||
+                    groupedLayers.sentinel2.length > 0 ||
+                    groupedLayers.earthengine.length > 0 ||
+                    Object.keys(groupedLayers.predictions).length > 0) && (
                     <Divider sx={{ my: 1 }} />
                   )}
                   <Accordion

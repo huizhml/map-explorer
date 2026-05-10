@@ -36,7 +36,16 @@ class ApiService {
         });
 
         if (!response.ok) {
-            throw new Error(`API request failed: ${response.statusText}`);
+            let detail = response.statusText;
+            try {
+                const j = await response.json();
+                if (j?.detail !== undefined) {
+                    detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+                }
+            } catch {
+                /* ignore */
+            }
+            throw new Error(`API request failed (${response.status}): ${detail}`);
         }
 
         return response.json();
@@ -91,6 +100,28 @@ class ApiService {
         if (params.rescale) search.set('rescale', params.rescale);
         if (params.colormap_name) search.set('colormap_name', params.colormap_name);
         return this.request(`/xarray/tile-url?${search.toString()}`);
+    }
+
+    async getEarthEngineStatus(): Promise<{
+        ee_import_ok: boolean;
+        credentials_path_set: boolean;
+        credentials_file_exists: boolean;
+    }> {
+        return this.request('/earthengine/status');
+    }
+
+    async getEarthEngineTileUrl(body: {
+        asset_id: string;
+        asset_kind?: 'image' | 'image_collection';
+        reduce_collection?: 'mosaic' | 'median' | 'first';
+        band?: string;
+        mask_self?: boolean;
+        vis?: { min?: number; max?: number; palette?: string[] };
+    }): Promise<{ tile_url: string; asset_id: string; band?: string | null }> {
+        return this.request('/earthengine/tile-url', {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
     }
 }
 

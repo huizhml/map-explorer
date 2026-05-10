@@ -1,4 +1,5 @@
-import { useId, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -9,7 +10,6 @@ import {
 import type { Theme } from '@mui/material/styles';
 import { LineChart } from '@mui/x-charts';
 import { ChartsReferenceLine } from '@mui/x-charts/ChartsReferenceLine';
-import { useDrawingArea, useYScale } from '@mui/x-charts/hooks';
 import type { SavedFeaturePlotData } from '../services/savedFeaturesApi';
 import type { VerticalProfilePoint } from '../stores/mapStore';
 import { apiUrl } from '../utils/apiBase';
@@ -59,45 +59,6 @@ function transectEnlAxisDomain(enlValues: number[]): [number, number] {
   let hi = maxV + pad;
   if (hi <= lo) hi = lo + 1;
   return [lo, hi];
-}
-
-function CrBandAnnotations({ refY, fontSize }: { refY: number; fontSize: number }) {
-  const theme = useTheme();
-  const yScale = useYScale();
-  const { left, top, width, height } = useDrawingArea();
-  const yRef = yScale(refY);
-  if (yRef === undefined) return null;
-  const cx = left + width / 2;
-  const fill = theme.palette.text.secondary;
-  const fs = Math.max(8, fontSize - 1);
-  const yTop = top;
-  const yBot = top + height;
-  const yMidUpper = (yTop + yRef) / 2;
-  const yMidLower = (yRef + yBot) / 2;
-  return (
-    <g pointerEvents="none">
-      <text
-        x={cx}
-        y={yMidUpper}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fill={fill}
-        fontSize={fs}
-      >
-        More canopy materials from the bottom
-      </text>
-      <text
-        x={cx}
-        y={yMidLower}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fill={fill}
-        fontSize={fs}
-      >
-        More canopy materials from the top
-      </text>
-    </g>
-  );
 }
 
 function rampColor(t: number): string {
@@ -385,6 +346,10 @@ export function TransectProfileHeatmap({
   showInteractionHints = true,
   heatmapMaxHeight,
   heightBinM = DEFAULT_DIVERSITY_HEIGHT_BIN_M,
+  /** Column index highlighted from the metrics chart hover (kept in sync with store). */
+  metricsHoverIndex,
+  /** When hover/lock highlights a column, notifies parent (e.g. map marker along the transect line). */
+  onActiveSampleIndexChange,
 }: {
   samples: Array<{
     distance_m: number;
@@ -403,11 +368,27 @@ export function TransectProfileHeatmap({
   heatmapMaxHeight?: number;
   /** Meters per vertical histogram bin (must match API `fhd_interval`). `profile[].rh` is bin index. */
   heightBinM?: number;
+  metricsHoverIndex?: number | null;
+  onActiveSampleIndexChange?: (sampleColumnIndex: number | null) => void;
 }) {
   const theme = useTheme();
   const [hovered, setHovered] = useState<{ xIndex: number; rh: number; value: number; clientX: number; clientY: number } | null>(null);
   const [lockedSampleIndex, setLockedSampleIndex] = useState<number | null>(null);
   const cbGradientId = useId().replace(/:/g, '');
+  const svgContainerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(svgWidth);
+  useEffect(() => {
+    const el = svgContainerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const w = el.getBoundingClientRect().width;
+      if (w > 0) setContainerWidth(Math.round(w));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const points = samples.flatMap((sample, sampleIndex) =>
     sample.profile
       .filter((p) => p.value != null && !p.missing && Number.isFinite(p.value))
@@ -448,45 +429,50 @@ export function TransectProfileHeatmap({
     return `${lo}–${lo + binMeters} m`;
   };
 
-  const width = svgWidth;
   const height = chartHeight;
-  const legacyMarginRight = 6;
   const colorbarGap = 8;
   const colorbarThickness = 18;
   const colorbarLabelReserve = 40;
-  /** Space for rotated "Energy (%)" beside numeric ticks */
-  const colorbarEnergyReserve = 18;
-  const marginRightWithColorbar =
-    colorbarGap + colorbarThickness + colorbarLabelReserve + colorbarEnergyReserve;
-  const totalWidth = width - legacyMarginRight + marginRightWithColorbar;
+  const colorbarTickLen = 4;
+  const tickLabelFs = Math.max(8, fontSize - 1);
+  const tickPadSvg = 6;
+  // Derive margins from the same layout function TransectMetricsChart uses so all
+  // subplot panels share identical inner-plot left/right boundaries.
+  const sharedAxisLayout = getTransectMetricsAxisLayout(fontSize, { compact: false });
+  const marginLeft = sharedAxisLayout.margin.left + sharedAxisLayout.yLeft;
+  const marginRight = sharedAxisLayout.margin.right + sharedAxisLayout.yRight;
+  const totalWidth = containerWidth;
   const xCount = Math.max(1, samples.length);
   const yCount = nBins;
   const xTickCount = Math.min(6, xCount);
   const xTicks = Array.from({ length: xTickCount }, (_, i) =>
     Math.round((i * (xCount - 1)) / Math.max(1, xTickCount - 1)));
-  /** Y-axis tick marks in meters (0 … maxHm). */
   const desiredYTicks = 5;
   const yTicksMeters = Array.from({ length: desiredYTicks + 1 }, (_, i) =>
     Math.round((i / desiredYTicks) * maxHm));
-  const tickLabelFs = Math.max(8, fontSize - 1);
-  const yTickNumeralWidthEst =
-    Math.max(...yTicksMeters.map((m) => `${m}`.length), 1) * tickLabelFs * 0.56;
-  /** Match canvas heatmap: space for rotated "Height (m)" + y numerals + ticks (px). */
-  const yTitleHalf = fontSize * 0.58;
-  const padSvgLeft = 6;
-  const gapTicksToYTitle = 8;
-  const tickPadSvg = 6;
-  const marginLeftSvg = Math.ceil(
-    padSvgLeft + 2 * yTitleHalf + gapTicksToYTitle + yTickNumeralWidthEst + tickPadSvg,
-  );
-  const margin = { top: 6, right: marginRightWithColorbar, bottom: 28, left: marginLeftSvg };
-  const innerW = totalWidth - margin.left - margin.right;
-  const innerH = height - margin.top - margin.bottom;
+  const margin = { top: 6, right: marginRight, bottom: 28, left: marginLeft };
+  const innerW = Math.max(1, totalWidth - margin.left - margin.right);
+  const innerH = Math.max(1, height - margin.top - margin.bottom);
   const barLeft = margin.left + innerW + colorbarGap;
   const cellW = innerW / xCount;
   const cellH = innerH / yCount;
-  const yAxisTitleCx = padSvgLeft + yTitleHalf;
-  const activeSampleIndex = lockedSampleIndex ?? hovered?.xIndex ?? null;
+  // Y-axis title centered in left margin (midpoint between SVG edge and tick labels).
+  const yAxisTitleCx = Math.round(marginLeft / 2);
+  // Energy title centered in the remaining right-margin space after the colorbar labels.
+  const afterLabelX = barLeft + colorbarThickness + colorbarTickLen + colorbarLabelReserve;
+  const energyTitleX = Math.round(afterLabelX + (totalWidth - afterLabelX) / 2);
+  const metricsColumn =
+    metricsHoverIndex != null &&
+    metricsHoverIndex >= 0 &&
+    metricsHoverIndex < samples.length
+      ? metricsHoverIndex
+      : null;
+  const activeSampleIndex =
+    lockedSampleIndex ?? metricsColumn ?? hovered?.xIndex ?? null;
+
+  useEffect(() => {
+    onActiveSampleIndexChange?.(activeSampleIndex);
+  }, [activeSampleIndex, onActiveSampleIndexChange]);
 
   return (
     <Box sx={{ width: '100%', opacity: dimmed ? 0.65 : 1, mb: 1, position: 'relative' }}>
@@ -512,7 +498,7 @@ export function TransectProfileHeatmap({
           </Button>
         )}
       </Box>
-      <Box sx={{ width: '100%', height: chartHeight }}>
+      <Box ref={svgContainerRef} sx={{ width: '100%', height: chartHeight }}>
         <svg
           viewBox={`0 0 ${totalWidth} ${height}`}
           width="100%"
@@ -654,13 +640,13 @@ export function TransectProfileHeatmap({
                 <line
                   x1={barLeft + colorbarThickness}
                   y1={ty}
-                  x2={barLeft + colorbarThickness + 4}
+                  x2={barLeft + colorbarThickness + colorbarTickLen}
                   y2={ty}
                   stroke="#616161"
                   strokeWidth={1}
                 />
                 <text
-                  x={barLeft + colorbarThickness + 6}
+                  x={barLeft + colorbarThickness + colorbarTickLen + 2}
                   y={ty + 4}
                   fontSize={Math.max(8, fontSize - 1)}
                   fill="#616161"
@@ -671,9 +657,9 @@ export function TransectProfileHeatmap({
             );
           })}
           <text
-            x={barLeft + colorbarThickness + 4 + colorbarLabelReserve + 6 + colorbarEnergyReserve / 2}
+            x={energyTitleX}
             y={margin.top + innerH / 2}
-            transform={`rotate(-90 ${barLeft + colorbarThickness + 4 + colorbarLabelReserve + 6 + colorbarEnergyReserve / 2} ${margin.top + innerH / 2})`}
+            transform={`rotate(-90 ${energyTitleX} ${margin.top + innerH / 2})`}
             textAnchor="middle"
             fontSize={fontSize}
             fill="#616161"
@@ -715,6 +701,36 @@ export function TransectProfileHeatmap({
 
 export type TransectMetricsChartMode = 'both' | 'main' | 'cr';
 
+/** Map pointer x to the nearest transect sample column (sync with heatmap / map marker). */
+function nearestTransectSampleIndexFromPointer(
+  clientX: number,
+  rect: DOMRect,
+  padLeft: number,
+  padRight: number,
+  xMin: number,
+  xMax: number,
+  xValues: readonly number[],
+): number | null {
+  const w = rect.width;
+  const innerW = w - padLeft - padRight;
+  if (innerW <= 1 || xValues.length === 0) return null;
+  const rx = clientX - rect.left;
+  const t = (rx - padLeft) / innerW;
+  if (t < -0.03 || t > 1.03) return null;
+  const clamped = Math.max(0, Math.min(1, t));
+  const dataX = xMin + clamped * (xMax - xMin);
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < xValues.length; i++) {
+    const d = Math.abs(xValues[i] - dataX);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
 export function TransectMetricsChart({
   samples,
   xAxis,
@@ -725,6 +741,8 @@ export function TransectMetricsChart({
   showAxisToggle = true,
   mode = 'both',
   axisTickNumber,
+  highlightSampleIndex,
+  onHoverSampleIndexChange,
 }: {
   samples: Array<{
     lon: number;
@@ -744,8 +762,13 @@ export function TransectMetricsChart({
   mode?: TransectMetricsChartMode;
   /** When set (e.g. 2 for figure export), reduces X/Y tick density; omit for default chart density. */
   axisTickNumber?: number;
+  /** Vertical guide + synced highlight when aligned with heatmap / map (sample index). */
+  highlightSampleIndex?: number | null;
+  /** Metrics chart hover drives the same sample index as the heatmap (Inspect panel). */
+  onHoverSampleIndexChange?: (sampleIndex: number | null) => void;
 }) {
   const theme = useTheme();
+  const metricsInteractRootRef = useRef<HTMLDivElement>(null);
   const xValues = samples.map((s) => (xAxis === 'lon' ? s.lon : s.lat));
   const enlValues = samples.flatMap((s) => [s.enl1d, s.enl2d].filter((v): v is number => v != null && Number.isFinite(v)));
   const fhdValues = samples.flatMap((s) => [s.fhd].filter((v): v is number => v != null && Number.isFinite(v)));
@@ -926,8 +949,44 @@ export function TransectMetricsChart({
     }
     : sxMetrics;
 
+  const padLeftMetricsHover = showMain
+    ? mainMargin.left + yLeft
+    : crMargin.left + yLeft;
+  const padRightMetricsHover = showMain
+    ? mainMargin.right + yRight
+    : crMargin.right;
+
+  const refLineIdx =
+    highlightSampleIndex != null &&
+    highlightSampleIndex >= 0 &&
+    highlightSampleIndex < samples.length
+      ? highlightSampleIndex
+      : null;
+  const refLineX = refLineIdx != null ? xValues[refLineIdx] : null;
+
+  const handleMetricsChartMouseMove = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (!onHoverSampleIndexChange || !metricsInteractRootRef.current) return;
+    const idx = nearestTransectSampleIndexFromPointer(
+      e.clientX,
+      metricsInteractRootRef.current.getBoundingClientRect(),
+      padLeftMetricsHover,
+      padRightMetricsHover,
+      xMin,
+      xMax,
+      xValues,
+    );
+    onHoverSampleIndexChange(idx);
+  };
+
+  const axisHighlightProps = onHoverSampleIndexChange ? { x: 'none' as const } : { x: 'line' as const };
+
   return (
-    <Box sx={{ width: '100%', opacity: dimmed ? 0.65 : 1 }}>
+    <Box
+      ref={metricsInteractRootRef}
+      onMouseMove={onHoverSampleIndexChange ? handleMetricsChartMouseMove : undefined}
+      onMouseLeave={onHoverSampleIndexChange ? () => onHoverSampleIndexChange(null) : undefined}
+      sx={{ width: '100%', opacity: dimmed ? 0.65 : 1 }}
+    >
       {mode === 'both' && (
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5, gap: 1 }}>
           <Typography sx={{ fontSize: '0.9rem', fontWeight: 700, color: 'text.primary' }}>
@@ -945,6 +1004,7 @@ export function TransectMetricsChart({
         <LineChart
           height={mainChartHeight}
           margin={mainMargin}
+          axisHighlight={axisHighlightProps}
           grid={{ vertical: false, horizontal: false }}
           xAxis={[xAxisMain]}
           yAxis={[
@@ -1003,13 +1063,25 @@ export function TransectMetricsChart({
           disableLineItemHighlight
           skipAnimation
           sx={sxMetricsSparse}
-        />
+        >
+          {refLineX != null && (
+            <ChartsReferenceLine
+              x={refLineX}
+              lineStyle={{
+                stroke: theme.palette.primary.main,
+                strokeWidth: 1.25,
+                strokeDasharray: '4 3',
+              }}
+            />
+          )}
+        </LineChart>
       )}
       {showCr && (
         <Box sx={{ mt: mode === 'both' && hasMainMetrics ? (sparseDualYTicks ? -0.5 : -2) : 0 }}>
           <LineChart
             height={crChartHeight}
             margin={crMargin}
+            axisHighlight={axisHighlightProps}
             grid={{ vertical: false, horizontal: false }}
             xAxis={[xAxisDef]}
             yAxis={[
@@ -1044,16 +1116,16 @@ export function TransectMetricsChart({
             skipAnimation
             sx={sxMetricsSparse}
           >
-            {/* <ChartsReferenceLine
-              y={0.74}
-              label=""
-              lineStyle={{
-                stroke: theme.palette.divider,
-                strokeWidth: 1.5,
-                strokeDasharray: '5 5',
-              }}
-            />
-            <CrBandAnnotations refY={0.74} fontSize={fontSize} /> */}
+            {refLineX != null && (
+              <ChartsReferenceLine
+                x={refLineX}
+                lineStyle={{
+                  stroke: theme.palette.primary.main,
+                  strokeWidth: 1.25,
+                  strokeDasharray: '4 3',
+                }}
+              />
+            )}
           </LineChart>
         </Box>
       )}
@@ -1061,8 +1133,48 @@ export function TransectMetricsChart({
   );
 }
 
-export function SavedFeaturePlots({ plotData }: { plotData?: SavedFeaturePlotData | null }) {
+export function SavedFeaturePlots({
+  plotData,
+  featureName,
+}: {
+  plotData?: SavedFeaturePlotData | null;
+  /** Display name of the saved feature; used as the default export filename. */
+  featureName?: string;
+}) {
   const diversityHeightBinM = useMapStore((s) => s.diversityHeightBinM);
+  const transectHeatmapSampleIndex = useMapStore((s) => s.transectHeatmapSampleIndex);
+  const setTransectHeatmapSampleIndex = useMapStore((s) => s.setTransectHeatmapSampleIndex);
+  const transectHeatmapLocalRef = useRef<number | null>(null);
+  const transectMetricsHoverRef = useRef<number | null>(null);
+  const [transectMetricsHoverIdx, setTransectMetricsHoverIdx] = useState<number | null>(null);
+
+  const onSavedTransectHeatmapActiveColumn = useCallback(
+    (index: number | null) => {
+      transectHeatmapLocalRef.current = index;
+      if (transectMetricsHoverRef.current == null) {
+        setTransectHeatmapSampleIndex(index);
+      }
+    },
+    [setTransectHeatmapSampleIndex],
+  );
+
+  const onSavedTransectMetricsHoverSampleIndex = useCallback(
+    (index: number | null) => {
+      transectMetricsHoverRef.current = index;
+      setTransectMetricsHoverIdx(index);
+      if (index == null) {
+        setTransectHeatmapSampleIndex(transectHeatmapLocalRef.current);
+      } else {
+        setTransectHeatmapSampleIndex(index);
+      }
+    },
+    [setTransectHeatmapSampleIndex],
+  );
+
+  useEffect(() => {
+    return () => setTransectHeatmapSampleIndex(null);
+  }, [setTransectHeatmapSampleIndex]);
+
   const [transectMetricXAxis, setTransectMetricXAxis] = useState<'lon' | 'lat'>('lon');
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   if (!plotData) return null;
@@ -1141,11 +1253,15 @@ export function SavedFeaturePlots({ plotData }: { plotData?: SavedFeaturePlotDat
             xAxis={transectMetricXAxis}
             heatmapMaxHeight={transectHeatmapMaxHeight}
             heightBinM={diversityHeightBinM}
+            metricsHoverIndex={transectMetricsHoverIdx}
+            onActiveSampleIndexChange={onSavedTransectHeatmapActiveColumn}
           />
           <TransectMetricsChart
             samples={transect.samples}
             xAxis={transectMetricXAxis}
             onXAxisChange={setTransectMetricXAxis}
+            highlightSampleIndex={transectHeatmapSampleIndex}
+            onHoverSampleIndexChange={onSavedTransectMetricsHoverSampleIndex}
           />
         </>
       )}
@@ -1154,10 +1270,12 @@ export function SavedFeaturePlots({ plotData }: { plotData?: SavedFeaturePlotDat
           open={isExportDialogOpen}
           onClose={() => setIsExportDialogOpen(false)}
           samples={transect.samples}
+          lineCoordinates={transect.line_coordinates}
           totalLengthMeters={transect.total_length_m}
           xAxis={transectMetricXAxis}
           heatmapMaxHeight={transectHeatmapMaxHeight}
           heightBinM={diversityHeightBinM}
+          featureName={featureName}
         />
       )}
       {hasVerticalMetrics && <VerticalProfileSummary metrics={verticalMetricsData} />}

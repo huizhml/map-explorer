@@ -5,7 +5,7 @@ import { transformExtent } from 'ol/proj';
 // Use global Map to avoid conflict with OpenLayers Map
 type LayerMap = globalThis.Map<string, ManagedLayer>;
 
-export type LayerType = 'cog' | 'fgb' | 'sentinel2' | 'prediction' | 'vector';
+export type LayerType = 'cog' | 'fgb' | 'sentinel2' | 'prediction' | 'vector' | 'earthengine';
 
 export interface ManagedLayer {
   id: string;

@@ -21,6 +21,7 @@ from routes.predictions import router as predictions_router
 from routes.auxiliary import router as auxiliary_router
 from routes.geo import router as geo_router
 from routes.saved_features import router as saved_features_router, init_saved_features_db
+from routes.earthengine import router as earthengine_router
 
 # ---------------------------------------------------------------------------
 # Startup env-var logging
@@ -37,6 +38,8 @@ _ENV_KEYS = [
     "SAVED_FEATURE_IMAGES_ROOT",
     "NATURALNESS_REF_DATA_PATH",
     "NATURALNESS_REF_DATA_VAL_PATH",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "EE_CREDENTIALS_PATH",
 ]
 print("=== Env vars ===")
 for k in _ENV_KEYS:
@@ -114,3 +117,4 @@ app.include_router(predictions_router)
 app.include_router(auxiliary_router)
 app.include_router(geo_router)
 app.include_router(saved_features_router)
+app.include_router(earthengine_router, prefix="/api/v1")

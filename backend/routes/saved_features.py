@@ -14,8 +14,10 @@ import re
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
+import concurrent.futures
+
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 import numpy as np
 from pyproj import Transformer
@@ -1236,6 +1238,878 @@ async def update_saved_feature(feature_id: int, payload: SavedFeatureUpdateReque
     if row is None:
         raise HTTPException(status_code=500, detail="Failed to load updated feature")
     return {"feature": _row_to_feature(row)}
+
+
+def _stitch_bbox_satellite(
+    min_lon: float,
+    max_lon: float,
+    min_lat: float,
+    max_lat: float,
+    buffer_m: float = 200.0,
+    max_width_px: int = 2048,
+) -> tuple[Optional[bytes], dict]:
+    """Fetch and stitch satellite tiles for a bbox with a uniform buffer.
+
+    Source: Google Maps' XYZ tile service (same imagery that the frontend
+    OpenLayers map uses as basemap), fetched as **retina/HD tiles via
+    `&scale=2`** which return 512×512 PNGs containing 2× more detail per
+    geographic area than standard 256×256 tiles.  Falls back to the regular
+    256-tile Google endpoint and then Esri World Imagery (256-tile).  This is
+    NOT the Static Maps API and not a screenshot — it is direct tile fetching.
+
+    Tiles are fetched in parallel (up to 16 workers).  Returns (png_bytes, metadata).
+    """
+    from PIL import Image
+
+    mean_lat = (min_lat + max_lat) / 2.0
+    lat_rad = math.radians(mean_lat)
+    lat_buf = buffer_m / 111320.0
+    lon_buf = buffer_m / (111320.0 * max(1e-6, math.cos(lat_rad)))
+
+    bmin_lon = min_lon - lon_buf
+    bmax_lon = max_lon + lon_buf
+    bmin_lat = min_lat - lat_buf
+    bmax_lat = max_lat + lat_buf
+
+    span_m = (bmax_lon - bmin_lon) * 111320.0 * max(1e-6, math.cos(lat_rad))
+    m_per_px_target = max(0.01, span_m / max_width_px)
+    m_per_px_zoom0 = 156543.03392 * max(0.1, math.cos(lat_rad))
+
+    def _stitch_at(url_builder, tile_px: int, scale: int) -> Optional[bytes]:
+        """Stitch tiles fetched at native `tile_px` resolution.
+
+        `scale=1` -> 256-px tiles (standard zoom Z gives  m_per_px_zoom0 / 2^Z).
+        `scale=2` -> 512-px tiles at the same zoom Z (twice the pixel density).
+        We pick zoom for `scale` so the resulting image fills max_width_px.
+        """
+        # m_per_px_at_zoom = m_per_px_zoom0 / (2^zoom * scale)
+        # Solve for zoom such that m_per_px_at_zoom == m_per_px_target.
+        zoom = int(math.floor(math.log2(m_per_px_zoom0 / m_per_px_target / scale)))
+        zoom = max(0, min(20, zoom))
+
+        # `tile_px` here is the native pixel size of the *fetched* tile image
+        # (256 for scale=1, 512 for scale=2). All pixel coordinates use this.
+        def _ll_to_world(lon_v: float, lat_v: float) -> tuple[float, float]:
+            siny = math.sin(math.radians(lat_v))
+            siny = min(max(siny, -0.9999), 0.9999)
+            world = tile_px * (2 ** zoom)
+            return (
+                (lon_v + 180.0) / 360.0 * world,
+                (0.5 - math.log((1 + siny) / (1 - siny)) / (4 * math.pi)) * world,
+            )
+
+        left, top = _ll_to_world(bmin_lon, bmax_lat)
+        right, bottom = _ll_to_world(bmax_lon, bmin_lat)
+        img_w = max(1, int(round(right - left)))
+        img_h = max(1, int(round(bottom - top)))
+
+        min_tx = int(math.floor(left / tile_px))
+        max_tx = int(math.floor((right - 1) / tile_px))
+        min_ty = int(math.floor(top / tile_px))
+        max_ty = int(math.floor((bottom - 1) / tile_px))
+        world_tiles = 2 ** zoom
+
+        tiles = [
+            (tx, ty)
+            for ty in range(min_ty, max_ty + 1)
+            if 0 <= ty < world_tiles
+            for tx in range(min_tx, max_tx + 1)
+        ]
+
+        stitched_w = (max_tx - min_tx + 1) * tile_px
+        stitched_h = (max_ty - min_ty + 1) * tile_px
+        stitched = Image.new("RGB", (stitched_w, stitched_h))
+
+        def _fetch_one(tx_ty: tuple[int, int]) -> tuple[int, int, bytes]:
+            tx, ty = tx_ty
+            wrapped_tx = tx % world_tiles
+            url = url_builder(wrapped_tx, ty, zoom)
+            resp = requests.get(url, timeout=20)
+            resp.raise_for_status()
+            return tx, ty, resp.content
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, max(1, len(tiles)))) as exe:
+            results = list(exe.map(_fetch_one, tiles))
+
+        for tx, ty, data in results:
+            tile_img = Image.open(io.BytesIO(data)).convert("RGB")
+            # Defensive: if the server didn't honour scale=2, the tile will be
+            # 256×256 instead of expected 512×512 — refuse to stitch in that
+            # case so we can fall back to scale=1.
+            if tile_img.size != (tile_px, tile_px):
+                raise RuntimeError(
+                    f"Tile size mismatch: expected {tile_px}×{tile_px}, got {tile_img.size}"
+                )
+            stitched.paste(tile_img, ((tx - min_tx) * tile_px, (ty - min_ty) * tile_px))
+
+        crop_left = int(round(left - min_tx * tile_px))
+        crop_top = int(round(top - min_ty * tile_px))
+        cropped = stitched.crop((crop_left, crop_top, crop_left + img_w, crop_top + img_h))
+        out = io.BytesIO()
+        cropped.save(out, format="PNG")
+        meta_local = {
+            "min_lon": bmin_lon,
+            "max_lon": bmax_lon,
+            "min_lat": bmin_lat,
+            "max_lat": bmax_lat,
+            "zoom": zoom,
+            "width_px": img_w,
+            "height_px": img_h,
+        }
+        return out.getvalue(), meta_local
+
+    image_bytes: Optional[bytes] = None
+    meta: dict = {
+        "min_lon": bmin_lon,
+        "max_lon": bmax_lon,
+        "min_lat": bmin_lat,
+        "max_lat": bmax_lat,
+        "zoom": 0,
+        "width_px": 0,
+        "height_px": 0,
+    }
+
+    # Primary: Google retina/HD tiles via &scale=2 (512×512, ~2× detail).
+    try:
+        image_bytes, meta = _stitch_at(
+            lambda tx, ty, z: f"https://mt{(tx + ty) % 4}.google.com/vt/lyrs=s&x={tx}&y={ty}&z={z}&scale=2",
+            tile_px=512,
+            scale=2,
+        )
+    except Exception:
+        image_bytes = None
+
+    # Fallback 1: standard Google satellite tiles (256×256).
+    if image_bytes is None:
+        try:
+            image_bytes, meta = _stitch_at(
+                lambda tx, ty, z: f"https://mt{(tx + ty) % 4}.google.com/vt/lyrs=s&x={tx}&y={ty}&z={z}",
+                tile_px=256,
+                scale=1,
+            )
+        except Exception:
+            image_bytes = None
+
+    # Fallback 2: Esri World Imagery (no API key required, 256×256).
+    if image_bytes is None:
+        try:
+            image_bytes, meta = _stitch_at(
+                lambda tx, ty, z: (
+                    f"https://services.arcgisonline.com/ArcGIS/rest/services/"
+                    f"World_Imagery/MapServer/tile/{z}/{ty}/{tx}"
+                ),
+                tile_px=256,
+                scale=1,
+            )
+        except Exception:
+            image_bytes = None
+
+    return image_bytes, meta
+
+
+class TransectSatelliteRequest(BaseModel):
+    min_lon: float
+    max_lon: float
+    min_lat: float
+    max_lat: float
+    buffer_m: float = 200.0
+    max_width_px: int = 2048
+
+
+@router.post("/transect/satellite-snapshot")
+async def transect_satellite_snapshot(req: TransectSatelliteRequest):
+    """Return a stitched satellite PNG for a transect bounding box with buffer.
+
+    Tile fetching is parallelised; typical transects (8-16 tiles) complete in
+    under two seconds vs. the OL-canvas approach which can block the browser for
+    tens of seconds.
+    """
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    image_bytes, meta = await loop.run_in_executor(
+        None,
+        lambda: _stitch_bbox_satellite(
+            req.min_lon,
+            req.max_lon,
+            req.min_lat,
+            req.max_lat,
+            req.buffer_m,
+            req.max_width_px,
+        ),
+    )
+    if image_bytes is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Satellite imagery fetch failed from all providers",
+        )
+    return Response(
+        content=image_bytes,
+        media_type="image/png",
+        headers={
+            "X-Image-Min-Lon": f"{meta['min_lon']:.7f}",
+            "X-Image-Max-Lon": f"{meta['max_lon']:.7f}",
+            "X-Image-Min-Lat": f"{meta['min_lat']:.7f}",
+            "X-Image-Max-Lat": f"{meta['max_lat']:.7f}",
+            "X-Image-Zoom": str(meta["zoom"]),
+            "X-Image-Width": str(meta["width_px"]),
+            "X-Image-Height": str(meta["height_px"]),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Combined transect figure (matplotlib subplots, server-rendered).
+# ---------------------------------------------------------------------------
+
+
+class TransectProfilePoint(BaseModel):
+    rh: int
+    value: Optional[float] = None
+    missing: Optional[bool] = None
+
+
+class TransectFigureSample(BaseModel):
+    lon: float
+    lat: float
+    distance_m: Optional[float] = None
+    profile: List[TransectProfilePoint] = Field(default_factory=list)
+    fhd: Optional[float] = None
+    enl1d: Optional[float] = None
+    enl2d: Optional[float] = None
+    cr: Optional[float] = None
+
+
+class TransectFigureRequest(BaseModel):
+    samples: List[TransectFigureSample]
+    x_axis: Literal["lon", "lat"] = "lon"
+    height_bin_m: float = 5.0
+    heatmap_max_height_m: float = 50.0
+    heatmap_colormap_max: float = 10.0
+    include_map: bool = True
+    include_heatmap: bool = True
+    include_enl_fhd: bool = True
+    include_cr: bool = True
+    # Optional: JRC TMF AnnualChanges (Dec 2020) for the same buffered bbox as
+    # the satellite snapshot.  Renders as an additional sharex panel right
+    # below the satellite map.  Shares `satellite_buffer_m`.
+    include_ee_annualchanges: bool = False
+    figure_width_px: int = 1200
+    map_height_px: int = 220
+    heatmap_height_px: int = 240
+    enl_fhd_height_px: int = 300
+    cr_height_px: int = 140
+    ee_annualchanges_height_px: int = 220
+    font_size: int = 11
+    dpi: int = 150
+    fmt: Literal["png", "jpg", "pdf"] = "png"
+    satellite_buffer_m: float = 200.0
+    # Higher resolution = sharper satellite imagery.  4096 px ≈ zoom level 17–18
+    # for typical 200 m-buffered transects, which is near Google's max detail.
+    satellite_max_width_px: int = 4096
+
+
+# JRC TMF AnnualChanges visualisation parameters — kept in sync with the
+# frontend `EarthEngineLayerSection.tsx` preset so the exported figure matches
+# what the user sees on the interactive map.
+_JRC_TMF_ANNUALCHANGES_ASSET = "projects/JRC/TMF/v1_2025/AnnualChanges"
+_JRC_TMF_ANNUALCHANGES_BAND = "Dec2020"
+_JRC_TMF_ANNUALCHANGES_PALETTE = [
+    "005A00", "648723", "FFBE2D", "D2FA3C", "008CBE", "FFFFFF",
+]
+_JRC_TMF_ANNUALCHANGES_VIS_MIN = 1
+_JRC_TMF_ANNUALCHANGES_VIS_MAX = 6
+
+
+def _fetch_ee_annualchanges_array(
+    min_lon: float,
+    max_lon: float,
+    min_lat: float,
+    max_lat: float,
+    buffer_m: float = 200.0,
+    max_dimension: int = 2048,
+) -> tuple[Optional[np.ndarray], dict]:
+    """Fetch the JRC TMF AnnualChanges Dec 2020 layer for the bbox as a styled
+    PNG via Earth Engine `getThumbURL`, decoded into a `(H, W, 3)` numpy array.
+
+    Returns (None, {}) if Earth Engine is not initialised or the fetch fails —
+    callers should treat this as "panel unavailable" and fall back gracefully.
+    """
+    try:
+        from routes.earthengine import ensure_ee  # noqa: WPS433 (local import)
+        ensure_ee()
+        import ee  # type: ignore
+    except Exception:
+        return None, {}
+
+    mean_lat = (min_lat + max_lat) / 2.0
+    lat_rad = math.radians(mean_lat)
+    lat_buf = buffer_m / 111320.0
+    lon_buf = buffer_m / (111320.0 * max(1e-6, math.cos(lat_rad)))
+    bmin_lon = min_lon - lon_buf
+    bmax_lon = max_lon + lon_buf
+    bmin_lat = min_lat - lat_buf
+    bmax_lat = max_lat + lat_buf
+
+    try:
+        region = ee.Geometry.Rectangle(
+            [bmin_lon, bmin_lat, bmax_lon, bmax_lat], "EPSG:4326", False,
+        )
+        img = (
+            ee.ImageCollection(_JRC_TMF_ANNUALCHANGES_ASSET)
+            .select(_JRC_TMF_ANNUALCHANGES_BAND)
+            .mosaic()
+        )
+        # Mask zero/nodata so the underlying basemap colour shows through (as
+        # white) — matches `mask_self=true` in the frontend preset.
+        img = img.updateMask(img.neq(0))
+        vis = img.visualize(
+            min=_JRC_TMF_ANNUALCHANGES_VIS_MIN,
+            max=_JRC_TMF_ANNUALCHANGES_VIS_MAX,
+            palette=list(_JRC_TMF_ANNUALCHANGES_PALETTE),
+        )
+        url = vis.getThumbURL({
+            "region": region,
+            "dimensions": str(int(max_dimension)),
+            "format": "png",
+        })
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        from PIL import Image as _PILImage
+        # Use RGBA so the masked (transparent) pixels stay transparent on the
+        # final imshow, letting matplotlib's white axes background show through.
+        arr = np.asarray(_PILImage.open(io.BytesIO(resp.content)).convert("RGBA"))
+    except Exception:
+        return None, {}
+
+    return arr, {
+        "min_lon": bmin_lon,
+        "max_lon": bmax_lon,
+        "min_lat": bmin_lat,
+        "max_lat": bmax_lat,
+    }
+
+
+def _render_transect_figure(req: TransectFigureRequest) -> tuple[bytes, str]:
+    """Render the multi-panel transect figure with matplotlib (shared x-axis).
+
+    Returns (binary, media_type). Runs synchronously; call from an executor.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.ticker import FuncFormatter, MaxNLocator
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    samples = req.samples
+    if len(samples) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 transect samples to render figure")
+
+    lons = np.array([s.lon for s in samples], dtype=float)
+    lats = np.array([s.lat for s in samples], dtype=float)
+    x_vals = lons if req.x_axis == "lon" else lats
+    x_label = "Longitude" if req.x_axis == "lon" else "Latitude"
+
+    # Panel selection (each becomes a row in plt.subplots).
+    panels: List[str] = []
+    height_ratios: List[float] = []
+    if req.include_ee_annualchanges:
+        # JRC TMF AnnualChanges sits at the very top of the figure (forest-class
+        # context first, then the natural-colour satellite snapshot below).
+        panels.append("ee_annualchanges")
+        height_ratios.append(req.ee_annualchanges_height_px)
+    if req.include_map:
+        panels.append("map")
+        height_ratios.append(req.map_height_px)
+    if req.include_heatmap:
+        panels.append("heatmap")
+        height_ratios.append(req.heatmap_height_px)
+    if req.include_enl_fhd:
+        panels.append("enl_fhd")
+        height_ratios.append(req.enl_fhd_height_px)
+    if req.include_cr:
+        panels.append("cr")
+        height_ratios.append(req.cr_height_px)
+    if not panels:
+        raise HTTPException(status_code=400, detail="Select at least one panel to render")
+
+    # ---- Layout DPI ------------------------------------------------------
+    # Figure inch dimensions are computed from a FIXED layout DPI matching the
+    # export DPI (150), NOT from `req.dpi`.  This way preview (req.dpi=90) and
+    # export (req.dpi=150) produce IDENTICAL layouts — only the saved pixel
+    # resolution differs (preview ≈ 720 px wide, export = `figure_width_px`).
+    # Without this pin, preview and export have different physical figure
+    # widths in inches and the same font/margins occupy different fractions,
+    # so labels overlap differently.
+    LAYOUT_DPI = 150
+    fig_w_in = req.figure_width_px / LAYOUT_DPI
+
+    # Margins in font-size-relative inches (DPI-independent).
+    font_in = req.font_size / 72.0          # 1 em in inches
+    left_in  = font_in * 10.0              # rotated ylabel + tick nums + padding
+    right_in = font_in * 4.5              # colorbar label + pad
+    top_in   = font_in * 1.0
+    bot_in   = font_in * 0.5
+    hsp_in   = font_in * 0.8              # gap between subplots (in inches)
+
+    left_frac  = max(0.06, min(0.28, left_in  / fig_w_in))
+    right_frac = max(0.04, min(0.18, right_in / fig_w_in))
+    inner_frac = 1.0 - left_frac - right_frac
+
+    # Fetch satellite image before creating the figure so we can auto-size the
+    # map panel to preserve the image's geographic aspect ratio.  Uses the
+    # actual computed inner_frac (not a hard-coded 0.85) so the panel height
+    # matches what subplots_adjust will produce.
+    sat_arr = None
+    sat_meta: Optional[dict] = None
+    if "map" in panels:
+        _sat_lons = np.array([s.lon for s in samples], dtype=float)
+        _sat_lats = np.array([s.lat for s in samples], dtype=float)
+        _sat_bytes, sat_meta = _stitch_bbox_satellite(
+            float(np.min(_sat_lons)),
+            float(np.max(_sat_lons)),
+            float(np.min(_sat_lats)),
+            float(np.max(_sat_lats)),
+            buffer_m=req.satellite_buffer_m,
+            max_width_px=req.satellite_max_width_px,
+        )
+        if _sat_bytes is not None:
+            from PIL import Image as _PILImage
+            sat_arr = np.asarray(_PILImage.open(io.BytesIO(_sat_bytes)).convert("RGB"))
+            # In a sharex grid, the rendered axes height for panel i is
+            #   panel_h_in = X / LAYOUT_DPI × n / (n + (n-1)·hspace)
+            # so for the map panel's inner rect to be inner_w × (img_h/img_w):
+            #   X = figure_width_px × inner_frac × (img_h/img_w) × (n+(n-1)·hspace)/n
+            # `hspace` itself depends on X via avg_panel_h, so we iterate twice.
+            sat_aspect = sat_arr.shape[0] / sat_arr.shape[1]
+            target_panel_px = req.figure_width_px * inner_frac * sat_aspect
+            n_panels = len(panels)
+            map_idx = panels.index("map")
+            S_other = sum(height_ratios) - height_ratios[map_idx]
+            auto_h = target_panel_px  # initial guess (no hspace correction)
+            for _ in range(3):
+                _avg_panel_h_in = ((auto_h + S_other) / LAYOUT_DPI) / max(1, n_panels)
+                _hspace_est = max(0.10, min(0.60, hsp_in / _avg_panel_h_in))
+                _correction = (n_panels + (n_panels - 1) * _hspace_est) / n_panels
+                auto_h = target_panel_px * _correction
+            height_ratios[map_idx] = max(60, int(round(auto_h)))
+
+    # Optional JRC TMF AnnualChanges panel — same buffered bbox as the
+    # satellite map, auto-sized using the same hspace-aware formula.
+    ee_arr = None
+    ee_meta: Optional[dict] = None
+    if "ee_annualchanges" in panels:
+        _ee_lons = np.array([s.lon for s in samples], dtype=float)
+        _ee_lats = np.array([s.lat for s in samples], dtype=float)
+        ee_arr, ee_meta = _fetch_ee_annualchanges_array(
+            float(np.min(_ee_lons)),
+            float(np.max(_ee_lons)),
+            float(np.min(_ee_lats)),
+            float(np.max(_ee_lats)),
+            buffer_m=req.satellite_buffer_m,
+            max_dimension=2048,
+        )
+        if ee_arr is not None:
+            ee_aspect = ee_arr.shape[0] / ee_arr.shape[1]
+            target_panel_px = req.figure_width_px * inner_frac * ee_aspect
+            n_panels = len(panels)
+            ee_idx = panels.index("ee_annualchanges")
+            S_other = sum(height_ratios) - height_ratios[ee_idx]
+            auto_h = target_panel_px
+            for _ in range(3):
+                _avg_panel_h_in = ((auto_h + S_other) / LAYOUT_DPI) / max(1, n_panels)
+                _hspace_est = max(0.10, min(0.60, hsp_in / _avg_panel_h_in))
+                _correction = (n_panels + (n_panels - 1) * _hspace_est) / n_panels
+                auto_h = target_panel_px * _correction
+            height_ratios[ee_idx] = max(60, int(round(auto_h)))
+
+    total_h_px = sum(height_ratios)
+    fig_h_in = total_h_px / LAYOUT_DPI
+    avg_panel_h_in = fig_h_in / max(1, len(panels))
+
+    # Axis labels (Latitude / Height (m) / ENL/FHD / CR / Longitude) use the
+    # user-requested font size. Tick numerals on every axis (and the colorbar)
+    # are 2 pt smaller so they sit visually subordinate to the labels.
+    _tick_fs = max(6, req.font_size - 2)
+    plt.rcParams["font.size"]        = req.font_size
+    plt.rcParams["axes.labelsize"]   = req.font_size
+    plt.rcParams["axes.titlesize"]   = req.font_size
+    plt.rcParams["xtick.labelsize"]  = _tick_fs
+    plt.rcParams["ytick.labelsize"]  = _tick_fs
+    plt.rcParams["legend.fontsize"]  = _tick_fs
+
+    fig, axes_obj = plt.subplots(
+        len(panels),
+        1,
+        figsize=(fig_w_in, fig_h_in),
+        gridspec_kw={"height_ratios": height_ratios},
+        sharex=True,
+    )
+    axes = axes_obj if isinstance(axes_obj, np.ndarray) else np.array([axes_obj])
+
+    fig.subplots_adjust(
+        left   = left_frac,
+        right  = 1.0 - right_frac,
+        top    = 1.0 - max(0.01, top_in / fig_h_in),
+        bottom = max(0.02, bot_in  / fig_h_in),
+        hspace = max(0.03, min(0.40, hsp_in / avg_panel_h_in)),
+    )
+
+    # Reserve a colorbar-sized gutter on every panel so the heatmap's plotting
+    # rectangle (x-axis) lines up exactly with map / ENL/FHD / CR panels.
+    # Only the heatmap renders into its gutter; the others stay invisible.
+    cbar_gutters = []
+    for ax_obj in axes:
+        divider = make_axes_locatable(ax_obj)
+        cax = divider.append_axes("right", size="2%", pad=0.05)
+        cax.set_visible(False)
+        cbar_gutters.append(cax)
+
+    # Colormap matching the frontend hsl-based ramp (blue → orange).
+    n_steps = 256
+    ramp_hsv = np.zeros((n_steps, 3))
+    for i in range(n_steps):
+        t = i / (n_steps - 1)
+        hue_deg = 235 - 175 * t
+        ramp_hsv[i] = [hue_deg / 360.0, 0.86, 0.28 + 0.34 * t]
+    # HLS-style: convert by interpolating between l-based RGB. Use simple manual conversion.
+    def _hsl_to_rgb(h_deg: float, s: float, l: float) -> tuple[float, float, float]:
+        h = (h_deg % 360) / 360.0
+        if s == 0:
+            return l, l, l
+        q = l * (1 + s) if l < 0.5 else l + s - l * s
+        p = 2 * l - q
+        def _h2c(t: float) -> float:
+            if t < 0:
+                t += 1
+            if t > 1:
+                t -= 1
+            if t < 1 / 6:
+                return p + (q - p) * 6 * t
+            if t < 1 / 2:
+                return q
+            if t < 2 / 3:
+                return p + (q - p) * (2 / 3 - t) * 6
+            return p
+        return _h2c(h + 1 / 3), _h2c(h), _h2c(h - 1 / 3)
+
+    ramp_rgb = np.array([_hsl_to_rgb(235 - 175 * (i / (n_steps - 1)), 0.86, 0.28 + 0.34 * (i / (n_steps - 1))) for i in range(n_steps)])
+    energy_cmap = LinearSegmentedColormap.from_list("transect_energy", ramp_rgb, N=n_steps)
+
+    x_min = float(np.min(x_vals))
+    x_max = float(np.max(x_vals))
+
+    # ---- map panel ------------------------------------------------------
+    if "map" in panels:
+        ax = axes[panels.index("map")]
+        if sat_arr is not None and sat_meta is not None:
+            extent_lon = (sat_meta["min_lon"], sat_meta["max_lon"])
+            extent_lat = (sat_meta["min_lat"], sat_meta["max_lat"])
+            if req.x_axis == "lon":
+                ax.imshow(
+                    sat_arr,
+                    extent=(extent_lon[0], extent_lon[1], extent_lat[0], extent_lat[1]),
+                    aspect="auto",
+                    origin="upper",
+                    interpolation="bilinear",
+                )
+                ax.plot(lons, lats, color="#ff5252", linewidth=1.0)
+                ax.set_ylabel("Lat.")
+                ax.set_ylim(extent_lat[0], extent_lat[1])
+                ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.3f}"))
+                ax.yaxis.set_major_locator(MaxNLocator(nbins=2, prune="both"))
+            else:
+                ax.imshow(
+                    np.transpose(sat_arr, (1, 0, 2))[::-1],
+                    extent=(extent_lat[0], extent_lat[1], extent_lon[0], extent_lon[1]),
+                    aspect="auto",
+                    origin="upper",
+                    interpolation="bilinear",
+                )
+                ax.plot(lats, lons, color="#ff5252", linewidth=1.0)
+                ax.set_ylabel("Lon.")
+                ax.set_ylim(extent_lon[0], extent_lon[1])
+                ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.3f}"))
+                ax.yaxis.set_major_locator(MaxNLocator(nbins=2, prune="both"))
+
+            # ---- scale bar (lower-left of the satellite panel) ----------
+            from matplotlib.patheffects import withStroke
+            from matplotlib.transforms import blended_transform_factory
+
+            mean_lat_rad = math.radians((float(np.min(lats)) + float(np.max(lats))) / 2.0)
+            # Convert one unit of the panel's x-axis (lon or lat degrees) to meters.
+            if req.x_axis == "lon":
+                m_per_xunit = 111320.0 * max(1e-6, math.cos(mean_lat_rad))
+            else:
+                m_per_xunit = 111320.0
+            visible_x_span = x_max - x_min
+            visible_x_span_m = visible_x_span * m_per_xunit
+            # Aim for a bar that's ~10% of the visible width, rounded to a nice
+            # 1/2/5 × 10^k value (typical map scale-bar convention).
+            target_m = visible_x_span_m * 0.10
+            if target_m > 0:
+                pow10 = 10 ** math.floor(math.log10(target_m))
+                leading = target_m / pow10
+                if leading < 1.5:
+                    bar_m = 1.0 * pow10
+                elif leading < 3.5:
+                    bar_m = 2.0 * pow10
+                elif leading < 7.5:
+                    bar_m = 5.0 * pow10
+                else:
+                    bar_m = 10.0 * pow10
+            else:
+                bar_m = 100.0
+            bar_xunit = bar_m / m_per_xunit
+
+            bar_x0 = x_min + visible_x_span * 0.03
+            bar_x1 = bar_x0 + bar_xunit
+            bar_y_axes = 0.10  # 10% from bottom of the panel
+            tick_h = 0.03
+            trans = blended_transform_factory(ax.transData, ax.transAxes)
+            halo = [withStroke(linewidth=2, foreground="white")]
+
+            ax.plot(
+                [bar_x0, bar_x1], [bar_y_axes, bar_y_axes],
+                color="black", linewidth=1.0,
+                transform=trans, solid_capstyle="butt",
+                path_effects=halo, zorder=5,
+            )
+            for xv in (bar_x0, bar_x1):
+                ax.plot(
+                    [xv, xv], [bar_y_axes - tick_h, bar_y_axes + tick_h],
+                    color="black", linewidth=1.0,
+                    transform=trans, solid_capstyle="butt",
+                    path_effects=halo, zorder=5,
+                )
+            label_text = (
+                f"{int(bar_m)} m" if bar_m < 1000 else
+                f"{bar_m / 1000:g} km"
+            )
+            ax.text(
+                (bar_x0 + bar_x1) / 2.0,
+                bar_y_axes + 0.04,
+                label_text,
+                transform=trans, ha="center", va="bottom",
+                fontsize=max(5, req.font_size - 4),
+                color="black",
+                path_effects=halo, zorder=6,
+            )
+        else:
+            ax.text(0.5, 0.5, "Satellite imagery unavailable", ha="center", va="center", transform=ax.transAxes)
+            ax.set_yticks([])
+
+    # ---- JRC TMF AnnualChanges panel ------------------------------------
+    if "ee_annualchanges" in panels:
+        ax = axes[panels.index("ee_annualchanges")]
+        if ee_arr is not None and ee_meta is not None:
+            ee_extent_lon = (ee_meta["min_lon"], ee_meta["max_lon"])
+            ee_extent_lat = (ee_meta["min_lat"], ee_meta["max_lat"])
+            if req.x_axis == "lon":
+                ax.imshow(
+                    ee_arr,
+                    extent=(ee_extent_lon[0], ee_extent_lon[1], ee_extent_lat[0], ee_extent_lat[1]),
+                    aspect="auto",
+                    origin="upper",
+                    interpolation="nearest",  # preserve sharp class boundaries
+                )
+                ax.plot(lons, lats, color="#ff5252", linewidth=1.0)
+                ax.set_ylabel("Lat.")
+                ax.set_ylim(ee_extent_lat[0], ee_extent_lat[1])
+                ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.3f}"))
+                ax.yaxis.set_major_locator(MaxNLocator(nbins=2, prune="both"))
+            else:
+                ax.imshow(
+                    np.transpose(ee_arr, (1, 0, 2))[::-1],
+                    extent=(ee_extent_lat[0], ee_extent_lat[1], ee_extent_lon[0], ee_extent_lon[1]),
+                    aspect="auto",
+                    origin="upper",
+                    interpolation="nearest",
+                )
+                ax.plot(lats, lons, color="#ff5252", linewidth=1.0)
+                ax.set_ylabel("Lon.")
+                ax.set_ylim(ee_extent_lon[0], ee_extent_lon[1])
+                ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.3f}"))
+                ax.yaxis.set_major_locator(MaxNLocator(nbins=2, prune="both"))
+            # Tiny corner annotation so the reader knows what they're looking at
+            # (axis title would crowd into the panel above; do a small footer).
+            ax.text(
+                0.99, 0.04, "JRC TMF AnnualChanges · Dec 2020",
+                transform=ax.transAxes, ha="right", va="bottom",
+                fontsize=max(6, req.font_size - 4),
+                color="#222",
+                bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", pad=1.2),
+            )
+        else:
+            ax.text(
+                0.5, 0.5,
+                "JRC TMF AnnualChanges unavailable\n(Earth Engine not configured)",
+                ha="center", va="center",
+                transform=ax.transAxes,
+                fontsize=max(7, req.font_size - 2),
+                color="#666",
+            )
+            ax.set_yticks([])
+
+    # ---- heatmap panel --------------------------------------------------
+    if "heatmap" in panels:
+        ax = axes[panels.index("heatmap")]
+        max_h = max(1.0, req.heatmap_max_height_m)
+        n_bins = max(
+            1,
+            max((len(s.profile) for s in samples), default=int(round(max_h / max(1.0, req.height_bin_m)))),
+        )
+        grid = np.full((n_bins, len(samples)), np.nan, dtype=float)
+        for i, s in enumerate(samples):
+            for p in s.profile:
+                if p.missing or p.value is None:
+                    continue
+                rh = int(p.rh)
+                if 0 <= rh < n_bins:
+                    grid[rh, i] = float(p.value)
+        # Y axis starts at 0 at bottom; matplotlib origin='lower' achieves that.
+        z_min = float(np.nanmin(grid)) if np.isfinite(np.nanmin(grid)) else 0.0
+        z_max = float(req.heatmap_colormap_max)
+        # Build extent so x-axis maps directly to lon/lat (shared with all panels).
+        # Place each sample at its actual coord; pcolormesh handles non-uniform spacing.
+        x_edges = np.empty(len(samples) + 1)
+        if len(samples) >= 2:
+            mid = (x_vals[:-1] + x_vals[1:]) / 2.0
+            x_edges[1:-1] = mid
+            x_edges[0] = x_vals[0] - (mid[0] - x_vals[0])
+            x_edges[-1] = x_vals[-1] + (x_vals[-1] - mid[-1])
+        else:
+            x_edges[:] = x_vals[0]
+        y_edges = np.linspace(0, max_h, n_bins + 1)
+        mesh = ax.pcolormesh(
+            x_edges,
+            y_edges,
+            np.where(np.isnan(grid), np.nan, grid),
+            cmap=energy_cmap,
+            vmin=z_min,
+            vmax=z_max,
+            shading="auto",
+            edgecolors="none",
+            linewidth=0,
+            antialiased=False,
+            # PDF/SVG vector output renders each pcolormesh quad separately and
+            # leaves visible hairline gaps between adjacent cells (the "grid"
+            # lines the user sees in PDF). Rasterising just this artist embeds
+            # the mesh as one image inside the PDF — eliminates the seams while
+            # keeping every other element (axes, ticks, labels, lines) vector.
+            rasterized=True,
+        )
+        ax.set_facecolor("#fafafa")
+        ax.set_ylabel("Height (m)")
+        ax.set_ylim(0, max_h)
+        ax.grid(False)
+        # Use the pre-reserved gutter so the heatmap's plot rectangle keeps
+        # the same width as the other panels.
+        cax = cbar_gutters[panels.index("heatmap")]
+        cax.set_visible(True)
+        cbar = fig.colorbar(mesh, cax=cax)
+        cbar.set_label("Energy (%)")
+
+    # ---- ENL/FHD panel --------------------------------------------------
+    if "enl_fhd" in panels:
+        ax = axes[panels.index("enl_fhd")]
+        fhd = np.array([s.fhd if s.fhd is not None else np.nan for s in samples], dtype=float)
+        enl1 = np.array([s.enl1d if s.enl1d is not None else np.nan for s in samples], dtype=float)
+        enl2 = np.array([s.enl2d if s.enl2d is not None else np.nan for s in samples], dtype=float)
+        if np.any(np.isfinite(fhd)):
+            ax.plot(x_vals, fhd, label="FHD", color="#1f77b4", linewidth=1.5)
+        if np.any(np.isfinite(enl1)):
+            ax.plot(x_vals, enl1, label="1D ENL", color="#2ca02c", linewidth=1.5)
+        if np.any(np.isfinite(enl2)):
+            ax.plot(x_vals, enl2, label="2D ENL", color="#d62728", linewidth=1.5)
+        ax.set_ylabel("ENL / FHD")
+        ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.5)
+
+    # ---- CR panel -------------------------------------------------------
+    if "cr" in panels:
+        ax = axes[panels.index("cr")]
+        cr = np.array([s.cr if s.cr is not None else np.nan for s in samples], dtype=float)
+        if np.any(np.isfinite(cr)):
+            ax.plot(x_vals, cr, color="#9467bd", linewidth=1.5, label="CR")
+        ax.set_ylabel("CR")
+        # Slight headroom above 1.0 so points sitting at CR=1 stay visible.
+        ax.set_ylim(0, 1.1)
+        ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.5)
+
+    # All sharex panels — only label the bottom-most.
+    axes[-1].set_xlabel(x_label)
+    axes[-1].set_xlim(x_min, x_max)
+    # Sparse x-ticks (sharex propagates this to every panel above).
+    axes[-1].xaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
+    axes[-1].xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v:.3f}"))
+
+    # Align all y-axis labels to the same x position so they form a neat column.
+    fig.align_ylabels(list(axes))
+
+    # Collect legend entries from all data panels in order: FHD / ENL / CR.
+    legend_handles: list = []
+    legend_labels: list = []
+    for ax_obj in axes:
+        h, l = ax_obj.get_legend_handles_labels()
+        for hi, li in zip(h, l):
+            if li not in legend_labels:
+                legend_handles.append(hi)
+                legend_labels.append(li)
+
+    if legend_handles:
+        # Anchor relative to the bottom-most axis so the legend always sits below
+        # its x-label regardless of figure height. bbox_inches="tight" on save
+        # will extend the canvas to include it.
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.8),
+            bbox_transform=axes[-1].transAxes,
+            ncol=len(legend_handles),
+            frameon=False,
+            fontsize=max(7, req.font_size - 2),
+            handlelength=1.2,
+            columnspacing=1.2,
+            handletextpad=0.35,
+        )
+    for ax_obj in axes[:-1]:
+        ax_obj.tick_params(axis='x', labelbottom=False, length=0)
+    # Output buffer.
+    buf = io.BytesIO()
+    if req.fmt == "pdf":
+        fig.savefig(buf, format="pdf", dpi=req.dpi, bbox_inches="tight", pad_inches=0.1)
+        media_type = "application/pdf"
+    elif req.fmt == "jpg":
+        fig.savefig(buf, format="jpg", dpi=req.dpi, bbox_inches="tight", pad_inches=0.1, facecolor="white")
+        media_type = "image/jpeg"
+    else:
+        fig.savefig(buf, format="png", dpi=req.dpi, bbox_inches="tight", pad_inches=0.1, facecolor="white")
+        media_type = "image/png"
+    plt.close(fig)
+    return buf.getvalue(), media_type
+
+
+@router.post("/transect/figure")
+async def transect_figure(req: TransectFigureRequest):
+    """Render the full transect figure (map + heatmap + metrics) as one image.
+
+    All panels share the same x-axis (longitude or latitude) by construction
+    via matplotlib's `sharex=True`, so longitudes line up exactly without any
+    margin gymnastics on the frontend.
+    """
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    payload, media_type = await loop.run_in_executor(None, lambda: _render_transect_figure(req))
+    suffix = {"image/png": "png", "image/jpeg": "jpg", "application/pdf": "pdf"}.get(media_type, "bin")
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="transect-figure.{suffix}"'},
+    )
 
 
 @router.get("/saved-features/image/{relative_path:path}")

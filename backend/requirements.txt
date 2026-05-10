@@ -12,3 +12,4 @@ pydantic
 mgrs
 rasterio
 duckdb
+earthengine-api

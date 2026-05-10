@@ -204,8 +204,8 @@ def compute_entropy(output_path: Path=None, tile_id:str=None, year:int=None, vrt
 
     # Create VRT if not provided
     if vrt_path is None:
-        tile_dir = f"~/data/gvs/predictions/{year}/original/tiles/cog/{tile_id}"
-        vrt_path = f"~/data/gvs/predictions/{year}/original/vrt/{tile_id}_Q1.vrt"
+        tile_dir = f"~/data/gvs/products/vsm/{year}/original/tiles/cog/{tile_id}" # TODO
+        vrt_path = f"~/data/gvs/products/vsm/{year}/original/vrt/{tile_id}_Q1.vrt"
         create_vrt(tile_dir, vrt_path)
 
     vrt_path = str(Path(vrt_path).expanduser())
@@ -385,11 +385,11 @@ def vertical_profile(rhs, min_rh=-200, max_rh=500, step=1, window=31):
 if __name__ == "__main__":
     tile_id = '36NTF'
     year = 2020
-    vrt_path = f"~/data/gvs/predictions/{year}/original/vrt/{tile_id}_Q1.vrt"
+    vrt_path = f"~/data/gvs/products/vsm/{year}/original/vrt/{tile_id}_Q1.vrt"
     output_path = f"~/data/gvs/products/profile_entropy/{tile_id}.tif"
 
     # Create VRT if needed
-    tile_dir = f"~/data/gvs/predictions/{year}/original/tiles/cog/{tile_id}"
+    tile_dir = f"~/data/gvs/products/vsm/{year}/original/tiles/cog/{tile_id}"
     vrt_resolved = Path(vrt_path).expanduser()
     if not vrt_resolved.exists():
         create_vrt(tile_dir, vrt_path)

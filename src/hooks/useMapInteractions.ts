@@ -41,6 +41,9 @@ export function useMapInteractions(updateLayersList: () => void) {
     setFeatureDraft,
   } = useMapStore();
 
+  const transectHeatmapSampleIndex = useMapStore((s) => s.transectHeatmapSampleIndex);
+  const inspectPanel = useMapStore((s) => s.inspectPanel);
+
   const inspectRequestIdRef = useRef(0);
   const inspectPinLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
   const inspectPinFeatureRef = useRef<Feature<Point> | null>(null);
@@ -78,6 +81,7 @@ export function useMapInteractions(updateLayersList: () => void) {
   }, []);
 
   const clearInspectLine = useCallback(() => {
+    useMapStore.getState().setTransectHeatmapSampleIndex(null);
     if (inspectLineLayerRef.current) {
       inspectLineLayerRef.current.getSource()?.clear();
       map?.removeLayer(inspectLineLayerRef.current);
@@ -349,6 +353,15 @@ export function useMapInteractions(updateLayersList: () => void) {
         source: newSource,
         zIndex: 1300,
         style: (f) => {
+          if (f.get('transectHeatmapHover')) {
+            return new Style({
+              image: new CircleStyle({
+                radius: 10,
+                fill: new Fill({ color: 'rgba(255, 152, 0, 0.95)' }),
+                stroke: new Stroke({ color: '#ffffff', width: 3 }),
+              }),
+            });
+          }
           const t = f.getGeometry()?.getType();
           if (t === 'Point' || t === 'MultiPoint') {
             return new Style({ image: new CircleStyle({ radius: 6, fill: new Fill({ color: '#1976d2' }), stroke: new Stroke({ color: '#ffffff', width: 2 }) }) });
@@ -386,6 +399,7 @@ export function useMapInteractions(updateLayersList: () => void) {
     if (mapEl) mapEl.style.cursor = 'crosshair';
 
     draw.on('drawstart', () => {
+      useMapStore.getState().setTransectHeatmapSampleIndex(null);
       // Do not clear `source` here: a new draw aborts often (pan, mis-click, Escape).
       // Clearing only on successful drawend keeps the last transect visible until replaced.
       clearInspectPin();
@@ -504,6 +518,37 @@ export function useMapInteractions(updateLayersList: () => void) {
       if (el) el.style.cursor = '';
     };
   }, [map, clearInspectPin, inspectMode, inspectKind, drawingActive, featureCaptureType, vsmYear, diversityHeightBinM]);
+
+  // Transect heatmap: mirror hovered/locked column as a point on the map line.
+  useEffect(() => {
+    const layer = inspectLineLayerRef.current;
+    const source = layer?.getSource();
+    if (!map || !source) return;
+
+    source.getFeatures().forEach((f) => {
+      if (f.get('transectHeatmapHover')) source.removeFeature(f);
+    });
+
+    const idx = transectHeatmapSampleIndex;
+    const samples = inspectPanel?.transectProfile?.samples;
+    if (
+      idx == null ||
+      inspectPanel?.kind !== 'vertical_profile_line' ||
+      !samples?.length ||
+      idx < 0 ||
+      idx >= samples.length
+    ) {
+      return;
+    }
+
+    const sample = samples[idx];
+    if (!Number.isFinite(sample.lon) || !Number.isFinite(sample.lat)) return;
+
+    const coord3857 = transform([sample.lon, sample.lat], 'EPSG:4326', 'EPSG:3857');
+    const feat = new Feature({ geometry: new Point(coord3857) });
+    feat.set('transectHeatmapHover', true);
+    source.addFeature(feat);
+  }, [map, transectHeatmapSampleIndex, inspectPanel?.kind, inspectPanel?.transectProfile?.samples]);
 
   // Hover + delete overlay on vector label features (skip GEDI)
   useEffect(() => {

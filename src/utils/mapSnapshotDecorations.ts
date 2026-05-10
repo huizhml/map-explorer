@@ -209,6 +209,67 @@ export function drawMetricScaleBarOnSnapshot(
 }
 
 /**
+ * Same as `drawMetricScaleBarOnSnapshot` but accepts `metersPerCssPx` directly
+ * (no OL map required — use when the image comes from an off-map source).
+ */
+export function drawMetricScaleBarFromResolution(
+  ctx: CanvasRenderingContext2D,
+  metersPerCssPx: number,
+  options: {
+    canvasHeightPx: number;
+    padLeftPx: number;
+    padBottomPx: number;
+    pxPerCss: number;
+    minWidthCss: number;
+    steps: number;
+  },
+): void {
+  const { canvasHeightPx, padLeftPx, padBottomPx, pxPerCss, minWidthCss, steps } = options;
+  const layout = computeMetricScaleBarLayout(minWidthCss, metersPerCssPx);
+  if (!layout) return;
+  const { barWidthCss, scaleLength, suffix } = layout;
+  const wPx = barWidthCss * pxPerCss;
+  const barHPx = 10 * pxPerCss;
+  const labelAreaPx = 16 * pxPerCss;
+  const platePad = 3 * pxPerCss;
+  const barTopPx = canvasHeightPx - padBottomPx - labelAreaPx - barHPx;
+  const barBottomPx = barTopPx + barHPx;
+  const plateTop = barTopPx - platePad;
+  const plateBottom = barBottomPx + labelAreaPx;
+  const rx = 4 * pxPerCss;
+  ctx.save();
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
+  ctx.lineWidth = 1 * pxPerCss;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(padLeftPx - platePad, plateTop, wPx + platePad * 2, plateBottom - plateTop, rx);
+  } else {
+    ctx.rect(padLeftPx - platePad, plateTop, wPx + platePad * 2, plateBottom - plateTop);
+  }
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+  const stepW = wPx / steps;
+  for (let i = 0; i < steps; i++) {
+    const x0 = padLeftPx + i * stepW;
+    ctx.fillStyle = i % 2 === 0 ? '#ffffff' : '#888888';
+    ctx.strokeStyle = '#333333';
+    ctx.lineWidth = Math.max(1, 1 * pxPerCss);
+    ctx.fillRect(x0, barTopPx, stepW, barHPx);
+    ctx.strokeRect(x0, barTopPx, stepW, barHPx);
+  }
+  const labelY = barBottomPx + 2 * pxPerCss;
+  for (let i = 0; i <= steps; i++) {
+    const length = i === 0 ? 0 : Math.round((scaleLength / steps) * i * 100) / 100;
+    const txt = i === 0 ? '0' : `${length} ${suffix}`.trim();
+    const x = padLeftPx + (wPx * i) / steps;
+    const align: CanvasTextAlign = i === 0 ? 'left' : i === steps ? 'right' : 'center';
+    strokeFillLabel(ctx, txt, x, labelY, pxPerCss, align);
+  }
+}
+
+/**
  * North arrow in the bottom-right; `pxScale` scales geometry for HiDPI exports.
  */
 export function drawNorthArrowOnSnapshot(

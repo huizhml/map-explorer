@@ -1,11 +1,13 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
   Button,
+  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   FormControl,
   InputLabel,
   MenuItem,
@@ -15,129 +17,105 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import type { SelectChangeEvent } from '@mui/material';
-import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
 import { useMapStore } from '../stores/mapStore';
 import type { VerticalProfileLineSample } from '../stores/mapStore';
-import { TransectMetricsChart } from './SavedFeaturePlots';
 import {
   DEFAULT_DIVERSITY_HEIGHT_BIN_M,
   DEFAULT_HEATMAP_MAX_HEIGHT_M,
   HEATMAP_COLORMAP_MAX,
 } from '../constants/diversityMetrics';
-import {
-  drawMetricScaleBarOnSnapshot,
-  drawNorthArrowOnSnapshot,
-} from '../utils/mapSnapshotDecorations';
+import { apiUrl } from '../utils/apiBase';
 
 type ExportFormat = 'pdf' | 'png' | 'jpg';
-type PlotTarget = 'heatmap' | 'metrics';
-type PdfQuality = 'standard' | 'high' | 'ultra';
-/** Inset for scale bar + north arrow on exported map snapshots (aligns with OL control margins). */
-const MAP_EXPORT_DECORATION_PAD = 10;
-
-/** ScaleLine options in {@link Map.tsx} — keep snapshot bar consistent with the live map. */
-const MAP_EXPORT_SCALEBAR_MIN_WIDTH_CSS = 120;
-const MAP_EXPORT_SCALEBAR_STEPS = 4;
-
-/** Scale + pixel caps for PDF embedding (heatmap raster + metrics html2canvas). */
-const PDF_QUALITY_PRESETS: Record<
-  PdfQuality,
-  { heatmapScale: number; heatmapMaxPixels: number; metricsScale: number; metricsMaxPixels: number }
-> = {
-  standard: {
-    heatmapScale: 1,
-    heatmapMaxPixels: 4_800_000,
-    metricsScale: 1.5,
-    metricsMaxPixels: 4_000_000,
-  },
-  high: {
-    heatmapScale: 2,
-    heatmapMaxPixels: 8_000_000,
-    metricsScale: 2,
-    metricsMaxPixels: 6_000_000,
-  },
-  ultra: {
-    heatmapScale: 3,
-    heatmapMaxPixels: 14_000_000,
-    /** 3× metrics raster is very slow; heatmap can still use 3×. */
-    metricsScale: 2.5,
-    metricsMaxPixels: 10_000_000,
-  },
-};
-
-/**
- * html2canvas for MUI X Charts (SVG-heavy).
- * Keep `foreignObjectRendering: false` — the FO path often yields blank images with
- * nested SVG / charts and can hang the main thread in Chrome.
- */
-const HTML2CANVAS_METRICS = {
-  backgroundColor: '#ffffff',
-  useCORS: true,
-  logging: false,
-  foreignObjectRendering: false,
-  scrollX: 0,
-  scrollY: 0,
-} as const;
-
-/** Hard cap — metrics plots are wider than tall; 2.5× is plenty for print/PDF without huge buffers. */
-const METRICS_EXPORT_MAX_SCALE = 2.5;
 
 type TransectExportDialogProps = {
   open: boolean;
   onClose: () => void;
   samples: VerticalProfileLineSample[];
+  lineCoordinates?: Array<[number, number]>;
   totalLengthMeters?: number;
   xAxis: 'lon' | 'lat';
   /** Y-axis top (m) for heatmap raster only (not diversity `max_height`). */
   heatmapMaxHeight?: number;
   /** Meters per vertical bin (matches transect profile histogram); defaults to Tools setting. */
   heightBinM?: number;
+  /** Saved-feature display name; used as the default export filename. */
+  featureName?: string;
 };
+
+/** Strip a free-form name down to a safe filename stem. */
+function sanitizeFilename(s: string): string {
+  const cleaned = s
+    .trim()
+    .replace(/[\s/\\?%*:|"<>]+/g, '_')  // replace illegal/whitespace chars
+    .replace(/_{2,}/g, '_')                 // collapse repeated underscores
+    .replace(/^[._]+|[._]+$/g, '');          // trim leading/trailing dots/underscores
+  return cleaned.length > 0 ? cleaned.slice(0, 120) : '';
+}
 
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, Math.round(value)));
 }
 
-function rampColor(t: number): string {
-  const clamped = Math.max(0, Math.min(1, t));
-  const hue = 235 - 175 * clamped;
-  const saturation = 86;
-  const lightness = 28 + 34 * clamped;
-  return `hsl(${hue.toFixed(1)} ${saturation}% ${lightness.toFixed(1)}%)`;
-}
+const PREVIEW_RENDER_DEBOUNCE_MS = 350;
 
-function rampRgb(t: number): [number, number, number] {
-  const clamped = Math.max(0, Math.min(1, t));
-  const h = (235 - 175 * clamped) / 360;
-  const s = 0.86;
-  const l = 0.28 + 0.34 * clamped;
-  const hueToRgb = (p: number, q: number, tt: number) => {
-    let x = tt;
-    if (x < 0) x += 1;
-    if (x > 1) x -= 1;
-    if (x < 1 / 6) return p + (q - p) * 6 * x;
-    if (x < 1 / 2) return q;
-    if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
-    return p;
-  };
-  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-  const p = 2 * l - q;
-  const r = hueToRgb(p, q, h + 1 / 3);
-  const g = hueToRgb(p, q, h);
-  const b = hueToRgb(p, q, h - 1 / 3);
-  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-}
-
-function getSafeExportSize(width: number, height: number, maxPixels: number) {
-  const pixels = width * height;
-  if (pixels <= maxPixels) return { width, height };
-  const scale = Math.sqrt(maxPixels / pixels);
+/** Build the JSON payload the `/transect/figure` endpoint expects. */
+function buildFigurePayload(args: {
+  samples: VerticalProfileLineSample[];
+  xAxis: 'lon' | 'lat';
+  heightBinM: number;
+  heatmapMaxHeight: number;
+  includeMap: boolean;
+  includeEeAnnualChanges: boolean;
+  includeHeatmap: boolean;
+  includeEnlFhd: boolean;
+  includeCr: boolean;
+  figureWidth: number;
+  mapHeight: number;
+  heatmapHeight: number;
+  enlFhdHeight: number;
+  crHeight: number;
+  fontSize: number;
+  satelliteBufferM: number;
+  fmt: ExportFormat;
+  preview: boolean;
+}) {
+  const slim = args.samples.map((s) => ({
+    lon: s.lon,
+    lat: s.lat,
+    distance_m: s.distance_m,
+    profile: (s.profile ?? []).map((p) => ({
+      rh: p.rh,
+      value: p.value,
+      missing: p.missing ?? false,
+    })),
+    fhd: s.fhd ?? null,
+    enl1d: s.enl1d ?? null,
+    enl2d: s.enl2d ?? null,
+    cr: s.cr ?? null,
+  }));
   return {
-    width: Math.max(480, Math.round(width * scale)),
-    height: Math.max(320, Math.round(height * scale)),
+    samples: slim,
+    x_axis: args.xAxis,
+    height_bin_m: args.heightBinM,
+    heatmap_max_height_m: args.heatmapMaxHeight,
+    heatmap_colormap_max: HEATMAP_COLORMAP_MAX,
+    include_map: args.includeMap,
+    include_ee_annualchanges: args.includeEeAnnualChanges,
+    include_heatmap: args.includeHeatmap,
+    include_enl_fhd: args.includeEnlFhd,
+    include_cr: args.includeCr,
+    figure_width_px: args.figureWidth,
+    map_height_px: args.mapHeight,
+    heatmap_height_px: args.heatmapHeight,
+    enl_fhd_height_px: args.enlFhdHeight,
+    cr_height_px: args.crHeight,
+    font_size: args.fontSize,
+    satellite_buffer_m: args.satelliteBufferM,
+    // Preview always renders PNG at lower DPI for snappy refresh; export honours format.
+    fmt: args.preview ? 'png' : args.fmt,
+    dpi: args.preview ? 90 : 150,
   };
 }
 
@@ -145,618 +123,259 @@ export function TransectExportDialog({
   open,
   onClose,
   samples,
+  lineCoordinates,
   totalLengthMeters,
   xAxis,
   heatmapMaxHeight,
   heightBinM: heightBinMProp,
+  featureName,
 }: TransectExportDialogProps) {
-  const map = useMapStore((state) => state.map);
+  void totalLengthMeters;
+  void lineCoordinates;
   const diversityHeightBinM = useMapStore((state) => state.diversityHeightBinM);
   const heightBinM = heightBinMProp ?? diversityHeightBinM ?? DEFAULT_DIVERSITY_HEIGHT_BIN_M;
-  const heatmapCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const metricsPreviewRef = useRef<HTMLDivElement | null>(null);
-  /** Off-screen DOM used for one-file metrics export. */
-  const metricsExportRef = useRef<HTMLDivElement | null>(null);
+
+  const previewRenderTokenRef = useRef(0);
+  const previewObjectUrlRef = useRef<string | null>(null);
+  const previewDebounceRef = useRef<number | null>(null);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  const [isRenderingPreview, setIsRenderingPreview] = useState(false);
+
   const [format, setFormat] = useState<ExportFormat>('png');
-  const [previewPlot, setPreviewPlot] = useState<PlotTarget>('heatmap');
   const [fontSize, setFontSize] = useState<number>(11);
   const [figureWidth, setFigureWidth] = useState<number>(1200);
-  const [figureHeight, setFigureHeight] = useState<number>(560);
+  const [mapPanelHeight, setMapPanelHeight] = useState<number>(220);
+  const [heatmapHeight, setHeatmapHeight] = useState<number>(240);
+  const [enlFhdHeight, setEnlFhdHeight] = useState<number>(300);
+  const [crHeight, setCrHeight] = useState<number>(140);
+  /** Vertical buffer (m) above/below the transect for the satellite snapshot. */
+  const [satelliteBufferM, setSatelliteBufferM] = useState<number>(200);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [pdfQuality, setPdfQuality] = useState<PdfQuality>('high');
-  /** Vertical colorbar strip width in px (heatmap only); bar height matches plot inner height. */
-  const [colorbarHeightPx, setColorbarHeightPx] = useState<number>(18);
+  const [includeMapPanel, setIncludeMapPanel] = useState(true);
+  const [includeEeAnnualChangesPanel, setIncludeEeAnnualChangesPanel] = useState(false);
+  const [includeHeatmapPanel, setIncludeHeatmapPanel] = useState(true);
+  const [includeEnlFhdPanel, setIncludeEnlFhdPanel] = useState(true);
+  const [includeCrPanel, setIncludeCrPanel] = useState(true);
 
   const safeWidth = clamp(figureWidth, 700, 3000);
-  const safeHeight = clamp(figureHeight, 100, 1800);
+  const safeMapPanelHeight = clamp(mapPanelHeight, 80, 1800);
+  const safeHeatmapHeight = clamp(heatmapHeight, 100, 1800);
+  const safeEnlFhdHeight = clamp(enlFhdHeight, 120, 2200);
+  const safeCrHeight = clamp(crHeight, 90, 1400);
   const safeFontSize = clamp(fontSize, 8, 24);
-  const safeColorbarHeightPx = clamp(colorbarHeightPx, 10, 44);
+  const safeSatelliteBufferM = clamp(satelliteBufferM, 10, 5000);
 
-  /** Matches {@link TransectMetricsChart} so we only run html2canvas on non-empty panels. */
-  const metricsExportPanels = useMemo(() => {
-    if (samples.length < 2) return { main: false, cr: false };
-    const hasMain = samples.some((s) =>
-      [s.fhd, s.enl1d, s.enl2d].some((v) => v != null && Number.isFinite(Number(v))),
-    );
-    const hasCr = samples.some((s) => s.cr != null && Number.isFinite(s.cr));
-    return { main: hasMain, cr: hasCr };
+  // Content fingerprint of the incoming `samples` prop. The parent often hands
+  // us a freshly-allocated array on every render even when the underlying data
+  // hasn't changed; without this the preview would re-fetch on every keystroke
+  // anywhere in the page. Using length + endpoints + first profile length is
+  // sufficient for our use case (transect samples are immutable once computed).
+  const samplesFingerprint = useMemo(() => {
+    if (samples.length === 0) return 'empty';
+    const f = samples[0];
+    const l = samples[samples.length - 1];
+    return [
+      samples.length,
+      f.lon,
+      f.lat,
+      l.lon,
+      l.lat,
+      f.profile?.length ?? 0,
+      f.fhd ?? '',
+      l.fhd ?? '',
+    ].join('|');
   }, [samples]);
 
-  // Heavy data prep cached: builds xCount × nBins RGBA bitmap (`rh` = bin index).
-  const heatmapData = useMemo(() => {
-    let zMin = Infinity;
-    let zMax = -Infinity;
-    const xCount = Math.max(1, samples.length);
-    const hb = Math.max(1, heightBinM);
-    const maxHm = Math.max(1, Math.round(heatmapMaxHeight ?? DEFAULT_HEATMAP_MAX_HEIGHT_M));
-    const nBins = Math.max(
-      1,
-      samples.reduce((acc, s) => Math.max(acc, s.profile?.length ?? 0), 0) || Math.round(maxHm / hb),
-    );
+  const usableSamples = useMemo(
+    () =>
+      samples.filter(
+        (s) =>
+          Number.isFinite(s.lon) &&
+          Number.isFinite(s.lat) &&
+          Math.abs(s.lon) <= 180 &&
+          Math.abs(s.lat) <= 90,
+      ),
+    // Intentionally keyed on fingerprint, not the array reference itself —
+    // see `samplesFingerprint` comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [samplesFingerprint],
+  );
+  const hasEnoughSamples = usableSamples.length >= 2;
+  const anyPanelSelected =
+    includeMapPanel ||
+    includeEeAnnualChangesPanel ||
+    includeHeatmapPanel ||
+    includeEnlFhdPanel ||
+    includeCrPanel;
 
-    type Pt = { xIndex: number; rh: number; value: number };
-    const points: Pt[] = [];
-
-    for (let i = 0; i < samples.length; i += 1) {
-      const sample = samples[i];
-      const profile = sample.profile;
-      for (let j = 0; j < profile.length; j += 1) {
-        const p = profile[j];
-        if (p.missing || p.value == null) continue;
-        const v = p.value;
-        if (!Number.isFinite(v)) continue;
-        const rh = Math.round(p.rh);
-        if (v < zMin) zMin = v;
-        if (v > zMax) zMax = v;
-        points.push({ xIndex: i, rh, value: v });
-      }
-    }
-
-    const zScaleMin = zMin;
-    const zScaleMax = HEATMAP_COLORMAP_MAX;
-    const colorDenom = zScaleMax > zScaleMin ? zScaleMax - zScaleMin : 1;
-    const yCount = nBins;
-
-    let gridCanvas: HTMLCanvasElement | null = null;
-    if (points.length > 0) {
-      const c = document.createElement('canvas');
-      c.width = xCount;
-      c.height = yCount;
-      const gridCtx = c.getContext('2d');
-      if (gridCtx) {
-        const imgData = gridCtx.createImageData(xCount, yCount);
-        const data = imgData.data;
-        // Default every pixel to opaque #fafafa so empty bins blend with the
-        // chart background (matches the manual fillRect path used previously).
-        for (let i = 0; i < data.length; i += 4) {
-          data[i] = 250;
-          data[i + 1] = 250;
-          data[i + 2] = 250;
-          data[i + 3] = 255;
-        }
-        for (let i = 0; i < points.length; i += 1) {
-          const p = points[i];
-          const px = p.xIndex;
-          const py = nBins - 1 - p.rh;
-          if (px < 0 || px >= xCount || py < 0 || py >= yCount) continue;
-          const tRaw =
-            zScaleMin >= zScaleMax
-              ? 1
-              : (Math.min(p.value, zScaleMax) - zScaleMin) / colorDenom;
-          const t = Math.max(0, Math.min(1, tRaw));
-          const [r, g, b] = rampRgb(t);
-          const idx = (py * xCount + px) * 4;
-          data[idx] = r;
-          data[idx + 1] = g;
-          data[idx + 2] = b;
-          data[idx + 3] = 255;
-        }
-        gridCtx.putImageData(imgData, 0, 0);
-        gridCanvas = c;
-      }
-    }
-
-    return {
-      points,
-      zScaleMin,
-      zScaleMax,
-      nBins,
-      maxHm,
-      xCount,
-      gridCanvas,
-    };
-  }, [samples, heatmapMaxHeight, heightBinM]);
-
-  const drawHeatmapInto = (
-    canvas: HTMLCanvasElement,
-    width: number,
-    height: number,
-  ): boolean => {
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return false;
-
-    const { points, zScaleMin, zScaleMax, maxHm, xCount, gridCanvas } = heatmapData;
-    // When PDF export uses a larger bitmap than the figure size (high/ultra),
-    // scale all typography, margins, and strokes so proportions match the preview.
-    const sc = Math.min(width / safeWidth, height / safeHeight);
-    if (points.length === 0 || !gridCanvas) {
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, width, height);
-      ctx.fillStyle = '#9e9e9e';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.font = `${safeFontSize * sc}px sans-serif`;
-      ctx.fillText('No transect data to plot', width / 2, height / 2);
-      return false;
-    }
-
-    const tickFontSize = Math.max(10, safeFontSize - 1) * sc;
-    const axisFontSize = safeFontSize * sc;
-    /** Two labeled positions on Y (0 and max height). */
-    const yTickIntervals = 1;
-    const yTicksMeters = Array.from({ length: yTickIntervals + 1 }, (_, i) =>
-      Math.round((i / yTickIntervals) * maxHm));
-    ctx.font = `${tickFontSize}px sans-serif`;
-    const yTickMaxWidth = yTicksMeters.reduce((mx, m) => Math.max(mx, ctx.measureText(`${m}`).width), 0);
-    const zLoBar = Math.min(zScaleMin, zScaleMax);
-    const zSpanForMargin = Math.max(zScaleMax - zLoBar, 1e-9);
-    const colorbarTickCount = 2;
-    let colorbarLabelMaxW = 0;
-    for (let i = 0; i < colorbarTickCount; i += 1) {
-      const t = colorbarTickCount > 1 ? i / (colorbarTickCount - 1) : 0;
-      const zAt = zScaleMin >= zScaleMax ? zScaleMax : zLoBar + t * zSpanForMargin;
-      colorbarLabelMaxW = Math.max(colorbarLabelMaxW, ctx.measureText(zAt.toFixed(2)).width);
-    }
-    const colorbarGap = 8 * sc;
-    const colorbarTickLen = 4 * sc;
-    const barThickness = safeColorbarHeightPx * sc;
-    ctx.font = `${axisFontSize}px sans-serif`;
-    /** Rotated vertical title occupies ~one em horizontally on screen (glyph advance along x). */
-    const yAxisTitleHorizHalf = axisFontSize * 0.58;
-    const padCanvasLeft = 4 * sc;
-    const tickToPlot = 6 * sc;
-    const gapTicksToYTitle = 6 * sc;
-    /* Plot left edge = after: [pad][rotated title][gap][y tick numerals][tick mark][axis] */
-    const leftMarginForYAxis =
-      padCanvasLeft +
-      2 * yAxisTitleHorizHalf +
-      gapTicksToYTitle +
-      yTickMaxWidth +
-      tickToPlot;
-    const energyLabelReserve = 6 * sc + ctx.measureText('Energy (%)').width / 2 + axisFontSize * 0.5;
-    // Right margin: gap + bar + ticks + value labels + rotated "Energy (%)" title.
-    const marginRightColorbar =
-      colorbarGap + barThickness + colorbarTickLen + colorbarLabelMaxW + 4 * sc + energyLabelReserve;
-    const margin = {
-      top: Math.max(10 * sc, 6 * sc + tickFontSize * 0.35),
-      right: Math.max(10 * sc, marginRightColorbar),
-      bottom: Math.max(8 * sc, 4 * sc + tickFontSize + axisFontSize + 6 * sc),
-      left: Math.max(12 * sc, Math.ceil(leftMarginForYAxis)),
-    };
-    const innerW = width - margin.left - margin.right;
-    const innerH = height - margin.top - margin.bottom;
-    const cellW = innerW / xCount;
-
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, width, height);
-
-    ctx.fillStyle = '#4f4f4f';
-    ctx.font = `${safeFontSize * sc}px sans-serif`;
-    ctx.textBaseline = 'top';
-    // ctx.fillText(
-    //   `Heatmap across transect locations (${xAxis === 'lon' ? 'longitude' : 'latitude'}) and height bins (y, 1m).`,
-    //   12,
-    //   10,
-    // );
-
-    ctx.fillStyle = '#fafafa';
-    ctx.fillRect(margin.left, margin.top, innerW, innerH);
-
-    // Single-shot upscale of the precomputed cell bitmap. Nearest-neighbor
-    // (imageSmoothingEnabled=false) preserves the discrete cell look.
-    const prevSmoothing = ctx.imageSmoothingEnabled;
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(gridCanvas, margin.left, margin.top, innerW, innerH);
-    ctx.imageSmoothingEnabled = prevSmoothing;
-
-    ctx.strokeStyle = '#9e9e9e';
-    ctx.lineWidth = Math.max(1, sc);
-    ctx.beginPath();
-    ctx.moveTo(margin.left, margin.top + innerH);
-    ctx.lineTo(margin.left + innerW, margin.top + innerH);
-    ctx.moveTo(margin.left, margin.top);
-    ctx.lineTo(margin.left, margin.top + innerH);
-    ctx.stroke();
-
-    /** Two labeled positions along X (first and last sample) when possible. */
-    const xTickCount = Math.min(2, Math.max(1, xCount));
-    const xTicks = Array.from({ length: xTickCount }, (_, i) =>
-      Math.round((i * (xCount - 1)) / Math.max(1, xTickCount - 1)));
-    ctx.fillStyle = '#616161';
-    ctx.font = `${tickFontSize}px sans-serif`;
-    xTicks.forEach((idx) => {
-      const sample = samples[idx];
-      const coord = sample ? (xAxis === 'lon' ? sample.lon : sample.lat) : NaN;
-      const label = Number.isFinite(coord) ? coord.toFixed(4) : '—';
-      const x = margin.left + (idx + 0.5) * cellW;
-      ctx.beginPath();
-      ctx.moveTo(x, margin.top + innerH);
-      ctx.lineTo(x, margin.top + innerH + 3 * sc);
-      ctx.stroke();
-      ctx.textAlign = 'center';
-      ctx.fillText(label, x, margin.top + innerH + 4 * sc + tickFontSize);
-    });
-
-    yTicksMeters.forEach((m) => {
-      const y = margin.top + innerH - (m / maxHm) * innerH;
-      ctx.beginPath();
-      ctx.moveTo(margin.left - 3 * sc, y);
-      ctx.lineTo(margin.left, y);
-      ctx.stroke();
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`${m}`, margin.left - 6 * sc, y);
-    });
-    ctx.textBaseline = 'alphabetic';
-
-    ctx.textAlign = 'center';
-    ctx.font = `${axisFontSize}px sans-serif`;
-    ctx.fillText(xAxis === 'lon' ? 'Longitude' : 'Latitude', margin.left + innerW / 2, height - 4 * sc);
-
-    ctx.save();
-    ctx.font = `${axisFontSize}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const yTitleCenterX =
-      margin.left - tickToPlot - yTickMaxWidth - gapTicksToYTitle - yAxisTitleHorizHalf;
-    ctx.translate(yTitleCenterX, margin.top + innerH / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText('Height (m)', 0, 0);
-    ctx.restore();
-
-    // Vertical colorbar: full plot height, flush right of plot with a small gap.
-    const zSpan = zScaleMin >= zScaleMax ? 1 : Math.max(zScaleMax - zLoBar, 1e-9);
-    const barLeft = margin.left + innerW + colorbarGap;
-    const barTop = margin.top;
-    const barH = innerH;
-    const vGrad = ctx.createLinearGradient(barLeft, barTop + barH, barLeft, barTop);
-    vGrad.addColorStop(0, rampColor(0));
-    vGrad.addColorStop(0.25, rampColor(0.25));
-    vGrad.addColorStop(0.5, rampColor(0.5));
-    vGrad.addColorStop(0.75, rampColor(0.75));
-    vGrad.addColorStop(1, rampColor(1));
-    ctx.fillStyle = vGrad;
-    ctx.fillRect(barLeft, barTop, barThickness, barH);
-    ctx.strokeStyle = '#c7c7c7';
-    ctx.lineWidth = Math.max(1, sc);
-    ctx.strokeRect(barLeft, barTop, barThickness, barH);
-    ctx.fillStyle = '#616161';
-    ctx.font = `${tickFontSize}px sans-serif`;
-    ctx.strokeStyle = '#616161';
-    ctx.textAlign = 'left';
-    for (let i = 0; i < colorbarTickCount; i += 1) {
-      const t = colorbarTickCount > 1 ? i / (colorbarTickCount - 1) : 0;
-      const ty = barTop + barH - t * barH;
-      ctx.beginPath();
-      ctx.moveTo(barLeft + barThickness, ty);
-      ctx.lineTo(barLeft + barThickness + colorbarTickLen, ty);
-      ctx.stroke();
-      const zAt = zScaleMin >= zScaleMax ? zScaleMax : zLoBar + t * zSpan;
-      ctx.textBaseline = 'middle';
-      ctx.fillText(zAt.toFixed(2), barLeft + barThickness + colorbarTickLen + 3 * sc, ty);
-    }
-    ctx.textBaseline = 'alphabetic';
-
-    ctx.save();
-    ctx.font = `${axisFontSize}px sans-serif`;
-    ctx.fillStyle = '#616161';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const numericLabelsRight = barLeft + barThickness + colorbarTickLen + colorbarLabelMaxW;
-    const energyLabelCx = numericLabelsRight + 5 * sc + energyLabelReserve / 2;
-    ctx.translate(energyLabelCx, barTop + barH / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText('Energy (%)', 0, 0);
-    ctx.restore();
-
-    return true;
-  };
-
-  const HEATMAP_PREVIEW_MAX_PIXELS = 1_400_000;
-
-  // Draw the heatmap synchronously into whatever canvas is currently mounted.
-  // Memoized data prep already keeps this fast even for large transects.
-  const paintHeatmap = useCallback(() => {
-    const canvas = heatmapCanvasRef.current;
-    if (!canvas) return;
-    const safe = getSafeExportSize(safeWidth, safeHeight, HEATMAP_PREVIEW_MAX_PIXELS);
-    drawHeatmapInto(canvas, safe.width, safe.height);
-  }, [
-    safeWidth,
-    safeHeight,
-    safeFontSize,
-    safeColorbarHeightPx,
-    samples,
-    totalLengthMeters,
-    xAxis,
-    heatmapMaxHeight,
-    heatmapData,
-  ]);
-
-  const renderHeatmapExportCanvas = (maxPixels: number, scale = 1) => {
-    const targetW = Math.round(safeWidth * Math.max(1, scale));
-    const targetH = Math.round(safeHeight * Math.max(1, scale));
-    const safe = getSafeExportSize(targetW, targetH, maxPixels);
-    const exportCanvas = document.createElement('canvas');
-    const ok = drawHeatmapInto(exportCanvas, safe.width, safe.height);
-    return ok ? exportCanvas : null;
-  };
-
-  /**
-   * SVG-only raster (no HTML). MUI LineChart puts the legend and some chrome **outside**
-   * the `<svg>`, so this path cannot match on-screen output — use only as a fallback when
-   * html2canvas fails.
-   */
-  const renderMetricsExportCanvas = async (
-    node: HTMLElement,
-    scale: number,
-    maxPixels: number,
-  ): Promise<HTMLCanvasElement | null> => {
-    const svgs = Array.from(node.querySelectorAll<SVGSVGElement>('svg'));
-    if (svgs.length === 0) return null;
-    const rootRect = node.getBoundingClientRect();
-    if (!rootRect.width || !rootRect.height) return null;
-
-    const target = getSafeExportSize(
-      Math.max(1, Math.round(rootRect.width * scale)),
-      Math.max(1, Math.round(rootRect.height * scale)),
-      maxPixels,
-    );
-    const sx = target.width / rootRect.width;
-    const sy = target.height / rootRect.height;
-    const canvas = document.createElement('canvas');
-    canvas.width = target.width;
-    canvas.height = target.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    for (const svg of svgs) {
-      const rect = svg.getBoundingClientRect();
-      if (!rect.width || !rect.height) continue;
-      const clone = svg.cloneNode(true) as SVGSVGElement;
-      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-      clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
-      clone.setAttribute('width', `${Math.max(1, Math.round(rect.width))}`);
-      clone.setAttribute('height', `${Math.max(1, Math.round(rect.height))}`);
-      const vb = svg.getAttribute('viewBox');
-      if (!vb) clone.setAttribute('viewBox', `0 0 ${Math.max(1, Math.round(rect.width))} ${Math.max(1, Math.round(rect.height))}`);
-
-      const xml = new XMLSerializer().serializeToString(clone);
-      const blob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      try {
-        const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => resolve(img);
-          img.onerror = () => reject(new Error('Failed to decode metrics SVG for export.'));
-          img.src = url;
-        });
-        ctx.drawImage(
-          image,
-          (rect.left - rootRect.left) * sx,
-          (rect.top - rootRect.top) * sy,
-          rect.width * sx,
-          rect.height * sy,
-        );
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    }
-    return canvas;
-  };
-
-  // Repaint whenever the dialog is open and any input that affects the figure
-  // changes. useLayoutEffect runs after DOM mutations but before paint, so the
-  // canvas is guaranteed to be mounted by the time we draw into it.
-  useLayoutEffect(() => {
-    if (!open) return;
-    paintHeatmap();
-  }, [open, paintHeatmap]);
-
-  // Ref callback ensures we paint as soon as the <canvas> node is attached,
-  // even if that happens after the initial useLayoutEffect (e.g. when toggling
-  // the preview between heatmap and metrics).
-  const setHeatmapCanvasRef = useCallback((node: HTMLCanvasElement | null) => {
-    heatmapCanvasRef.current = node;
-    if (node && open) paintHeatmap();
-  }, [open, paintHeatmap]);
-
-  const handleExportPlot = async (target: PlotTarget) => {
-    if (isExporting) return;
-    setExportError(null);
-    setIsExporting(true);
-    try {
-      if (target === 'heatmap') {
-        const pdfPreset = PDF_QUALITY_PRESETS[pdfQuality];
-        // For PDF, render a higher-resolution canvas than preview so text and
-        // color transitions stay sharp when zooming the document.
-        // Always render export bitmap with drawHeatmapInto so PNG/JPG/PDF match the
-        // same code path; PNG/JPG use the same pixel budget as the dialog preview
-        // (ref can differ from preview after rapid UI changes).
-        const canvasForExport = format === 'pdf'
-          ? renderHeatmapExportCanvas(pdfPreset.heatmapMaxPixels, pdfPreset.heatmapScale)
-          : renderHeatmapExportCanvas(HEATMAP_PREVIEW_MAX_PIXELS, 1);
-        if (!canvasForExport || !canvasForExport.width || !canvasForExport.height) {
-          setExportError('Heatmap preview is not ready yet — try again in a moment.');
-          return;
-        }
-        await downloadCanvas(canvasForExport, 'transect-heatmap');
-        return;
-      }
-
-      setPreviewPlot('metrics');
-      // Let the metrics panel mount and layout (display + chart measure) before capture.
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => resolve());
-        });
+  const requestFigure = useCallback(
+    async (preview: boolean): Promise<{ blob: Blob; mediaType: string } | null> => {
+      if (!hasEnoughSamples) return null;
+      if (!anyPanelSelected) return null;
+      const body = buildFigurePayload({
+        samples: usableSamples,
+        xAxis,
+        heightBinM,
+        heatmapMaxHeight: heatmapMaxHeight ?? DEFAULT_HEATMAP_MAX_HEIGHT_M,
+        includeMap: includeMapPanel,
+        includeEeAnnualChanges: includeEeAnnualChangesPanel,
+        includeHeatmap: includeHeatmapPanel,
+        includeEnlFhd: includeEnlFhdPanel,
+        includeCr: includeCrPanel,
+        figureWidth: safeWidth,
+        mapHeight: safeMapPanelHeight,
+        heatmapHeight: safeHeatmapHeight,
+        enlFhdHeight: safeEnlFhdHeight,
+        crHeight: safeCrHeight,
+        fontSize: safeFontSize,
+        satelliteBufferM: safeSatelliteBufferM,
+        fmt: format,
+        preview,
       });
-      const pdfPreset = PDF_QUALITY_PRESETS[pdfQuality];
-      const requestedScale = format === 'pdf' ? pdfPreset.metricsScale : 1;
-      const requestedPixels = safeWidth * safeHeight * requestedScale * requestedScale;
-      const maxPixels = format === 'pdf' ? pdfPreset.metricsMaxPixels : 2_000_000;
-      let scale = requestedPixels > maxPixels
-        ? Math.sqrt(maxPixels / Math.max(1, safeWidth * safeHeight))
-        : requestedScale;
-      scale = Math.min(scale, METRICS_EXPORT_MAX_SCALE);
-
-      const hasAnyMetrics = metricsExportPanels.main || metricsExportPanels.cr;
-      /** Prefer visible preview — html2canvas often mis-crops `transform`-positioned off-screen clones. */
-      const exportNode = metricsPreviewRef.current ?? metricsExportRef.current;
-      if (!hasAnyMetrics || !exportNode) {
-        setExportError('No transect metrics panels to export (need ENL/FHD or CR samples).');
-      } else {
-        let canvas: HTMLCanvasElement | null = null;
+      const resp = await fetch(apiUrl('/transect/figure'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        let detail = `${resp.status} ${resp.statusText}`;
         try {
-          canvas = await html2canvas(exportNode, { ...HTML2CANVAS_METRICS, scale });
+          const j = await resp.json();
+          if (j?.detail) detail = String(j.detail);
         } catch {
-          canvas = null;
+          /* ignore */
         }
-        if (!canvas || canvas.width < 2 || canvas.height < 2) {
-          canvas = await renderMetricsExportCanvas(exportNode, scale, maxPixels);
-        }
-        if (!canvas || !canvas.width || !canvas.height) {
-          setExportError('Metrics capture failed (empty canvas).');
+        throw new Error(detail);
+      }
+      const mediaType = resp.headers.get('content-type') ?? 'image/png';
+      const blob = await resp.blob();
+      return { blob, mediaType };
+    },
+    [
+      hasEnoughSamples,
+      anyPanelSelected,
+      usableSamples,
+      xAxis,
+      heightBinM,
+      heatmapMaxHeight,
+      includeMapPanel,
+      includeEeAnnualChangesPanel,
+      includeHeatmapPanel,
+      includeEnlFhdPanel,
+      includeCrPanel,
+      safeWidth,
+      safeMapPanelHeight,
+      safeHeatmapHeight,
+      safeEnlFhdHeight,
+      safeCrHeight,
+      safeFontSize,
+      safeSatelliteBufferM,
+      format,
+    ],
+  );
+
+  // Debounced preview refresh whenever any setting changes (or dialog opens).
+  // The previous image stays visible during refresh; we just dim it and show a
+  // "Rendering…" badge after a small delay so quick renders don't flash anything.
+  useEffect(() => {
+    if (!open) return;
+    if (previewDebounceRef.current != null) {
+      window.clearTimeout(previewDebounceRef.current);
+    }
+    const token = ++previewRenderTokenRef.current;
+    let busyBadgeTimer: number | null = null;
+    previewDebounceRef.current = window.setTimeout(async () => {
+      setExportError(null);
+      // Only show the "Rendering…" badge if the request takes >180ms; otherwise
+      // it never shows and the user only sees the freshly painted image.
+      busyBadgeTimer = window.setTimeout(() => {
+        if (token === previewRenderTokenRef.current) setIsRenderingPreview(true);
+      }, 180);
+      try {
+        const result = await requestFigure(true);
+        if (token !== previewRenderTokenRef.current) return;
+        if (!result) {
+          // Only clear the visible image when there's truly nothing to show
+          // (no panels selected / not enough samples). Don't null it on every
+          // keystroke — that's what caused the on/off flicker.
+          if (previewObjectUrlRef.current) {
+            URL.revokeObjectURL(previewObjectUrlRef.current);
+            previewObjectUrlRef.current = null;
+          }
+          setPreviewImageUrl(null);
           return;
         }
-        await downloadCanvas(canvas, 'transect-metrics');
+        const url = URL.createObjectURL(result.blob);
+        const prevUrl = previewObjectUrlRef.current;
+        previewObjectUrlRef.current = url;
+        setPreviewImageUrl(url);
+        // Revoke the old URL only after React has swapped in the new one,
+        // so the <img> never points at a freed blob mid-frame.
+        if (prevUrl) {
+          window.setTimeout(() => URL.revokeObjectURL(prevUrl), 0);
+        }
+      } catch (err) {
+        if (token !== previewRenderTokenRef.current) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setExportError(`Preview failed: ${msg}`);
+      } finally {
+        if (busyBadgeTimer != null) window.clearTimeout(busyBadgeTimer);
+        if (token === previewRenderTokenRef.current) {
+          setIsRenderingPreview(false);
+        }
       }
-    } finally {
-      setIsExporting(false);
-    }
-  };
+    }, PREVIEW_RENDER_DEBOUNCE_MS);
+    return () => {
+      if (previewDebounceRef.current != null) {
+        window.clearTimeout(previewDebounceRef.current);
+        previewDebounceRef.current = null;
+      }
+      if (busyBadgeTimer != null) window.clearTimeout(busyBadgeTimer);
+    };
+  }, [open, requestFigure]);
 
-  const downloadCanvas = async (canvas: HTMLCanvasElement, basename: string) => {
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const encodeBlob = (mime: string, quality?: number) => new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((blob) => {
-        if (blob) resolve(blob);
-        else reject(new Error('Canvas encoding failed'));
-      }, mime, quality);
-    });
-    if (format === 'pdf') {
-      // Keep PDF crisp by embedding a lossless PNG image.
-      const blob = await encodeBlob('image/png');
-      const imgData = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result ?? ''));
-        reader.onerror = () => reject(reader.error ?? new Error('Failed reading export blob'));
-        reader.readAsDataURL(blob);
-      });
-      const pdf = new jsPDF({
-        orientation: canvas.width >= canvas.height ? 'landscape' : 'portrait',
-        unit: 'px',
-        format: [canvas.width, canvas.height],
-        compress: false,
-      });
-      pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height, undefined, 'FAST');
-      pdf.save(`${basename}-${stamp}.pdf`);
+  // Cleanup the preview object URL when the dialog closes / unmounts.
+  useEffect(() => {
+    return () => {
+      if (previewObjectUrlRef.current) {
+        URL.revokeObjectURL(previewObjectUrlRef.current);
+        previewObjectUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  const exportFigure = async () => {
+    if (isExporting) return;
+    if (!hasEnoughSamples) {
+      setExportError('Need at least 2 transect samples to export.');
       return;
     }
-    const mime = format === 'jpg' ? 'image/jpeg' : 'image/png';
-    const quality = format === 'jpg' ? 0.92 : 1;
-    const blob = await encodeBlob(mime, quality);
-    const dataUrl = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = dataUrl;
-    link.download = `${basename}-${stamp}.${format}`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(dataUrl), 1000);
-  };
-
-  const exportCurrentMapSnapshot = async () => {
-    if (!map || isExporting) return;
+    if (!anyPanelSelected) {
+      setExportError('Select at least one panel to export.');
+      return;
+    }
     setExportError(null);
     setIsExporting(true);
     try {
-      await new Promise<void>((resolve) => {
-        map.once('rendercomplete', () => resolve());
-        map.renderSync();
-      });
-      const mapSize = map.getSize();
-      if (!mapSize) return;
-      const [width] = mapSize;
-      const canvasNodes = map.getViewport().querySelectorAll<HTMLCanvasElement>('.ol-layer canvas, canvas.ol-layer');
-      if (canvasNodes.length === 0) {
-        throw new Error('No renderable map canvas found in current viewport.');
+      const result = await requestFigure(false);
+      if (!result) {
+        setExportError('Backend returned no data.');
+        return;
       }
-      const firstCanvas = canvasNodes[0];
-      const pxPerCss = firstCanvas.width / width;
-      const exportCanvas = document.createElement('canvas');
-      exportCanvas.width = firstCanvas.width;
-      exportCanvas.height = firstCanvas.height;
-      const context = exportCanvas.getContext('2d', { alpha: true });
-      if (!context) return;
-
-      canvasNodes.forEach((canvas) => {
-        if (!canvas.width || !canvas.height) return;
-        const opacity = canvas.parentElement ? Number(canvas.parentElement.style.opacity || '1') : 1;
-        context.globalAlpha = Number.isFinite(opacity) ? opacity : 1;
-        const transform = canvas.style.transform;
-        if (transform) {
-          const matrix = transform.match(/^matrix\(([-\d., ]+)\)$/);
-          if (matrix?.[1]) {
-            const values = matrix[1].split(',').map((v) => Number(v.trim()));
-            if (values.length === 6 && values.every((v) => Number.isFinite(v))) {
-              context.setTransform(values[0], values[1], values[2], values[3], values[4], values[5]);
-            } else {
-              context.setTransform(1, 0, 0, 1, 0, 0);
-            }
-          } else {
-            context.setTransform(1, 0, 0, 1, 0, 0);
-          }
-        } else {
-          context.setTransform(1, 0, 0, 1, 0, 0);
-        }
-        context.drawImage(canvas, 0, 0);
-      });
-      context.setTransform(1, 0, 0, 1, 0, 0);
-      context.globalAlpha = 1;
-      context.imageSmoothingEnabled = true;
-
-      const padPx = MAP_EXPORT_DECORATION_PAD * pxPerCss;
-      drawMetricScaleBarOnSnapshot(context, map, {
-        canvasHeightPx: exportCanvas.height,
-        padLeftPx: padPx,
-        padBottomPx: padPx,
-        pxPerCss,
-        minWidthCss: MAP_EXPORT_SCALEBAR_MIN_WIDTH_CSS,
-        steps: MAP_EXPORT_SCALEBAR_STEPS,
-        showMapScaleText: true,
-      });
-      drawNorthArrowOnSnapshot(
-        context,
-        exportCanvas.width,
-        exportCanvas.height,
-        map.getView().getRotation(),
-        pxPerCss,
-        MAP_EXPORT_DECORATION_PAD,
-      );
-
-      await downloadCanvas(exportCanvas, 'transect-map-snapshot');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const corsBlocked = /tainted|securityerror|cross-origin|insecure/i.test(message);
-      setExportError(
-        corsBlocked
-          ? 'Map snapshot blocked by browser CORS security for this basemap (common with Google tiles). Try Esri World Imagery or OSM for snapshot export.'
-          : `Map snapshot failed: ${message}`,
-      );
+      const ext = format === 'pdf' ? 'pdf' : format === 'jpg' ? 'jpg' : 'png';
+      const url = URL.createObjectURL(result.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const stem = sanitizeFilename(featureName ?? '') || 'transect-figure';
+      a.download = `${stem}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setExportError(`Export failed: ${msg}`);
     } finally {
       setIsExporting(false);
     }
@@ -766,7 +385,13 @@ export function TransectExportDialog({
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth>
       <DialogTitle>Export transect figure</DialogTitle>
       <DialogContent>
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} sx={{ mb: 1.25, mt: 0.25 }}>
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={1.25}
+          sx={{ mb: 1.25, mt: 0.25 }}
+          flexWrap="wrap"
+          useFlexGap
+        >
           <FormControl size="small" sx={{ minWidth: 140 }}>
             <InputLabel id="transect-export-format">Format</InputLabel>
             <Select
@@ -780,18 +405,6 @@ export function TransectExportDialog({
               <MenuItem value="jpg">JPG</MenuItem>
             </Select>
           </FormControl>
-          <FormControl size="small" sx={{ minWidth: 170 }}>
-            <InputLabel id="transect-export-preview">Preview plot</InputLabel>
-            <Select
-              labelId="transect-export-preview"
-              value={previewPlot}
-              label="Preview plot"
-              onChange={(event: SelectChangeEvent<PlotTarget>) => setPreviewPlot(event.target.value as PlotTarget)}
-            >
-              <MenuItem value="heatmap">Heatmap</MenuItem>
-              <MenuItem value="metrics">Metrics chart</MenuItem>
-            </Select>
-          </FormControl>
           <TextField
             size="small"
             type="number"
@@ -799,14 +412,43 @@ export function TransectExportDialog({
             value={figureWidth}
             onChange={(event) => setFigureWidth(Number(event.target.value))}
             inputProps={{ min: 700, max: 3000, step: 50 }}
+            sx={{ minWidth: 160 }}
           />
           <TextField
             size="small"
             type="number"
-            label="Figure height (px)"
-            value={figureHeight}
-            onChange={(event) => setFigureHeight(Number(event.target.value))}
+            label="Map height (px)"
+            value={mapPanelHeight}
+            onChange={(event) => setMapPanelHeight(Number(event.target.value))}
+            inputProps={{ min: 80, max: 1800, step: 20 }}
+            sx={{ minWidth: 160 }}
+          />
+          <TextField
+            size="small"
+            type="number"
+            label="Heatmap height (px)"
+            value={heatmapHeight}
+            onChange={(event) => setHeatmapHeight(Number(event.target.value))}
             inputProps={{ min: 100, max: 1800, step: 20 }}
+            sx={{ minWidth: 170 }}
+          />
+          <TextField
+            size="small"
+            type="number"
+            label="ENL/FHD height (px)"
+            value={enlFhdHeight}
+            onChange={(event) => setEnlFhdHeight(Number(event.target.value))}
+            inputProps={{ min: 120, max: 2200, step: 20 }}
+            sx={{ minWidth: 170 }}
+          />
+          <TextField
+            size="small"
+            type="number"
+            label="CR height (px)"
+            value={crHeight}
+            onChange={(event) => setCrHeight(Number(event.target.value))}
+            inputProps={{ min: 90, max: 1400, step: 20 }}
+            sx={{ minWidth: 150 }}
           />
           <TextField
             size="small"
@@ -815,42 +457,65 @@ export function TransectExportDialog({
             value={fontSize}
             onChange={(event) => setFontSize(Number(event.target.value))}
             inputProps={{ min: 8, max: 24, step: 1 }}
+            sx={{ minWidth: 130 }}
           />
-        </Stack>
-
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} sx={{ mb: 1.25 }} flexWrap="wrap" useFlexGap>
-          {format === 'pdf' && (
-            <FormControl size="small" sx={{ minWidth: 160 }}>
-              <InputLabel id="transect-pdf-quality">PDF quality</InputLabel>
-              <Select
-                labelId="transect-pdf-quality"
-                value={pdfQuality}
-                label="PDF quality"
-                onChange={(event) => setPdfQuality(event.target.value as PdfQuality)}
-              >
-                <MenuItem value="standard">Standard</MenuItem>
-                <MenuItem value="high">High</MenuItem>
-                <MenuItem value="ultra">Ultra</MenuItem>
-              </Select>
-            </FormControl>
-          )}
           <TextField
             size="small"
             type="number"
-            label="Colorbar thickness (px)"
-            value={colorbarHeightPx}
-            onChange={(event) => setColorbarHeightPx(Number(event.target.value))}
-            inputProps={{ min: 10, max: 44, step: 1 }}
-            sx={{ minWidth: 150 }}
+            label="Satellite buffer (m)"
+            value={satelliteBufferM}
+            onChange={(event) => setSatelliteBufferM(Number(event.target.value))}
+            inputProps={{ min: 10, max: 5000, step: 10 }}
+            sx={{ minWidth: 170 }}
+            disabled={!includeMapPanel}
+            helperText="Vertical pad along transect"
+          />
+        </Stack>
+
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
+          <FormControlLabel
+            control={
+              <Checkbox checked={includeMapPanel} onChange={(e) => setIncludeMapPanel(e.target.checked)} />
+            }
+            label="Map snapshot"
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={includeEeAnnualChangesPanel}
+                onChange={(e) => setIncludeEeAnnualChangesPanel(e.target.checked)}
+              />
+            }
+            label="JRC TMF (Dec 2020)"
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={includeHeatmapPanel}
+                onChange={(e) => setIncludeHeatmapPanel(e.target.checked)}
+              />
+            }
+            label="Heatmap"
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={includeEnlFhdPanel}
+                onChange={(e) => setIncludeEnlFhdPanel(e.target.checked)}
+              />
+            }
+            label="ENL/FHD"
+          />
+          <FormControlLabel
+            control={<Checkbox checked={includeCrPanel} onChange={(e) => setIncludeCrPanel(e.target.checked)} />}
+            label="CR"
           />
         </Stack>
 
         <Typography variant="caption" color="text.secondary" sx={{ mb: 0.75, display: 'block' }}>
-          Heatmap export includes its colorbar. Metrics export saves one combined figure (`transect-metrics`) with ENL/FHD and CR stacked as shared-x subplots.
-          {format === 'pdf'
-            ? ' PDF quality sets raster resolution for heatmap and metrics PDFs (PNG/JPG unchanged).'
-            : ''}{' '}
-          Vertical colorbar sits right of the plot with the same height; thickness controls strip width (heatmap only). Font size applies to axis ticks, axis titles, and legend.
+          Server-rendered with matplotlib subplots (sharex). All panels share the same{' '}
+          {xAxis === 'lon' ? 'longitude' : 'latitude'} axis so points line up exactly. Map snapshot uses
+          Google Satellite (HD/retina tiles, {safeSatelliteBufferM} m buffer around the transect line).
         </Typography>
         {exportError && (
           <Typography variant="caption" color="error.main" sx={{ mb: 0.75, display: 'block' }}>
@@ -858,93 +523,70 @@ export function TransectExportDialog({
           </Typography>
         )}
 
-        <Paper variant="outlined" sx={{ p: 1, bgcolor: '#f8f9fa', overflowX: 'auto' }}>
-          <Box sx={{ display: previewPlot === 'heatmap' ? 'block' : 'none' }}>
-            <Box
-              sx={{
-                p: 1,
-                bgcolor: '#fff',
-                border: '1px solid #e0e0e0',
-                display: 'inline-block',
-              }}
-            >
-              <canvas
-                ref={setHeatmapCanvasRef}
-                style={{
-                  display: 'block',
-                  maxWidth: '100%',
+        <Paper
+          variant="outlined"
+          sx={{ p: 1, bgcolor: '#f8f9fa', overflowX: 'auto', position: 'relative' }}
+        >
+          {!previewImageUrl && (
+            <Typography variant="caption" color="text.secondary">
+              {!hasEnoughSamples
+                ? 'Need at least 2 transect samples to render.'
+                : isRenderingPreview
+                  ? 'Rendering preview...'
+                  : 'Select at least one panel to preview.'}
+            </Typography>
+          )}
+          {!!previewImageUrl && (
+            <Box sx={{ position: 'relative', display: 'inline-block', maxWidth: '100%' }}>
+              <Box
+                component="img"
+                src={previewImageUrl}
+                alt="Export preview"
+                sx={{
+                  width: '100%',
+                  maxWidth: safeWidth,
                   height: 'auto',
+                  display: 'block',
+                  bgcolor: '#fff',
+                  border: '1px solid #e0e0e0',
+                  // Subtle dim while a refresh is in flight so the user knows
+                  // the visible image is stale, without nuking the layout.
+                  opacity: isRenderingPreview ? 0.7 : 1,
+                  transition: 'opacity 120ms linear',
                 }}
               />
+              {isRenderingPreview && (
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: 8,
+                    right: 8,
+                    px: 1,
+                    py: 0.25,
+                    borderRadius: 1,
+                    bgcolor: 'rgba(33,33,33,0.72)',
+                    color: '#fff',
+                    fontSize: 11,
+                    fontFamily: 'system-ui, -apple-system, sans-serif',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  Rendering…
+                </Box>
+              )}
             </Box>
-          </Box>
-          <Box sx={{ display: previewPlot === 'metrics' ? 'block' : 'none' }}>
-            <Box
-              ref={metricsPreviewRef}
-              sx={{
-                width: safeWidth,
-                p: 1,
-                bgcolor: '#fff',
-                border: '1px solid #e0e0e0',
-              }}
-            >
-              <TransectMetricsChart
-                samples={samples}
-                xAxis={xAxis}
-                onXAxisChange={() => {}}
-                chartHeight={safeHeight}
-                fontSize={safeFontSize}
-                showAxisToggle={false}
-                mode="both"
-                axisTickNumber={2}
-              />
-            </Box>
-          </Box>
+          )}
         </Paper>
-
-        {/* Off-viewport clone for one-file metrics export (same layout as on-screen preview). */}
-        <Box
-          aria-hidden
-          sx={{
-            position: 'fixed',
-            left: -12000,
-            top: 0,
-            pointerEvents: 'none',
-            bgcolor: '#fff',
-          }}
-        >
-          <Box
-            ref={metricsExportRef}
-            sx={{
-              width: safeWidth,
-              p: 1,
-              bgcolor: '#fff',
-              border: '1px solid #e0e0e0',
-            }}
-          >
-            <TransectMetricsChart
-              samples={samples}
-              xAxis={xAxis}
-              onXAxisChange={() => {}}
-              chartHeight={safeHeight}
-              fontSize={safeFontSize}
-              showAxisToggle={false}
-              mode="both"
-              axisTickNumber={2}
-            />
-          </Box>
-        </Box>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Close</Button>
-        <Button variant="outlined" onClick={() => handleExportPlot('heatmap')} disabled={isExporting}>
-          {isExporting ? 'Exporting...' : `Export heatmap (${format.toUpperCase()})`}
-        </Button>
-        <Button variant="contained" onClick={() => handleExportPlot('metrics')} disabled={isExporting}>
-          {isExporting ? 'Exporting...' : `Export metrics (${format.toUpperCase()})`}
-        </Button>
-        <Button variant="contained" color="secondary" onClick={exportCurrentMapSnapshot} disabled={isExporting || !map}>
-          {isExporting ? 'Exporting...' : `Export map snapshot (${format.toUpperCase()})`}
+        <Button
+          variant="contained"
+          color="primary"
+          onClick={exportFigure}
+          disabled={isExporting || !anyPanelSelected || !hasEnoughSamples}
+        >
+          {isExporting ? 'Exporting...' : `Export figure (${format.toUpperCase()})`}
         </Button>
       </DialogActions>
     </Dialog>

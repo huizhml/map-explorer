@@ -55,6 +55,7 @@ import type { SavedFeature } from '../services/savedFeaturesApi';
 import { SavedFeaturePlots } from './SavedFeaturePlots';
 import { useMapStore } from '../stores/mapStore';
 import { DIVERSITY_HEIGHT_BIN_OPTIONS } from '../constants/diversityMetrics';
+import { EarthEngineLayerSection } from '../containers/EarthEngineLayerSection';
 
 export interface VsmLayerEntryDisplay {
   year: number;
@@ -829,6 +830,8 @@ export function Sidebar({
                 >
                   Load forest naturalness data (val)
                 </Button>
+
+                <EarthEngineLayerSection ui={ui} />
 
                 {addedVsmLayers.length > 0 && showAddedInfo && (
                   <Box
@@ -1992,7 +1995,10 @@ export function Sidebar({
                 </Box>
               )}
 
-              <SavedFeaturePlots plotData={plotViewerFeature.plot_data} />
+              <SavedFeaturePlots
+                plotData={plotViewerFeature.plot_data}
+                featureName={plotViewerFeature.name}
+              />
             </Box>
 
             <Box

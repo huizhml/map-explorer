@@ -1,6 +1,5 @@
 
 # --- Local predictions (2020 data on disk) ---
-# Files at: /projects/dereeco/data/gvs/predictions/2020/blended/tiles/cog/{tile}/RH{rh}_Q{q}.tif
 export PREDICTIONS_LOCAL_BASE_PATH="/projects/dereeco/data/gvs/products/vsm/2020/blended/tiles/cog/"
 export PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH="/projects/dereeco/data/gvs/products/vsm/2020/original/tiles/cog/"
 export PREDICTIONS_LOCAL_PATH_TEMPLATE="{tile}/RH{rh}_Q{q}.tif"
@@ -25,4 +24,8 @@ export NATURALNESS_REF_DATA_PATH="/projects/dereeco/data/gvs/evaluation/downstre
 export NATURALNESS_REF_DATA_VAL_PATH="/projects/dereeco/data/gvs/evaluation/downstream_tasks/naturalness/results_from_vsm_2017/naturalness_classification_ps15/logistic_regression_predictions.fgb"
 # Optional: enable Google Satellite static snapshots for saved points (75m buffer)
 export GOOGLE_STATIC_MAPS_API_KEY="AIzaSyAavNP19BB1UjqX1OYaXRRxcbdfaMZC9UE"
+
+# Earth Engine (backend): path to Google Cloud service account JSON with EE access
+# export GOOGLE_APPLICATION_CREDENTIALS="/path/to/ee-service-account.json"
+export EE_CREDENTIALS_PATH="${HOME}/map-explorer/keys/private-key.json"
 
