@@ -53,6 +53,25 @@ export function useMapInteractions(updateLayersList: () => void) {
   /** Synced for Draw geometry helpers (Shift + horizontal line / square box). */
   const shiftKeyHeldRef = useRef(false);
 
+  const getVisibleClickableFgbLayers = (): any[] => {
+    const manager = useMapStore.getState().layerManager;
+    const managedLayers = manager
+      ? manager
+        .getLayersByType('fgb')
+        .filter((managed: any) => managed?.visible && managed?.layer)
+      : [];
+    if (managedLayers.length > 0) return managedLayers;
+
+    // Fallback for moments where layer manager hasn't registered yet.
+    const fallbackFgb = useMapStore.getState().fgbLayer;
+    return fallbackFgb ? [{ layer: fallbackFgb, visible: fallbackFgb.getVisible?.() !== false }] : [];
+  };
+
+  const isClickableFgbLayer = (layer: any): boolean => {
+    const visibleFgbLayers = getVisibleClickableFgbLayers();
+    return visibleFgbLayers.some((managed: any) => managed.layer === layer);
+  };
+
   const clearInspectPin = useCallback(() => {
     inspectPinLayerRef.current?.getSource()?.clear();
     inspectPinFeatureRef.current = null;
@@ -382,6 +401,7 @@ export function useMapInteractions(updateLayersList: () => void) {
           qIndex: 1,
           source: vsmYear === 2020 ? 'original' : 'blended',
           maxHeight: undefined,
+          heatmapMaxHeight: undefined,
           fhdInterval: useMapStore.getState().diversityHeightBinM,
         },
         transectProfile: prev?.kind === 'vertical_profile_line' ? prev.transectProfile : undefined,
@@ -419,6 +439,7 @@ export function useMapInteractions(updateLayersList: () => void) {
               qIndex: data.q_index ?? 1,
               source: data.source,
               maxHeight: data.max_height,
+              heatmapMaxHeight: data.heatmap_max_height,
               fhdInterval: data.fhd_interval ?? diversityHeightBinM,
             },
             transectProfile: undefined,
@@ -439,6 +460,7 @@ export function useMapInteractions(updateLayersList: () => void) {
             qIndex: data.q_index ?? 1,
             source: data.source,
             maxHeight: data.max_height,
+            heatmapMaxHeight: data.heatmap_max_height,
             fhdInterval: data.fhd_interval ?? diversityHeightBinM,
           },
           transectProfile: {
@@ -638,6 +660,7 @@ export function useMapInteractions(updateLayersList: () => void) {
                 qIndex: data.q_index ?? 1,
                 source: data.source,
                 maxHeight: data.max_height,
+                heatmapMaxHeight: data.heatmap_max_height,
                 fhdInterval: data.fhd_interval ?? diversityHeightBinM,
               },
               pendingSample: undefined, inspectError: null,
@@ -732,8 +755,8 @@ export function useMapInteractions(updateLayersList: () => void) {
       }
 
       // FGB click
-      const currentFgb = useMapStore.getState().fgbLayer;
-      if (currentFgb) {
+      const visibleFgbLayers = getVisibleClickableFgbLayers();
+      if (visibleFgbLayers.length > 0) {
         let clicked: any = null;
         map.forEachFeatureAtPixel(
           evt.pixel,
@@ -771,7 +794,7 @@ export function useMapInteractions(updateLayersList: () => void) {
           },
           {
             hitTolerance: 6,
-            layerFilter: (layer) => layer === currentFgb,
+            layerFilter: (layer) => isClickableFgbLayer(layer),
           },
         );
         if (clicked) {
@@ -798,8 +821,8 @@ export function useMapInteractions(updateLayersList: () => void) {
     let lastCheck = 0, lastCursor: string | null = null, lastHovered: Feature<Geometry> | null = null, pending: number | null = null;
 
     const detect = (evt: any) => {
-      const currentFgb = useMapStore.getState().fgbLayer;
-      if (!currentFgb || !highlightLayer) return;
+      const visibleFgbLayers = getVisibleClickableFgbLayers();
+      if (visibleFgbLayers.length === 0 || !highlightLayer) return;
       const view = map.getView();
       const viewZoom = view.getZoom() ?? 0;
       const estimatedFeatureCount = useMapStore.getState().fgbInfo?.featureCount ?? 0;
@@ -838,7 +861,7 @@ export function useMapInteractions(updateLayersList: () => void) {
         },
         {
           hitTolerance: 4,
-          layerFilter: (layer) => layer === currentFgb,
+          layerFilter: (layer) => isClickableFgbLayer(layer),
         },
       );
       const cursor = hovered ? 'pointer' : '';
@@ -858,7 +881,7 @@ export function useMapInteractions(updateLayersList: () => void) {
 
     const onPointerMove = (evt: any) => {
       const state = useMapStore.getState();
-      if (!state.fgbLayer) return;
+      if (getVisibleClickableFgbLayers().length === 0) return;
       const count = state.fgbInfo?.featureCount ?? 0;
       const minInterval = count > 100000 ? 140 : count > 50000 ? 90 : 50;
       if (Date.now() - lastCheck < minInterval) {

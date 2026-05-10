@@ -356,9 +356,11 @@ export function LayerControl({
     fgbInfo,
     fgbStyleOptions,
     conditionalStyles,
+    conditionalLogicMode,
     enableConditionalRendering,
     updateFgbStyleOption,
     setEnableConditionalRendering,
+    setConditionalLogicMode,
     addConditionalStyle,
     updateConditionalStyle,
     removeConditionalStyle,
@@ -1052,6 +1054,18 @@ export function LayerControl({
 
                               {enableConditionalRendering && (
                                 <>
+                                  <FormControl size="small" fullWidth sx={{ mb: 1 }}>
+                                    <InputLabel>Match</InputLabel>
+                                    <Select
+                                      value={conditionalLogicMode}
+                                      onChange={(e) => setConditionalLogicMode(e.target.value as 'any' | 'all')}
+                                      label="Match"
+                                    >
+                                      <MenuItem value="any">ANY (OR)</MenuItem>
+                                      <MenuItem value="all">ALL (AND)</MenuItem>
+                                    </Select>
+                                  </FormControl>
+
                                   <Button
                                     variant="outlined"
                                     size="small"

@@ -14,6 +14,7 @@ router = APIRouter(tags=["geo"])
 
 S2_GRID_LOCAL_PATH = os.environ.get("S2_GRID_LOCAL_PATH", "")
 NATURALNESS_REF_DATA_PATH = os.environ.get("NATURALNESS_REF_DATA_PATH", "")
+NATURALNESS_REF_DATA_VAL_PATH = os.environ.get("NATURALNESS_REF_DATA_VAL_PATH", "")
 
 # ---------------------------------------------------------------------------
 # GeoParquet
@@ -202,6 +203,26 @@ async def head_naturalness_fgb():
 
 @router.options("/fgb/naturalness")
 async def naturalness_fgb_options():
+    return Response(headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Range, Content-Range, Content-Length",
+        "Access-Control-Max-Age": "3600",
+    })
+
+
+@router.get("/fgb/naturalness/val")
+async def serve_naturalness_val_fgb(request: Request):
+    return _serve_fgb_file(request, NATURALNESS_REF_DATA_VAL_PATH, "NATURALNESS_REF_DATA_VAL_PATH not set or file missing")
+
+
+@router.head("/fgb/naturalness/val")
+async def head_naturalness_val_fgb():
+    return _head_fgb_file(NATURALNESS_REF_DATA_VAL_PATH)
+
+
+@router.options("/fgb/naturalness/val")
+async def naturalness_val_fgb_options():
     return Response(headers={
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",

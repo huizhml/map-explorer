@@ -25,7 +25,9 @@ import os
 import time
 import pandas as pd
 
-MAX_HEIGHT = 50 # 100.0
+MAX_HEIGHT = 150 # 100.0
+# Meters: y-axis extent for transect RH heatmap only (diversity indices use MAX_HEIGHT).
+HEATMAP_MAX_HEIGHT = 50.0
 N_BINS = 20
 BIN_WIDTH = MAX_HEIGHT / N_BINS
 NODATA_IN = 32767
@@ -38,60 +40,51 @@ def pixel_hist(rhs: np.ndarray, interval: int = 5, max_height: float = None):
     """
     n_bins = int(max_height / interval)
     rhs_arr = np.asarray(rhs, dtype=np.float32)
-    rhs_arr = rhs_arr[np.isfinite(rhs_arr)] # NOTE: Ignore NaN and Inf
-    rhs_arr = rhs_arr[rhs_arr > 0] # NOTE: Ignore negative values (mostly ground return, may dominate the histogram)
-    rhs_arr = np.clip(rhs_arr, 0, max_height) # NOTE: count very tall trees
-    hist, bins = np.histogram(rhs_arr, bins=n_bins, range=(0, max_height)) # negative values are ignored
+    valid = np.isfinite(rhs_arr) & (rhs_arr > 0) # # NOTE: Ignore NaN and Inf, negative values (mostly ground return, may dominate the histogram)
+    rhs_valid = rhs_arr[valid] 
+    if rhs_valid.size == 0:
+        return np.nan, np.nan, np.nan, np.nan
+    rhs_valid = np.clip(rhs_valid, None, max_height) # NOTE: count very tall trees
+    hist, bins = np.histogram(rhs_valid, bins=n_bins, range=(0, max_height)) # negative values are ignored
     return hist, bins
 
 
-def pixel_vertical_profile_and_metrics(rhs, interval=5, max_height=None):
+def pixel_vertical_profile(rhs, interval=1, max_height=50):
     """
-    Compute per-pixel FHD using a simple histogram approach.
+    Compute per-pixel vertical profile.
     """
     if isinstance(rhs, pd.Series):
         rhs = rhs.values
-    if max_height is None:
-        max_height = MAX_HEIGHT
     hist, bins = pixel_hist(rhs, interval, max_height)
-    p = hist / hist.sum()
-    mask = p > 0
-    fhd = -np.sum(p[mask] * np.log(p[mask]))#.astype(np.float32)
-    enl1d = np.exp(fhd)
-    enl2d = np.float32(1.0 / np.sum(p[mask] ** 2))
-    rh25 = max(0, rhs[25])
-    if rhs[98] <= 0:
-        cr = 0
-    else:
-        cr = (rhs[98] - rh25)/rhs[98]
-    
-    return hist, fhd, enl1d, enl2d, cr
+    return hist
 
-def pixel_diversity_indices(rhs, interval=5, max_height=None):
+
+def pixel_diversity_indices(rhs, bin_width=5, max_height=MAX_HEIGHT):
     """
-    Compute per-pixel FHD using a simple histogram approach.
+    Compute per-pixel FHD using a simple histogram approach. NOTE!!!: rhs should be in meters!!!
     """
     if isinstance(rhs, pd.Series):
         rhs = rhs.values
-    if max_height is None:
-        max_height = MAX_HEIGHT
-    hist, bins = pixel_hist(rhs, interval, max_height)
-    p = hist / hist.sum()
+    hist, bins = pixel_hist(rhs, bin_width, max_height)
+    p = hist / hist.sum() # NOTE: normalize the histogram to get the probability
     mask = p > 0
     fhd = -np.sum(p[mask] * np.log(p[mask]))#.astype(np.float32)
     enl1d = np.exp(fhd)
     enl2d = np.float32(1.0 / np.sum(p[mask] ** 2))
-    rh25 = max(0, rhs[25])
+    if np.isinf(enl2d):
+        print(f'ENL2D is inf, setting to NaN, rhs: {rhs}, p: {p}')
+        enl2d = np.nan
+    rh25 = max(rhs[25], 0)
     if rhs[98] <= 0:
-        cr = 0
+        cr = np.nan
     else:
         cr = (rhs[98] - rh25)/rhs[98]
     
     return fhd, enl1d, enl2d, cr
 
-def _chunk_diversity(tile, bin_width=5):
+def _chunk_diversity(data, bin_width=5, max_height=MAX_HEIGHT):
     """
-    Vectorized Shannon entropy for a single spatial chunk.
+    Vectorized Shannon entropy for a single spatial chunk. data is in decimeters.
 
     Parameters
     ----------
@@ -101,58 +94,67 @@ def _chunk_diversity(tile, bin_width=5):
     -------
     out : ndarray, shape (rows, cols), float32
     """
-    
-    n_bands, n_rows, n_cols = tile.shape
+    n_bands, n_rows, n_cols = data.shape
     n_pixels = n_rows * n_cols
-    n_bins = int(MAX_HEIGHT / bin_width)
-    valid = np.isfinite(tile) & (tile != NODATA_IN) & (tile > 0)
+    valid = np.isfinite(data) & (data != NODATA_IN) & (data > 0)
     nodata_mask = valid.sum(axis=0) == 0
 
-    tile = tile/10
-    tile_clean = np.where(valid, tile, 0.0)
-    bin_idx = np.clip((tile_clean / bin_width).astype(np.int32), 0, n_bins - 1)
-    bin_idx = np.where(valid, bin_idx, -1)
+    data = data / 10
 
-    bin_flat = bin_idx.reshape(n_bands, n_pixels)
-    pixel_indices = np.broadcast_to(
-        np.arange(n_pixels)[np.newaxis, :], (n_bands, n_pixels)
-    ) # (101, n_pixels), each row is the pixel index for the corresponding band, e.g, 0,1,2,3,..., 512*512-1
+    data = data.reshape(n_bands, n_pixels)
+    valid = valid.reshape(n_bands, n_pixels)
+    data_clean = np.where(valid, np.minimum(data, max_height), -1.0)
 
-    hist = np.zeros((n_pixels, n_bins), dtype=np.float32)
-    flat_valid = bin_flat != -1 #(101, 512*512)
-    np.add.at(hist, (pixel_indices[flat_valid], bin_flat[flat_valid]), 1.0) #
+    # Sort along axis=0 (bands), not axis=1 (pixels)
+    profiles = np.sort(data_clean, axis=0)
+    profiles = np.ascontiguousarray(profiles)
 
-    total = hist.sum(axis=-1, keepdims=True)
-    p = hist / total # (n_pixels, n_bins)
+    lower_edges = np.arange(0, max_height, bin_width)
+    upper_edges = np.arange(bin_width, max_height + bin_width, bin_width)
+
+    idx_low = np.stack(
+        [np.searchsorted(profiles[:, i], lower_edges, side='left') for i in range(n_pixels)]
+    )
+    idx_high = np.stack(
+        [np.searchsorted(profiles[:, i], upper_edges, side='left') for i in range(n_pixels)]
+    )
+    idx_high[:, -1] = np.array(
+        [np.searchsorted(profiles[:, i], upper_edges[-1:], side='right')[0] for i in range(n_pixels)]
+    )
+    hist = (idx_high - idx_low).astype(np.float32)
+
+    # Normalize
+    total = hist.sum(axis=1, keepdims=True)
+    total = np.where(total > 0, total, 1.0)
+    p = hist / total
+
+    # FHD
     log_p = np.where(p > 0, np.log(p), 0.0)
-    # # pixel-wise entropy, VERIFIED
-    # tile_flat = tile_clean.reshape(n_bands, n_pixels)
-    # hist_pixel_wise = np.zeros((n_pixels, n_bins), dtype=np.float32)
-    # for i in range(n_pixels):
-    #     count, bin_edges = np.histogram(tile_flat[flat_valid[:, i], i], bins=n_bins, range=(0, MAX_HEIGHT))
-    #     hist_pixel_wise[i, :] = count
-    # p = hist_pixel_wise / hist_pixel_wise.sum(axis=-1, keepdims=True)
-    # log_p = np.where(p > 0, np.log(p), 0.0)
-    # entropy_ = -np.sum(p * log_p, axis=-1)
-    # enl1d_ = np.exp(entropy_)
-    # enl2d_ = (1/ (p**2).sum(axis=-1))
-    # cr_ = (tile_flat[98, i] - tile_flat[25, i])/(tile_flat[98, i] + 1e-6)
+    fhd = -np.sum(p * log_p, axis=1).astype(np.float32)
 
-    entropy = -np.sum(p * log_p, axis=-1).astype(np.float32)
-    enl1d = np.exp(entropy)
-    enl2d = (1/ (p**2).sum(axis=-1)).astype(np.float32) # 2D ENL
+    # ENL1D
+    enl1d = np.exp(fhd).astype(np.float32)
 
-    entropy = entropy.reshape(n_rows, n_cols)
+    # ENL2D
+    sum_p2 = np.sum(np.where(p > 0, p ** 2, 0.0), axis=1)
+    enl2d = np.where(sum_p2 > 0, 1.0 / sum_p2, np.nan).astype(np.float32)
+
+    # CR
+    rh25 = np.maximum(data[25, :], 0)
+    rh98 = data[98, :]
+    cr = np.where(rh98 > 0, (rh98 - rh25) / rh98, np.nan).astype(np.float32)
+
+    fhd = fhd.reshape(n_rows, n_cols)
     enl1d = enl1d.reshape(n_rows, n_cols)
     enl2d = enl2d.reshape(n_rows, n_cols)
+    cr = cr.reshape(n_rows, n_cols)
+    # Apply nodata
+    fhd[nodata_mask] = np.nan
+    enl1d[nodata_mask] = np.nan
+    enl2d[nodata_mask] = np.nan
+    cr[nodata_mask] = np.nan
 
-    entropy[nodata_mask] = NODATA_OUT
-    enl1d[nodata_mask] = NODATA_OUT
-    enl2d[nodata_mask] = NODATA_OUT
-    rh25 = np.maximum(0, tile[25])
-    cr = (tile[98] - rh25)/(tile[98] + 1e-6)
-    cr[nodata_mask] = NODATA_OUT
-    return entropy, enl1d, enl2d, cr
+    return fhd, enl1d, enl2d, cr
 
 
 def _process_tile(args):

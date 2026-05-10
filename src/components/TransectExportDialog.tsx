@@ -21,7 +21,11 @@ import jsPDF from 'jspdf';
 import { useMapStore } from '../stores/mapStore';
 import type { VerticalProfileLineSample } from '../stores/mapStore';
 import { TransectMetricsChart } from './SavedFeaturePlots';
-import { DEFAULT_DIVERSITY_HEIGHT_BIN_M } from '../constants/diversityMetrics';
+import {
+  DEFAULT_DIVERSITY_HEIGHT_BIN_M,
+  DEFAULT_HEATMAP_MAX_HEIGHT_M,
+  HEATMAP_COLORMAP_MAX,
+} from '../constants/diversityMetrics';
 import {
   drawMetricScaleBarOnSnapshot,
   drawNorthArrowOnSnapshot,
@@ -30,8 +34,6 @@ import {
 type ExportFormat = 'pdf' | 'png' | 'jpg';
 type PlotTarget = 'heatmap' | 'metrics';
 type PdfQuality = 'standard' | 'high' | 'ultra';
-const DEFAULT_MAX_HEIGHT = 50;
-
 /** Inset for scale bar + north arrow on exported map snapshots (aligns with OL control margins). */
 const MAP_EXPORT_DECORATION_PAD = 10;
 
@@ -88,7 +90,8 @@ type TransectExportDialogProps = {
   samples: VerticalProfileLineSample[];
   totalLengthMeters?: number;
   xAxis: 'lon' | 'lat';
-  maxHeight?: number;
+  /** Y-axis top (m) for heatmap raster only (not diversity `max_height`). */
+  heatmapMaxHeight?: number;
   /** Meters per vertical bin (matches transect profile histogram); defaults to Tools setting. */
   heightBinM?: number;
 };
@@ -144,7 +147,7 @@ export function TransectExportDialog({
   samples,
   totalLengthMeters,
   xAxis,
-  maxHeight,
+  heatmapMaxHeight,
   heightBinM: heightBinMProp,
 }: TransectExportDialogProps) {
   const map = useMapStore((state) => state.map);
@@ -166,7 +169,7 @@ export function TransectExportDialog({
   const [colorbarHeightPx, setColorbarHeightPx] = useState<number>(18);
 
   const safeWidth = clamp(figureWidth, 700, 3000);
-  const safeHeight = clamp(figureHeight, 380, 1800);
+  const safeHeight = clamp(figureHeight, 100, 1800);
   const safeFontSize = clamp(fontSize, 8, 24);
   const safeColorbarHeightPx = clamp(colorbarHeightPx, 10, 44);
 
@@ -186,7 +189,7 @@ export function TransectExportDialog({
     let zMax = -Infinity;
     const xCount = Math.max(1, samples.length);
     const hb = Math.max(1, heightBinM);
-    const maxHm = Math.max(1, Math.round(maxHeight ?? DEFAULT_MAX_HEIGHT));
+    const maxHm = Math.max(1, Math.round(heatmapMaxHeight ?? DEFAULT_HEATMAP_MAX_HEIGHT_M));
     const nBins = Math.max(
       1,
       samples.reduce((acc, s) => Math.max(acc, s.profile?.length ?? 0), 0) || Math.round(maxHm / hb),
@@ -210,7 +213,9 @@ export function TransectExportDialog({
       }
     }
 
-    const denom = zMax - zMin || 1;
+    const zScaleMin = zMin;
+    const zScaleMax = HEATMAP_COLORMAP_MAX;
+    const colorDenom = zScaleMax > zScaleMin ? zScaleMax - zScaleMin : 1;
     const yCount = nBins;
 
     let gridCanvas: HTMLCanvasElement | null = null;
@@ -235,7 +240,11 @@ export function TransectExportDialog({
           const px = p.xIndex;
           const py = nBins - 1 - p.rh;
           if (px < 0 || px >= xCount || py < 0 || py >= yCount) continue;
-          const t = (p.value - zMin) / denom;
+          const tRaw =
+            zScaleMin >= zScaleMax
+              ? 1
+              : (Math.min(p.value, zScaleMax) - zScaleMin) / colorDenom;
+          const t = Math.max(0, Math.min(1, tRaw));
           const [r, g, b] = rampRgb(t);
           const idx = (py * xCount + px) * 4;
           data[idx] = r;
@@ -248,8 +257,16 @@ export function TransectExportDialog({
       }
     }
 
-    return { points, zMin, zMax, denom, nBins, maxHm, xCount, gridCanvas };
-  }, [samples, maxHeight, heightBinM]);
+    return {
+      points,
+      zScaleMin,
+      zScaleMax,
+      nBins,
+      maxHm,
+      xCount,
+      gridCanvas,
+    };
+  }, [samples, heatmapMaxHeight, heightBinM]);
 
   const drawHeatmapInto = (
     canvas: HTMLCanvasElement,
@@ -261,7 +278,7 @@ export function TransectExportDialog({
     const ctx = canvas.getContext('2d');
     if (!ctx) return false;
 
-    const { points, zMin, zMax, maxHm, xCount, gridCanvas } = heatmapData;
+    const { points, zScaleMin, zScaleMax, maxHm, xCount, gridCanvas } = heatmapData;
     // When PDF export uses a larger bitmap than the figure size (high/ultra),
     // scale all typography, margins, and strokes so proportions match the preview.
     const sc = Math.min(width / safeWidth, height / safeHeight);
@@ -278,31 +295,46 @@ export function TransectExportDialog({
 
     const tickFontSize = Math.max(10, safeFontSize - 1) * sc;
     const axisFontSize = safeFontSize * sc;
-    const desiredTicks = 5;
-    const yTicksMeters = Array.from({ length: desiredTicks + 1 }, (_, i) =>
-      Math.round((i / desiredTicks) * maxHm));
+    /** Two labeled positions on Y (0 and max height). */
+    const yTickIntervals = 1;
+    const yTicksMeters = Array.from({ length: yTickIntervals + 1 }, (_, i) =>
+      Math.round((i / yTickIntervals) * maxHm));
     ctx.font = `${tickFontSize}px sans-serif`;
     const yTickMaxWidth = yTicksMeters.reduce((mx, m) => Math.max(mx, ctx.measureText(`${m}`).width), 0);
-    const zSpanForMargin = zMax - zMin || 1;
+    const zLoBar = Math.min(zScaleMin, zScaleMax);
+    const zSpanForMargin = Math.max(zScaleMax - zLoBar, 1e-9);
+    const colorbarTickCount = 2;
     let colorbarLabelMaxW = 0;
-    for (let i = 0; i < 5; i += 1) {
-      const t = i / 4;
-      const zAt = zMin + t * zSpanForMargin;
+    for (let i = 0; i < colorbarTickCount; i += 1) {
+      const t = colorbarTickCount > 1 ? i / (colorbarTickCount - 1) : 0;
+      const zAt = zScaleMin >= zScaleMax ? zScaleMax : zLoBar + t * zSpanForMargin;
       colorbarLabelMaxW = Math.max(colorbarLabelMaxW, ctx.measureText(zAt.toFixed(2)).width);
     }
-    const colorbarGap = 12 * sc;
-    const colorbarTickLen = 5 * sc;
+    const colorbarGap = 8 * sc;
+    const colorbarTickLen = 4 * sc;
     const barThickness = safeColorbarHeightPx * sc;
     ctx.font = `${axisFontSize}px sans-serif`;
-    const energyLabelReserve = 12 * sc + ctx.measureText('Energy (%)').width / 2 + axisFontSize * 0.75;
+    /** Rotated vertical title occupies ~one em horizontally on screen (glyph advance along x). */
+    const yAxisTitleHorizHalf = axisFontSize * 0.58;
+    const padCanvasLeft = 4 * sc;
+    const tickToPlot = 6 * sc;
+    const gapTicksToYTitle = 6 * sc;
+    /* Plot left edge = after: [pad][rotated title][gap][y tick numerals][tick mark][axis] */
+    const leftMarginForYAxis =
+      padCanvasLeft +
+      2 * yAxisTitleHorizHalf +
+      gapTicksToYTitle +
+      yTickMaxWidth +
+      tickToPlot;
+    const energyLabelReserve = 6 * sc + ctx.measureText('Energy (%)').width / 2 + axisFontSize * 0.5;
     // Right margin: gap + bar + ticks + value labels + rotated "Energy (%)" title.
     const marginRightColorbar =
-      colorbarGap + barThickness + colorbarTickLen + colorbarLabelMaxW + 10 * sc + energyLabelReserve;
+      colorbarGap + barThickness + colorbarTickLen + colorbarLabelMaxW + 4 * sc + energyLabelReserve;
     const margin = {
-      top: Math.max(56 * sc, Math.round(24 * sc + tickFontSize)),
-      right: Math.max(18 * sc, marginRightColorbar),
-      bottom: Math.max(56 * sc, Math.round(30 * sc + tickFontSize + axisFontSize)),
-      left: Math.max(72 * sc, Math.ceil(28 * sc + axisFontSize + 12 * sc + yTickMaxWidth + 14 * sc)),
+      top: Math.max(10 * sc, 6 * sc + tickFontSize * 0.35),
+      right: Math.max(10 * sc, marginRightColorbar),
+      bottom: Math.max(8 * sc, 4 * sc + tickFontSize + axisFontSize + 6 * sc),
+      left: Math.max(12 * sc, Math.ceil(leftMarginForYAxis)),
     };
     const innerW = width - margin.left - margin.right;
     const innerH = height - margin.top - margin.bottom;
@@ -339,7 +371,8 @@ export function TransectExportDialog({
     ctx.lineTo(margin.left, margin.top + innerH);
     ctx.stroke();
 
-    const xTickCount = Math.min(6, xCount);
+    /** Two labeled positions along X (first and last sample) when possible. */
+    const xTickCount = Math.min(2, Math.max(1, xCount));
     const xTicks = Array.from({ length: xTickCount }, (_, i) =>
       Math.round((i * (xCount - 1)) / Math.max(1, xTickCount - 1)));
     ctx.fillStyle = '#616161';
@@ -351,38 +384,41 @@ export function TransectExportDialog({
       const x = margin.left + (idx + 0.5) * cellW;
       ctx.beginPath();
       ctx.moveTo(x, margin.top + innerH);
-      ctx.lineTo(x, margin.top + innerH + 4 * sc);
+      ctx.lineTo(x, margin.top + innerH + 3 * sc);
       ctx.stroke();
       ctx.textAlign = 'center';
-      ctx.fillText(label, x, margin.top + innerH + 8 * sc + tickFontSize);
+      ctx.fillText(label, x, margin.top + innerH + 4 * sc + tickFontSize);
     });
 
     yTicksMeters.forEach((m) => {
       const y = margin.top + innerH - (m / maxHm) * innerH;
       ctx.beginPath();
-      ctx.moveTo(margin.left - 4 * sc, y);
+      ctx.moveTo(margin.left - 3 * sc, y);
       ctx.lineTo(margin.left, y);
       ctx.stroke();
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(`${m}`, margin.left - 10 * sc, y);
+      ctx.fillText(`${m}`, margin.left - 6 * sc, y);
     });
     ctx.textBaseline = 'alphabetic';
 
     ctx.textAlign = 'center';
     ctx.font = `${axisFontSize}px sans-serif`;
-    ctx.fillText(xAxis === 'lon' ? 'Longitude' : 'Latitude', margin.left + innerW / 2, height - 8 * sc);
+    ctx.fillText(xAxis === 'lon' ? 'Longitude' : 'Latitude', margin.left + innerW / 2, height - 4 * sc);
 
     ctx.save();
-    const yTickTextX = margin.left - 10 * sc;
-    const yLabelX = yTickTextX - yTickMaxWidth - Math.max(14 * sc, axisFontSize + 8 * sc);
-    ctx.translate(Math.max(10 * sc, yLabelX), margin.top + innerH / 2);
+    ctx.font = `${axisFontSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const yTitleCenterX =
+      margin.left - tickToPlot - yTickMaxWidth - gapTicksToYTitle - yAxisTitleHorizHalf;
+    ctx.translate(yTitleCenterX, margin.top + innerH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.fillText('Height (m)', 0, 0);
     ctx.restore();
 
     // Vertical colorbar: full plot height, flush right of plot with a small gap.
-    const zSpan = zMax - zMin || 1;
+    const zSpan = zScaleMin >= zScaleMax ? 1 : Math.max(zScaleMax - zLoBar, 1e-9);
     const barLeft = margin.left + innerW + colorbarGap;
     const barTop = margin.top;
     const barH = innerH;
@@ -401,17 +437,16 @@ export function TransectExportDialog({
     ctx.font = `${tickFontSize}px sans-serif`;
     ctx.strokeStyle = '#616161';
     ctx.textAlign = 'left';
-    const colorbarTickCount = 5;
     for (let i = 0; i < colorbarTickCount; i += 1) {
-      const t = i / (colorbarTickCount - 1);
+      const t = colorbarTickCount > 1 ? i / (colorbarTickCount - 1) : 0;
       const ty = barTop + barH - t * barH;
       ctx.beginPath();
       ctx.moveTo(barLeft + barThickness, ty);
       ctx.lineTo(barLeft + barThickness + colorbarTickLen, ty);
       ctx.stroke();
-      const zAt = zMin + t * zSpan;
+      const zAt = zScaleMin >= zScaleMax ? zScaleMax : zLoBar + t * zSpan;
       ctx.textBaseline = 'middle';
-      ctx.fillText(zAt.toFixed(2), barLeft + barThickness + colorbarTickLen + 4 * sc, ty);
+      ctx.fillText(zAt.toFixed(2), barLeft + barThickness + colorbarTickLen + 3 * sc, ty);
     }
     ctx.textBaseline = 'alphabetic';
 
@@ -421,7 +456,7 @@ export function TransectExportDialog({
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const numericLabelsRight = barLeft + barThickness + colorbarTickLen + colorbarLabelMaxW;
-    const energyLabelCx = numericLabelsRight + 10 * sc + energyLabelReserve / 2;
+    const energyLabelCx = numericLabelsRight + 5 * sc + energyLabelReserve / 2;
     ctx.translate(energyLabelCx, barTop + barH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.fillText('Energy (%)', 0, 0);
@@ -447,7 +482,7 @@ export function TransectExportDialog({
     samples,
     totalLengthMeters,
     xAxis,
-    maxHeight,
+    heatmapMaxHeight,
     heatmapData,
   ]);
 
@@ -771,7 +806,7 @@ export function TransectExportDialog({
             label="Figure height (px)"
             value={figureHeight}
             onChange={(event) => setFigureHeight(Number(event.target.value))}
-            inputProps={{ min: 380, max: 1800, step: 20 }}
+            inputProps={{ min: 100, max: 1800, step: 20 }}
           />
           <TextField
             size="small"
@@ -861,6 +896,7 @@ export function TransectExportDialog({
                 fontSize={safeFontSize}
                 showAxisToggle={false}
                 mode="both"
+                axisTickNumber={2}
               />
             </Box>
           </Box>
@@ -894,6 +930,7 @@ export function TransectExportDialog({
               fontSize={safeFontSize}
               showAxisToggle={false}
               mode="both"
+              axisTickNumber={2}
             />
           </Box>
         </Box>

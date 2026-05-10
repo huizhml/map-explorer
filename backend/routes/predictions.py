@@ -13,7 +13,7 @@ import mgrs as mgrs_lib
 import rasterio
 from rasterio.warp import transform as rw_transform
 
-from utils import MAX_HEIGHT, pixel_vertical_profile_and_metrics, pixel_diversity_indices
+from utils import HEATMAP_MAX_HEIGHT, MAX_HEIGHT, pixel_vertical_profile, pixel_diversity_indices
 import math
 
 router = APIRouter(tags=["predictions"])
@@ -224,7 +224,8 @@ def _compute_profile_at_point(
             profile.append({"rh": rh, "value": val / 10.0 if val is not None else None, "missing": False})
 
     valid_vals = [p["value"] for p in profile if p["value"] is not None and not p["missing"]]
-    vertical_profile, fhd, enl1d, enl2d, cr = _derive_profile_and_metrics(valid_vals, height_bin_m=fhd_interval)
+    vertical_profile = pixel_vertical_profile(valid_vals)
+    fhd, enl1d, enl2d, cr = pixel_diversity_indices(valid_vals, bin_width=fhd_interval, max_height=MAX_HEIGHT)
     vertical_profile_curve = [
         {"z": z, "value": v}
         for z, v in enumerate(vertical_profile)
@@ -246,6 +247,7 @@ def _compute_profile_at_point(
         "cr": cr,
         "missing_file_count": missing_files,
         "max_height": MAX_HEIGHT,
+        "heatmap_max_height": HEATMAP_MAX_HEIGHT,
         "fhd_interval": fhd_interval,
     }
 
@@ -263,11 +265,9 @@ def _derive_profile_and_metrics(valid_vals: List[float], height_bin_m: int = 5, 
     fhd, enl1d, enl2d, cr = None, None, None, None
     if len(valid_vals) >= 3:
         try:
-            vertical_profile, raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_vertical_profile_and_metrics(
-                valid_vals,
-                interval=hb,
-                max_height=max_height,
-            )
+            vertical_profile = pixel_vertical_profile(valid_vals)
+            raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(valid_vals, bin_width=hb, max_height=max_height)
+
             vertical_profile = vertical_profile.tolist()
             fhd = _safe_scalar(float(raw_fhd))
             enl1d = _safe_scalar(float(raw_enl1d))
@@ -499,6 +499,7 @@ async def predictions_vertical_profile_line(request: VerticalProfileLineRequest)
             "vertical_profile": vertical_profile,
             "samples": out,
             "max_height": MAX_HEIGHT,
+            "heatmap_max_height": HEATMAP_MAX_HEIGHT,
             "fhd_interval": request.fhd_interval,
         }
 

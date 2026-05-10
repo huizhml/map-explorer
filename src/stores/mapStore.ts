@@ -76,7 +76,17 @@ export type InspectPanelState = {
     enl2d?: number | null;
     cr?: number | null;
   };
-  profileMeta?: { tileName: string; year: number; qIndex: number; source?: string; maxHeight?: number; fhdInterval?: number };
+  profileMeta?: {
+    tileName: string;
+    year: number;
+    qIndex: number;
+    source?: string;
+    /** Diversity / histogram domain (m); from API `max_height`. */
+    maxHeight?: number;
+    /** Transect heatmap y-axis top (m); from API `heatmap_max_height`. */
+    heatmapMaxHeight?: number;
+    fhdInterval?: number;
+  };
   transectProfile?: {
     lineCoordinates: Array<[number, number]>;
     sampleCount: number;
@@ -125,6 +135,8 @@ export interface ConditionalStyle {
   minColor?: string; // Deprecated - kept for backward compatibility
   maxColor?: string; // Deprecated - kept for backward compatibility
 }
+
+export type ConditionalLogicMode = 'any' | 'all';
 
 export interface Sentinel2Layer {
   layer: WebGLTileLayer;
@@ -176,6 +188,8 @@ interface MapStore {
   setFgbStyleOptions: (options: StyleOptions | ((prev: StyleOptions) => StyleOptions)) => void;
   conditionalStyles: ConditionalStyle[];
   setConditionalStyles: (styles: ConditionalStyle[] | ((prev: ConditionalStyle[]) => ConditionalStyle[])) => void;
+  conditionalLogicMode: ConditionalLogicMode;
+  setConditionalLogicMode: (mode: ConditionalLogicMode) => void;
   enableConditionalRendering: boolean;
   setEnableConditionalRendering: (enabled: boolean) => void;
   hasAutoLoadedFgb: boolean;
@@ -246,7 +260,7 @@ interface MapStore {
 
   // Saved map features (persisted in backend database)
   savedMapFeatures: SavedMapFeature[];
-  setSavedMapFeatures: (features: SavedMapFeature[]) => void;
+  setSavedMapFeatures: (features: SavedMapFeature[] | ((prev: SavedMapFeature[]) => SavedMapFeature[])) => void;
   addSavedMapFeature: (feature: SavedMapFeature) => void;
   removeSavedMapFeature: (id: number) => void;
   featureCaptureType: SavedFeatureGeometryType | null;
@@ -319,6 +333,8 @@ export const useMapStore = create<MapStore>((set, get) => ({
     set((state) => ({
       conditionalStyles: typeof styles === 'function' ? styles(state.conditionalStyles) : styles,
     })),
+  conditionalLogicMode: 'any',
+  setConditionalLogicMode: (mode) => set({ conditionalLogicMode: mode }),
   enableConditionalRendering: false,
   setEnableConditionalRendering: (enabled) => set({ enableConditionalRendering: enabled }),
   hasAutoLoadedFgb: false,
@@ -421,7 +437,10 @@ export const useMapStore = create<MapStore>((set, get) => ({
   clearSavedGediPoints: () => set({ savedGediPoints: [] }),
 
   savedMapFeatures: [],
-  setSavedMapFeatures: (features) => set({ savedMapFeatures: features }),
+  setSavedMapFeatures: (features) =>
+    set((state) => ({
+      savedMapFeatures: typeof features === 'function' ? features(state.savedMapFeatures) : features,
+    })),
   addSavedMapFeature: (feature) =>
     set((state) => ({
       savedMapFeatures: [feature, ...state.savedMapFeatures.filter((f) => f.id !== feature.id)],

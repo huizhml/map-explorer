@@ -46,6 +46,7 @@ import {
   LightModeOutlined as LightModeOutlinedIcon,
   DarkModeOutlined as DarkModeOutlinedIcon,
   OpenInFull as OpenInFullIcon,
+  EditOutlined as EditOutlinedIcon,
 } from '@mui/icons-material';
 import type { VsmQChoice } from '../constants/predictions';
 import type { FigureLayerOverrides } from '../containers/SidebarContainer';
@@ -120,12 +121,15 @@ interface SidebarProps {
   savedFeaturesError: string | null;
   onReloadSavedFeatures: () => void;
   deletingSavedFeatureId: number | null;
+  updatingSavedFeatureId: number | null;
   onDeleteSavedFeature: (id: number) => void;
+  onUpdateSavedFeature: (id: number, payload: { name: string; description: string; tags: string[] }) => Promise<void>;
   onJumpToFeature: (feature: SavedFeature) => void;
   // File upload
   onUploadFile: (file: File) => Promise<void>;
   uploadingFile: boolean;
   onLoadForestNaturalnessData: () => void;
+  onLoadForestNaturalnessDataVal: () => void;
 }
 
 const SidebarContainer = styled(Box)(() => ({
@@ -441,11 +445,14 @@ export function Sidebar({
   savedFeaturesError,
   onReloadSavedFeatures,
   deletingSavedFeatureId,
+  updatingSavedFeatureId,
   onDeleteSavedFeature,
+  onUpdateSavedFeature,
   onJumpToFeature,
   onUploadFile,
   uploadingFile,
   onLoadForestNaturalnessData,
+  onLoadForestNaturalnessDataVal,
 }: SidebarProps) {
   const diversityHeightBinM = useMapStore((s) => s.diversityHeightBinM);
   const setDiversityHeightBinM = useMapStore((s) => s.setDiversityHeightBinM);
@@ -468,9 +475,14 @@ export function Sidebar({
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [savedSearch, setSavedSearch] = useState('');
   const [expandedSavedId, setExpandedSavedId] = useState<number | null>(null);
+  const [expandedSavedPropsId, setExpandedSavedPropsId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [savedCategoryFilter, setSavedCategoryFilter] = useState<string>('');
   const [savedTypeFilter, setSavedTypeFilter] = useState<string>('');
+  const [editingSavedId, setEditingSavedId] = useState<number | null>(null);
+  const [editSavedName, setEditSavedName] = useState('');
+  const [editSavedDescription, setEditSavedDescription] = useState('');
+  const [editSavedTags, setEditSavedTags] = useState('');
   const [openDbSaveDialog, setOpenDbSaveDialog] = useState(false);
   const [dbFeatureName, setDbFeatureName] = useState('');
   const [dbFeatureCategory, setDbFeatureCategory] = useState('area_images');
@@ -800,6 +812,22 @@ export function Sidebar({
                   }}
                 >
                   Load forest naturalness data
+                </Button>
+                <Button
+                  variant="outlined"
+                  onClick={onLoadForestNaturalnessDataVal}
+                  fullWidth
+                  sx={{
+                    mt: 1,
+                    borderStyle: 'dashed',
+                    borderColor: ui.borderStrong,
+                    color: ui.textSecondary,
+                    py: 1,
+                    textTransform: 'none',
+                    '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
+                  }}
+                >
+                  Load forest naturalness data (val)
                 </Button>
 
                 {addedVsmLayers.length > 0 && showAddedInfo && (
@@ -1209,6 +1237,9 @@ export function Sidebar({
                     const isExpanded = expandedSavedId === feature.id;
                     const isConfirmingDelete = confirmDeleteId === feature.id;
                     const isDeleting = deletingSavedFeatureId === feature.id;
+                    const isUpdating = updatingSavedFeatureId === feature.id;
+                    const isEditing = editingSavedId === feature.id;
+                    const tags = Array.isArray(feature.metadata?.tags) ? feature.metadata?.tags : [];
                     return (
                       <Box
                         key={feature.id}
@@ -1247,6 +1278,24 @@ export function Sidebar({
                               sx={{ color: ui.accent, flexShrink: 0 }}
                             >
                               <MyLocationIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Edit" placement="top" arrow>
+                            <IconButton
+                              size="small"
+                              disabled={isDeleting || isUpdating}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setConfirmDeleteId(null);
+                                setExpandedSavedId(feature.id);
+                                setEditingSavedId(feature.id);
+                                setEditSavedName(feature.name ?? '');
+                                setEditSavedDescription(feature.description ?? '');
+                                setEditSavedTags(tags.join(', '));
+                              }}
+                              sx={{ color: ui.textMuted, flexShrink: 0 }}
+                            >
+                              <EditOutlinedIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
 
@@ -1288,14 +1337,85 @@ export function Sidebar({
                         {/* Expanded: details */}
                         {isExpanded && (
                           <Box sx={{ px: 1.5, pb: 1.2, borderTop: `1px solid ${ui.border}` }}>
-                            <Typography sx={{ mt: 0.8, mb: 0.35, fontSize: '0.68rem', color: ui.textMuted, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-                              Description
-                            </Typography>
-                            <Typography sx={{ fontSize: '0.82rem', color: feature.description ? ui.textSecondary : ui.textMuted, fontStyle: feature.description ? 'normal' : 'italic', whiteSpace: 'pre-wrap' }}>
-                              {feature.description || 'No description'}
-                            </Typography>
+                            {isEditing ? (
+                              <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.8 }}>
+                                <TextField
+                                  size="small"
+                                  label="Name"
+                                  value={editSavedName}
+                                  onChange={(e) => setEditSavedName(e.target.value)}
+                                  fullWidth
+                                />
+                                <TextField
+                                  size="small"
+                                  label="Description"
+                                  value={editSavedDescription}
+                                  onChange={(e) => setEditSavedDescription(e.target.value)}
+                                  fullWidth
+                                  multiline
+                                  minRows={2}
+                                />
+                                <TextField
+                                  size="small"
+                                  label="Tags (comma-separated)"
+                                  value={editSavedTags}
+                                  onChange={(e) => setEditSavedTags(e.target.value)}
+                                  fullWidth
+                                />
+                                <Box sx={{ display: 'flex', gap: 0.8, justifyContent: 'flex-end' }}>
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    onClick={() => setEditingSavedId(null)}
+                                    disabled={isUpdating}
+                                  >
+                                    Cancel
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    variant="contained"
+                                    disabled={isUpdating || !editSavedName.trim()}
+                                    onClick={async () => {
+                                      const tagList = editSavedTags
+                                        .split(',')
+                                        .map((t) => t.trim())
+                                        .filter(Boolean);
+                                      await onUpdateSavedFeature(feature.id, {
+                                        name: editSavedName.trim(),
+                                        description: editSavedDescription,
+                                        tags: tagList,
+                                      });
+                                      setEditingSavedId(null);
+                                    }}
+                                  >
+                                    {isUpdating ? <CircularProgress size={13} /> : 'Save'}
+                                  </Button>
+                                </Box>
+                              </Box>
+                            ) : (
+                              <>
+                                <Typography sx={{ mt: 0.8, mb: 0.35, fontSize: '0.68rem', color: ui.textMuted, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                                  Description
+                                </Typography>
+                                <Typography sx={{ fontSize: '0.82rem', color: feature.description ? ui.textSecondary : ui.textMuted, fontStyle: feature.description ? 'normal' : 'italic', whiteSpace: 'pre-wrap' }}>
+                                  {feature.description || 'No description'}
+                                </Typography>
+                              </>
+                            )}
 
-                            {(feature.metadata?.tile_name || feature.metadata?.year || feature.metadata?.source || feature.metadata?.sample_count || feature.metadata?.total_length_m) && (
+                            {!isEditing && tags.length > 0 && (
+                              <Box sx={{ mt: 0.9, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                {tags.map((tag) => (
+                                  <Box key={tag} sx={{ px: 0.8, py: 0.2, borderRadius: 999, backgroundColor: ui.buttonBg, border: `1px solid ${ui.border}` }}>
+                                    <Typography sx={{ fontSize: '0.72rem', color: ui.textSecondary }}>
+                                      #{tag}
+                                    </Typography>
+                                  </Box>
+                                ))}
+                              </Box>
+                            )}
+
+                            {(feature.metadata?.tile_name || feature.metadata?.year || feature.metadata?.source || feature.metadata?.sample_count || feature.metadata?.total_length_m || feature.metadata?.satellite_snapshot_status) && (
                               <Box sx={{ mt: 1.1 }}>
                                 <Typography sx={{ mb: 0.5, fontSize: '0.68rem', color: ui.textMuted, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
                                   Metadata
@@ -1336,7 +1456,98 @@ export function Sidebar({
                                       </Typography>
                                     </Box>
                                   )}
+                                  {feature.metadata?.satellite_snapshot_status && (
+                                    <Box sx={{ px: 0.8, py: 0.35, borderRadius: 999, backgroundColor: ui.buttonBg, border: `1px solid ${ui.border}` }}>
+                                      <Typography sx={{ fontSize: '0.72rem', color: ui.textSecondary }}>
+                                        Satellite snapshot: {feature.metadata.satellite_snapshot_status}
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                  {feature.metadata?.prediction_snapshot_status && (
+                                    <Box sx={{ px: 0.8, py: 0.35, borderRadius: 999, backgroundColor: ui.buttonBg, border: `1px solid ${ui.border}` }}>
+                                      <Typography sx={{ fontSize: '0.72rem', color: ui.textSecondary }}>
+                                        Prediction snapshot: {feature.metadata.prediction_snapshot_status}
+                                      </Typography>
+                                    </Box>
+                                  )}
                                 </Box>
+                                {feature.metadata?.satellite_snapshot_status === 'unavailable' && feature.metadata?.satellite_snapshot_error && (
+                                  <Typography sx={{ mt: 0.45, fontSize: '0.68rem', color: ui.textMuted, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                                    reason: {String(feature.metadata.satellite_snapshot_error)}
+                                  </Typography>
+                                )}
+                                {feature.metadata?.prediction_snapshot_status === 'unavailable' && feature.metadata?.prediction_snapshot_error && (
+                                  <Typography sx={{ mt: 0.45, fontSize: '0.68rem', color: ui.textMuted, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                                    prediction reason: {String(feature.metadata.prediction_snapshot_error)}
+                                  </Typography>
+                                )}
+                              </Box>
+                            )}
+
+                            {feature.metadata?.feature_properties && typeof feature.metadata.feature_properties === 'object' && (
+                              <Box sx={{ mt: 1.1 }}>
+                                {(() => {
+                                  const propEntries = Object.entries(feature.metadata?.feature_properties ?? {});
+                                  const isPropsExpanded = expandedSavedPropsId === feature.id;
+                                  const compactEntries = isPropsExpanded ? propEntries : propEntries.slice(0, 8);
+                                  return (
+                                    <>
+                                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                                        <Typography sx={{ fontSize: '0.68rem', color: ui.textMuted, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                                          Feature Properties ({propEntries.length})
+                                        </Typography>
+                                        <Button
+                                          size="small"
+                                          variant="text"
+                                          onClick={() => setExpandedSavedPropsId(isPropsExpanded ? null : feature.id)}
+                                          endIcon={isPropsExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+                                          sx={{ textTransform: 'none', minHeight: 0, py: 0.2, px: 0.5, color: ui.accent, fontSize: '0.72rem' }}
+                                        >
+                                          {isPropsExpanded ? 'Compact' : 'Expand'}
+                                        </Button>
+                                      </Box>
+                                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.45 }}>
+                                        {compactEntries.map(([key, value]) => (
+                                          <Box
+                                            key={key}
+                                            sx={{
+                                              display: 'grid',
+                                              gridTemplateColumns: 'minmax(110px, 35%) 1fr',
+                                              gap: 0.6,
+                                              px: 0.65,
+                                              py: 0.45,
+                                              borderRadius: 1,
+                                              backgroundColor: ui.buttonBg,
+                                              border: `1px solid ${ui.border}`,
+                                            }}
+                                          >
+                                            <Typography sx={{ fontSize: '0.7rem', color: ui.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                              {key}
+                                            </Typography>
+                                            <Typography
+                                              sx={{
+                                                fontSize: '0.72rem',
+                                                color: ui.textSecondary,
+                                                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap',
+                                              }}
+                                              title={typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                                            >
+                                              {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                                            </Typography>
+                                          </Box>
+                                        ))}
+                                      </Box>
+                                      {!isPropsExpanded && propEntries.length > compactEntries.length && (
+                                        <Typography sx={{ mt: 0.45, fontSize: '0.7rem', color: ui.textMuted }}>
+                                          +{propEntries.length - compactEntries.length} more properties
+                                        </Typography>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </Box>
                             )}
 

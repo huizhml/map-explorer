@@ -14,6 +14,22 @@ export type SavedFeatureMetadata = {
   q_index?: number;
   sample_count?: number;
   total_length_m?: number;
+  feature_properties?: Record<string, unknown>;
+  satellite_snapshot_status?: string;
+  satellite_snapshot_error?: string;
+  prediction_snapshot_status?: string;
+  prediction_snapshot_error?: string;
+  tags?: string[];
+  sentinel2_layers?: Array<{
+    id?: string;
+    name?: string;
+    url: string;
+    tile_name?: string;
+    datetime?: string;
+    rgb_bands?: number[];
+    rescale_min?: number;
+    rescale_max?: number;
+  }>;
 };
 
 export type SavedFeaturePlotData = {
@@ -48,6 +64,7 @@ export type SavedFeaturePlotData = {
     sample_count?: number;
     total_length_m?: number;
     max_height?: number;
+    heatmap_max_height?: number;
     line_coordinates?: Array<[number, number]>;
     samples?: Array<{
       index: number;
@@ -122,4 +139,24 @@ export async function deleteSavedFeature(id: number): Promise<void> {
   if (!response.ok) {
     throw new Error(`Failed to delete feature (${response.status})`);
   }
+}
+
+export async function updateSavedFeature(
+  id: number,
+  input: { name?: string; description?: string; tags?: string[] },
+): Promise<SavedFeature> {
+  const response = await fetch(apiUrl(`/saved-features/${id}`), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Failed to update feature (${response.status})`);
+  }
+  const data = (await response.json()) as { feature?: SavedFeature };
+  if (!data.feature) {
+    throw new Error('API did not return updated feature');
+  }
+  return data.feature;
 }

@@ -92,9 +92,29 @@ function App() {
           if (ext?.length === 4) metadata.extent = ext;
         }
       } catch { /* ignore */ }
-      layerManager.addLayer('fgb', 'FlatGeobuf Layer', 'fgb', fgbLayer, metadata);
+      const datasetKind = fgbLayer.get('datasetKind');
+      const datasetDisplayName = fgbLayer.get('datasetDisplayName');
+      const layerId =
+        datasetKind === 'sentinel2-grid'
+          ? 'fgb-sentinel2-grid'
+          : datasetKind === 'naturalness'
+            ? 'fgb-naturalness'
+            : datasetKind === 'naturalness-val'
+              ? 'fgb-naturalness-val'
+              : 'fgb';
+      const layerName = typeof datasetDisplayName === 'string' && datasetDisplayName
+        ? datasetDisplayName
+        : 'FlatGeobuf Layer';
+      metadata.datasetKind = datasetKind;
+      layerManager.addLayer(layerId, layerName, 'fgb', fgbLayer, metadata);
       updateLayersList();
-    } else if (!fgbLayer) { layerManager.removeLayer('fgb'); updateLayersList(); }
+    } else if (!fgbLayer) {
+      layerManager.removeLayer('fgb');
+      layerManager.removeLayer('fgb-sentinel2-grid');
+      layerManager.removeLayer('fgb-naturalness');
+      layerManager.removeLayer('fgb-naturalness-val');
+      updateLayersList();
+    }
   }, [fgbLayer, map, layerManager, updateLayersList]);
 
   React.useEffect(() => { updateLayersList(); }, [updateLayersList]);
@@ -141,10 +161,16 @@ function App() {
     }
   }, [featureDraft, addSavedMapFeature, setFeatureDraft, setFeatureCaptureType]);
 
-  const existingCategories = React.useMemo(
-    () => Array.from(new Set(savedMapFeatures.map((feature) => feature.category?.trim()).filter((value): value is string => Boolean(value)))).sort(),
-    [savedMapFeatures],
-  );
+  const existingCategories = React.useMemo(() => {
+    const features = Array.isArray(savedMapFeatures) ? savedMapFeatures : [];
+    return Array.from(
+      new Set(
+        features
+          .map((feature) => feature.category?.trim())
+          .filter((value): value is string => Boolean(value)),
+      ),
+    ).sort();
+  }, [savedMapFeatures]);
 
   return (
     <ThemeProvider theme={theme}>
@@ -197,6 +223,29 @@ function App() {
           onLoadPredictionCOG={handleLoadPredictionCOG}
           onLoadAuxiliaryLayer={handleLoadAuxiliaryLayer}
           onLoadGEDIPoints={handleLoadGEDIPoints}
+          onSavePoint={(draft) => {
+            const sentinelLayers = layerManager
+              ?.getLayersByType('sentinel2')
+              .filter((l: any) => l?.visible && l?.metadata?.url)
+              .map((l: any) => ({
+                id: l.id,
+                name: l.name,
+                url: String(l.metadata.url),
+                tile_name: l.metadata.tileName,
+                datetime: l.metadata.datetime,
+                rgb_bands: Array.isArray(l.metadata.rgbBands) ? l.metadata.rgbBands : undefined,
+                rescale_min: Number.isFinite(Number(l.metadata.rescaleMin)) ? Number(l.metadata.rescaleMin) : undefined,
+                rescale_max: Number.isFinite(Number(l.metadata.rescaleMax)) ? Number(l.metadata.rescaleMax) : undefined,
+              })) ?? [];
+            setSaveFeatureError(null);
+            setFeatureDraft({
+              ...draft,
+              metadata: {
+                ...(draft.metadata ?? {}),
+                sentinel2_layers: sentinelLayers,
+              },
+            });
+          }}
           onClose={closePopup}
         />
 

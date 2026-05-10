@@ -17,6 +17,8 @@ export type VerticalProfileResponse = {
   enl2d?: number | null;
   cr?: number | null;
   max_height?: number;
+  /** Y-axis top (m) for transect RH heatmap; diversity uses `max_height`. */
+  heatmap_max_height?: number;
   fhd_interval?: number;
 };
 
@@ -46,6 +48,7 @@ export type VerticalProfileLineResponse = {
   vertical_profile?: Array<Array<number | null>>;
   samples?: VerticalProfileLineSample[];
   max_height?: number;
+  heatmap_max_height?: number;
   fhd_interval?: number;
 };
 

@@ -20,7 +20,7 @@ import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore
 import { parseUploadedFile } from '../utils/parseUploadedFile';
 import { API_BASE_URL, apiUrl } from '../utils/apiBase';
 import { getDiversityBandRange } from '../constants/layerRanges';
-import { listSavedFeatures, deleteSavedFeature, type SavedFeature } from '../services/savedFeaturesApi';
+import { listSavedFeatures, deleteSavedFeature, updateSavedFeature, type SavedFeature } from '../services/savedFeaturesApi';
 import { defaultFigureFilenameStem } from '../utils/figureFilenameStem';
 
 const max = 500;
@@ -177,6 +177,7 @@ export function SidebarContainer() {
   const [figuresToDbMessage, setFiguresToDbMessage] = React.useState<string | null>(null);
   const [figuresToDbError, setFiguresToDbError] = React.useState<string | null>(null);
   const [deletingSavedFeatureId, setDeletingSavedFeatureId] = React.useState<number | null>(null);
+  const [updatingSavedFeatureId, setUpdatingSavedFeatureId] = React.useState<number | null>(null);
   const [savedFeaturesLoading, setSavedFeaturesLoading] = React.useState(false);
   const [savedFeaturesError, setSavedFeaturesError] = React.useState<string | null>(null);
   const highlightLayerRef = React.useRef<VectorLayer<VectorSource> | null>(null);
@@ -201,6 +202,7 @@ export function SidebarContainer() {
     setHasAutoLoadedFgb,
     fgbStyleOptions,
     conditionalStyles,
+    conditionalLogicMode,
     enableConditionalRendering,
     fgbInfo: currentFgbInfo,
     setCurrentFileName,
@@ -290,12 +292,25 @@ export function SidebarContainer() {
     const urlToLoad = (urlOverride ?? fgbUrl).trim();
     if (!urlToLoad || !map) return;
 
+    const inferFgbDatasetKind = (url: string): 'sentinel2-grid' | 'naturalness' | 'naturalness-val' | 'other' => {
+      const lower = url.toLowerCase();
+      if (lower.includes('/fgb/local')) return 'sentinel2-grid';
+      if (lower.includes('/fgb/naturalness/val')) return 'naturalness-val';
+      if (lower.includes('/fgb/naturalness')) return 'naturalness';
+      return 'other';
+    };
+    const datasetKind = inferFgbDatasetKind(urlToLoad);
+
     setFgbLoading(true);
     setFgbError(null);
 
     try {
       // Remove existing FlatGeobuf layer
-      if (fgbLayer) {
+      const keepExistingSentinelGrid =
+        Boolean(fgbLayer) &&
+        (datasetKind === 'naturalness' || datasetKind === 'naturalness-val') &&
+        fgbLayer?.get('datasetKind') === 'sentinel2-grid';
+      if (fgbLayer && !keepExistingSentinelGrid) {
         map.removeLayer(fgbLayer);
       }
 
@@ -364,7 +379,7 @@ export function SidebarContainer() {
         : source;
 
       // Helper function to evaluate conditional style
-      const evaluateCondition = (feature: any, condition: any): boolean => {
+      const evaluateCondition = (feature: any, condition: any): boolean | string => {
         const properties = feature.getProperties();
         const propValue = properties[condition.property];
         
@@ -384,10 +399,27 @@ export function SidebarContainer() {
             return Number(propValue) > Number(conditionValue);
           case 'less_than':
             return Number(propValue) < Number(conditionValue);
+          case 'between': {
+            const numValue = Number(propValue);
+            const min = Number(conditionValue);
+            const max = Number(condition.value2 || conditionValue);
+            return numValue >= min && numValue <= max;
+          }
           case 'contains':
             return String(propValue).includes(String(conditionValue));
           case 'starts_with':
             return String(propValue).startsWith(String(conditionValue));
+          case 'color_gradient': {
+            const numPropValue = Number(propValue);
+            if (isNaN(numPropValue)) return false;
+            const minVal = condition.minValue ?? 0;
+            const maxVal = condition.maxValue ?? 100;
+            if (minVal === maxVal) return '#0000ff';
+            const ratio = Math.max(0, Math.min(1, (numPropValue - minVal) / (maxVal - minVal)));
+            const blue = Math.round(255 * (1 - ratio));
+            const red = Math.round(255 * ratio);
+            return `#${red.toString(16).padStart(2, '0')}00${blue.toString(16).padStart(2, '0')}`;
+          }
           default:
             return false;
         }
@@ -397,12 +429,13 @@ export function SidebarContainer() {
       const getFeatureStyle = (feature: any): StyleOptions => {
         // If conditional rendering is enabled, check conditions
         if (enableConditionalRendering && conditionalStyles.length > 0) {
-          // Check conditions in order - first match wins
-          for (const condition of conditionalStyles) {
-            if (condition.property) {
+          const activeConditions = conditionalStyles.filter((condition: any) => condition.property);
+          if (activeConditions.length === 0) return fgbStyleOptions;
+
+          if (conditionalLogicMode === 'any') {
+            // OR behavior: first matching condition wins.
+            for (const condition of activeConditions) {
               const result = evaluateCondition(feature, condition);
-              
-              // Handle color gradient (returns color string)
               if (condition.operator === 'color_gradient' && typeof result === 'string') {
                 return {
                   ...fgbStyleOptions,
@@ -410,17 +443,40 @@ export function SidebarContainer() {
                   strokeColor: result,
                 };
               }
-              
-              // Handle other conditions (returns boolean)
               if (result === true) {
-                // Merge conditional style with default style
                 return {
                   ...fgbStyleOptions,
                   ...condition.style,
                 };
               }
             }
+            return fgbStyleOptions;
           }
+
+          // AND behavior: all active conditions must match.
+          let gradientColor: string | null = null;
+          const mergedConditionStyle: Partial<StyleOptions> = {};
+          for (const condition of activeConditions) {
+            const result = evaluateCondition(feature, condition);
+            if (condition.operator === 'color_gradient') {
+              if (typeof result !== 'string') return fgbStyleOptions;
+              gradientColor = result;
+              continue;
+            }
+            if (result !== true) return fgbStyleOptions;
+            Object.assign(mergedConditionStyle, condition.style);
+          }
+
+          return {
+            ...fgbStyleOptions,
+            ...mergedConditionStyle,
+            ...(gradientColor
+              ? {
+                  fillColor: gradientColor,
+                  strokeColor: gradientColor,
+                }
+              : {}),
+          };
         }
         // Return default style if no conditions match
         return fgbStyleOptions;
@@ -486,6 +542,17 @@ export function SidebarContainer() {
       newVectorLayer.set('clusterSource', clusterSource);
       newVectorLayer.set('isPointOnlyDataset', pointOnlyDataset);
       newVectorLayer.set('canClusterDataset', canClusterDataset);
+      newVectorLayer.set('datasetKind', datasetKind);
+      newVectorLayer.set(
+        'datasetDisplayName',
+        datasetKind === 'sentinel2-grid'
+          ? 'Sentinel-2 grid'
+          : datasetKind === 'naturalness'
+            ? 'Forest naturalness'
+            : datasetKind === 'naturalness-val'
+              ? 'Forest naturalness (val)'
+              : 'FlatGeobuf Layer',
+      );
 
       // Helper function to extract and set FGB info
       // This function updates the info incrementally as features are loaded
@@ -589,7 +656,21 @@ export function SidebarContainer() {
       // Add layer to map
       map.addLayer(newVectorLayer);
       console.log(`FlatGeobuf layer added with zIndex: ${fgbStyleOptions.zIndex}`);
-      setFgbLayer(newVectorLayer);
+      if (keepExistingSentinelGrid && layerManager && (datasetKind === 'naturalness' || datasetKind === 'naturalness-val')) {
+        const managedId = datasetKind === 'naturalness' ? 'fgb-naturalness' : 'fgb-naturalness-val';
+        const managedName = datasetKind === 'naturalness' ? 'Forest naturalness' : 'Forest naturalness (val)';
+        layerManager.removeLayer(managedId);
+        layerManager.addLayer(managedId, managedName, 'fgb', newVectorLayer as any, {
+          datasetKind,
+        });
+        const managedLayers = layerManager.getAllLayers();
+        setLayers(managedLayers.map((m: any) => ({
+          id: m.id, name: m.name, visible: m.visible, opacity: m.opacity,
+          zIndex: m.zIndex, type: m.type, metadata: m.metadata,
+        })));
+      } else {
+        setFgbLayer(newVectorLayer);
+      }
 
       // Try to extract info when features are added
       // With bbox strategy, features load incrementally, so we need to check multiple times
@@ -677,6 +758,13 @@ export function SidebarContainer() {
     setFgbUrl(naturalnessUrl);
     setHasAutoLoadedFgb(true);
     void handleLoadFGB(naturalnessUrl);
+  }, [handleLoadFGB, setFgbUrl, setHasAutoLoadedFgb]);
+
+  const handleLoadForestNaturalnessDataVal = React.useCallback(() => {
+    const naturalnessValUrl = apiUrl('/fgb/naturalness/val');
+    setFgbUrl(naturalnessValUrl);
+    setHasAutoLoadedFgb(true);
+    void handleLoadFGB(naturalnessValUrl);
   }, [handleLoadFGB, setFgbUrl, setHasAutoLoadedFgb]);
 
   // Auto-load FlatGeobuf once when map is ready
@@ -829,14 +917,14 @@ export function SidebarContainer() {
 
     // Helper function to get style for a feature based on conditions
     const getFeatureStyle = (feature: any): StyleOptions => {
-      // If conditional rendering is enabled, check conditions
       if (enableConditionalRendering && conditionalStyles.length > 0) {
-        // Check conditions in order - first match wins
-        for (const condition of conditionalStyles) {
-          if (condition.property) {
+        const activeConditions = conditionalStyles.filter((condition: any) => condition.property);
+        if (activeConditions.length === 0) return fgbStyleOptions;
+
+        if (conditionalLogicMode === 'any') {
+          // OR behavior: first matching condition wins.
+          for (const condition of activeConditions) {
             const result = evaluateCondition(feature, condition);
-            
-            // Handle color gradient (returns color string)
             if (condition.operator === 'color_gradient' && typeof result === 'string') {
               return {
                 ...fgbStyleOptions,
@@ -844,19 +932,41 @@ export function SidebarContainer() {
                 strokeColor: result,
               };
             }
-            
-            // Handle other conditions (returns boolean)
             if (result === true) {
-              // Merge conditional style with default style
               return {
                 ...fgbStyleOptions,
                 ...condition.style,
               };
             }
           }
+          return fgbStyleOptions;
         }
+
+        // AND behavior: all active conditions must match.
+        let gradientColor: string | null = null;
+        const mergedConditionStyle: Partial<StyleOptions> = {};
+        for (const condition of activeConditions) {
+          const result = evaluateCondition(feature, condition);
+          if (condition.operator === 'color_gradient') {
+            if (typeof result !== 'string') return fgbStyleOptions;
+            gradientColor = result;
+            continue;
+          }
+          if (result !== true) return fgbStyleOptions;
+          Object.assign(mergedConditionStyle, condition.style);
+        }
+
+        return {
+          ...fgbStyleOptions,
+          ...mergedConditionStyle,
+          ...(gradientColor
+            ? {
+                fillColor: gradientColor,
+                strokeColor: gradientColor,
+              }
+            : {}),
+        };
       }
-      // Return default style if no conditions match
       return fgbStyleOptions;
     };
 
@@ -912,7 +1022,7 @@ export function SidebarContainer() {
     return () => {
       if (zoomKey) unByKey(zoomKey);
     };
-  }, [fgbLayer, enableConditionalRendering, conditionalStyles, fgbStyleOptions, currentFgbInfo, map]);
+  }, [fgbLayer, enableConditionalRendering, conditionalStyles, conditionalLogicMode, fgbStyleOptions, currentFgbInfo, map]);
 
   const {
     addVsmLayer,
@@ -1014,6 +1124,19 @@ export function SidebarContainer() {
       setDeletingSavedFeatureId(null);
     }
   }, [removeSavedMapFeature]);
+
+  const handleUpdateSavedFeature = React.useCallback(
+    async (featureId: number, payload: { name: string; description: string; tags: string[] }) => {
+      setUpdatingSavedFeatureId(featureId);
+      try {
+        const updated = await updateSavedFeature(featureId, payload);
+        setSavedMapFeatures((prev) => prev.map((f) => (f.id === featureId ? updated : f)));
+      } finally {
+        setUpdatingSavedFeatureId(null);
+      }
+    },
+    [setSavedMapFeatures],
+  );
 
   const handleInspectModeChange = (active: boolean) => {
     if (active) {
@@ -1501,11 +1624,14 @@ export function SidebarContainer() {
       savedFeaturesError={savedFeaturesError}
       onReloadSavedFeatures={handleReloadSavedFeatures}
       deletingSavedFeatureId={deletingSavedFeatureId}
+      updatingSavedFeatureId={updatingSavedFeatureId}
       onDeleteSavedFeature={handleDeleteSavedFeature}
+      onUpdateSavedFeature={handleUpdateSavedFeature}
       onJumpToFeature={handleJumpToFeature}
       onUploadFile={handleUploadFile}
       uploadingFile={uploadingFile}
       onLoadForestNaturalnessData={handleLoadForestNaturalnessData}
+      onLoadForestNaturalnessDataVal={handleLoadForestNaturalnessDataVal}
     />
   );
 } 

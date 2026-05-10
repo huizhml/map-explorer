@@ -19,7 +19,7 @@ import {
 } from './SavedFeaturePlots';
 import { TransectExportDialog } from './TransectExportDialog';
 import { useMapStore } from '../stores/mapStore';
-import { DEFAULT_DIVERSITY_HEIGHT_BIN_M } from '../constants/diversityMetrics';
+import { DEFAULT_DIVERSITY_HEIGHT_BIN_M, DEFAULT_HEATMAP_MAX_HEIGHT_M } from '../constants/diversityMetrics';
 
 /** TiTiler /cog/point returns { coordinates, values, band_names } — user wants values only */
 function formatPixelValuesOnly(v: unknown): string | null {
@@ -143,6 +143,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
       qIndex: profileMeta?.qIndex ?? panel.profileMeta?.qIndex ?? 1,
       source: profileMeta?.source,
       maxHeight: profileMeta?.maxHeight ?? panel.profileMeta?.maxHeight,
+      heatmapMaxHeight: profileMeta?.heatmapMaxHeight ?? panel.profileMeta?.heatmapMaxHeight,
       fhdInterval: profileMeta?.fhdInterval ?? panel.profileMeta?.fhdInterval,
     }
     : profileMeta;
@@ -190,6 +191,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
                   sample_count: transectProfile.sampleCount,
                   total_length_m: transectProfile.totalLengthMeters,
                   max_height: profileMetaData?.maxHeight,
+                  heatmap_max_height: profileMetaData?.heatmapMaxHeight,
                   line_coordinates: transectProfile.lineCoordinates,
                   samples: transectProfile.samples,
                 },
@@ -227,6 +229,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
             sample_count: transectProfile.sampleCount,
             total_length_m: transectProfile.totalLengthMeters,
             max_height: profileMetaData?.maxHeight,
+            heatmap_max_height: profileMetaData?.heatmapMaxHeight,
             line_coordinates: transectProfile.lineCoordinates,
             samples: transectProfile.samples,
           },
@@ -404,7 +407,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
                   totalLengthMeters={transectProfile!.totalLengthMeters}
                   xAxis={transectMetricXAxis}
                   dimmed={hasStaleVertical}
-                  maxHeight={profileMetaData?.maxHeight}
+                  heatmapMaxHeight={profileMetaData?.heatmapMaxHeight ?? DEFAULT_HEATMAP_MAX_HEIGHT_M}
                   heightBinM={profileMetaData?.fhdInterval ?? diversityHeightBinM ?? DEFAULT_DIVERSITY_HEIGHT_BIN_M}
                 />
                 <TransectMetricsChart
@@ -549,7 +552,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
           samples={transectProfile.samples}
           totalLengthMeters={transectProfile.totalLengthMeters}
           xAxis={transectMetricXAxis}
-          maxHeight={profileMetaData?.maxHeight}
+          heatmapMaxHeight={profileMetaData?.heatmapMaxHeight ?? DEFAULT_HEATMAP_MAX_HEIGHT_M}
           heightBinM={profileMetaData?.fhdInterval ?? diversityHeightBinM ?? DEFAULT_DIVERSITY_HEIGHT_BIN_M}
         />
       )}

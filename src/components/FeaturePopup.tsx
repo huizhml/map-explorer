@@ -17,10 +17,12 @@ import {
   FormControl,
   InputLabel,
 } from '@mui/material';
-import { Close as CloseIcon, MoreVert as MoreVertIcon } from '@mui/icons-material';
+import { Close as CloseIcon, MoreVert as MoreVertIcon, BookmarkAdd as BookmarkAddIcon } from '@mui/icons-material';
 import { Geometry } from 'ol/geom';
+import Point from 'ol/geom/Point';
 import { transform } from 'ol/proj';
 import { apiUrl } from '../utils/apiBase';
+import type { SavedFeatureDraft } from '../services/savedFeaturesApi';
 // @ts-ignore - Material React Table needs to be installed: npm install material-react-table @tanstack/react-table
 import { MaterialReactTable, useMaterialReactTable, type MRT_ColumnDef } from 'material-react-table';
 
@@ -65,9 +67,10 @@ interface FeaturePopupProps {
     total_count: number;
     sample_size: number;
   }) => void;
+  onSavePoint?: (draft: SavedFeatureDraft) => void;
 }
 
-export function FeaturePopup({ properties, onClose, position, geometry, coordinates, onLoadSentinel2Image, onLoadPredictionCOG, onLoadAuxiliaryLayer, onLoadGEDIPoints }: FeaturePopupProps) {
+export function FeaturePopup({ properties, onClose, position, geometry, coordinates, onLoadSentinel2Image, onLoadPredictionCOG, onLoadAuxiliaryLayer, onLoadGEDIPoints, onSavePoint }: FeaturePopupProps) {
   const [year, setYear] = useState<string>('2020');
   const [maxCloudCover, setMaxCloudCover] = useState<string>('50');
   const [loading, setLoading] = useState(false);
@@ -818,6 +821,48 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     (typeof properties.name === 'string' && properties.name.trim() !== '')
   );
   const featurePropertyEntries = Object.entries(properties).filter(([key]) => key !== 'geometry');
+  const canSavePoint = Boolean(onSavePoint && coordinates);
+  const handleSavePoint = () => {
+    if (!onSavePoint || !coordinates) return;
+
+    // Prefer the true feature point geometry over click pixel location
+    // to avoid small visual click-offset shifts when re-locating.
+    let pointLon = coordinates.lon;
+    let pointLat = coordinates.lat;
+    if (geometry instanceof Point) {
+      const pointCoord3857 = geometry.getCoordinates();
+      const [geomLon, geomLat] = transform(pointCoord3857, 'EPSG:3857', 'EPSG:4326');
+      pointLon = geomLon;
+      pointLat = geomLat;
+    }
+
+    // Keep only visible feature properties and ensure JSON-safe payload.
+    let sanitizedProperties: Record<string, unknown> = {};
+    try {
+      sanitizedProperties = JSON.parse(JSON.stringify(Object.fromEntries(featurePropertyEntries)));
+    } catch {
+      sanitizedProperties = Object.fromEntries(
+        featurePropertyEntries.map(([key, value]) => [key, value == null ? null : String(value)])
+      );
+    }
+
+    onSavePoint({
+      geometry: {
+        type: 'Point',
+        coordinates: [pointLon, pointLat],
+      },
+      metadata: {
+        source: 'feature_popup',
+        tile_name:
+          (typeof properties.Name === 'string' && properties.Name) ||
+          (typeof properties.name === 'string' && properties.name) ||
+          (typeof properties.mgrs_tile === 'string' && properties.mgrs_tile) ||
+          undefined,
+        year: Number.isFinite(Number(year)) ? Number(year) : undefined,
+        feature_properties: sanitizedProperties,
+      },
+    });
+  };
   const sectionCardSx = {
     mx: 2,
     mt: 2,
@@ -900,9 +945,18 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
             </Typography>
           )}
         </Box>
-        <IconButton size="small" onClick={onClose} sx={{ color: 'white' }}>
-          <CloseIcon fontSize="small" />
-        </IconButton>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <Tooltip title={canSavePoint ? 'Save point with properties' : 'Point coordinates unavailable'}>
+            <span>
+              <IconButton size="small" onClick={handleSavePoint} disabled={!canSavePoint} sx={{ color: 'white' }}>
+                <BookmarkAddIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <IconButton size="small" onClick={onClose} sx={{ color: 'white' }}>
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </Box>
       </Box>
 
       {/* Scrollable Content Area */}

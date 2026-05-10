@@ -142,7 +142,7 @@ export function useLayerLoaders(updateLayersList: () => void) {
 
       const newLayer = new WebGLTile({
         source: new GeoTIFF({ sources: [{ url: imageUrl }], interpolate: true }),
-        opacity: 0.8,
+        opacity: 1,
         zIndex: 500,
       });
 
@@ -161,6 +161,7 @@ export function useLayerLoaders(updateLayersList: () => void) {
       metadata.gamma = 1.0;
       if (bbox?.length === 4) metadata.bbox = bbox;
       layerManager?.addLayer(layerId, layerName, 'sentinel2', newLayer, metadata);
+      updateLayersList();
 
       if (bbox?.length === 4) {
         try {

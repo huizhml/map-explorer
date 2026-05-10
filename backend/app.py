@@ -36,6 +36,7 @@ _ENV_KEYS = [
     "GEDI_LOCAL_BASE_PATH",
     "SAVED_FEATURE_IMAGES_ROOT",
     "NATURALNESS_REF_DATA_PATH",
+    "NATURALNESS_REF_DATA_VAL_PATH",
 ]
 print("=== Env vars ===")
 for k in _ENV_KEYS:
@@ -53,7 +54,7 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
                 status_code=200,
                 headers={
                     "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
                     "Access-Control-Allow-Headers": "*",
                     "Access-Control-Expose-Headers": "*",
                     "Access-Control-Max-Age": "3600",
@@ -61,7 +62,7 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
             )
         response = await call_next(request)
         response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "*"
         response.headers["Access-Control-Expose-Headers"] = "*"
         return response
