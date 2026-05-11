@@ -126,6 +126,12 @@ interface SidebarProps {
   onReloadSavedFeatures: () => void;
   deletingSavedFeatureId: number | null;
   updatingSavedFeatureId: number | null;
+  /** Feature id currently being re-rendered via the per-feature "Update" button; disables the action while a refresh is in-flight. */
+  refreshingPredictionSnapshotId: number | null;
+  /** Surfaces refresh failures (e.g. tile missing, render error) per feature. */
+  refreshPredictionSnapshotError: { id: number; message: string } | null;
+  /** Re-renders the saved RH98 prediction snapshot using the live map's current rescale/colormap. */
+  onRefreshPredictionSnapshot: (feature: SavedFeature) => void;
   onDeleteSavedFeature: (id: number) => void;
   onUpdateSavedFeature: (id: number, payload: { name: string; description: string; tags: string[] }) => Promise<void>;
   onJumpToFeature: (feature: SavedFeature) => void;
@@ -452,6 +458,9 @@ export function Sidebar({
   onReloadSavedFeatures,
   deletingSavedFeatureId,
   updatingSavedFeatureId,
+  refreshingPredictionSnapshotId,
+  refreshPredictionSnapshotError,
+  onRefreshPredictionSnapshot,
   onDeleteSavedFeature,
   onUpdateSavedFeature,
   onJumpToFeature,
@@ -1564,24 +1573,71 @@ export function Sidebar({
                                 <Typography sx={{ mb: 0.5, fontSize: '0.68rem', color: ui.textMuted, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
                                   Plot View
                                 </Typography>
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  startIcon={<OpenInFullIcon fontSize="small" />}
-                                  onClick={() => openPlotViewer(feature)}
-                                  sx={{
-                                    textTransform: 'none',
-                                    borderColor: ui.accentBorder,
-                                    color: ui.accent,
-                                    backgroundColor: ui.accentSoft,
-                                    '&:hover': {
+                                <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    startIcon={<OpenInFullIcon fontSize="small" />}
+                                    onClick={() => openPlotViewer(feature)}
+                                    sx={{
+                                      textTransform: 'none',
                                       borderColor: ui.accentBorder,
-                                      backgroundColor: ui.buttonHover,
-                                    },
-                                  }}
-                                >
-                                  View plots
-                                </Button>
+                                      color: ui.accent,
+                                      backgroundColor: ui.accentSoft,
+                                      '&:hover': {
+                                        borderColor: ui.accentBorder,
+                                        backgroundColor: ui.buttonHover,
+                                      },
+                                    }}
+                                  >
+                                    View plots
+                                  </Button>
+                                  {/* Only Point features carry an RH98 prediction snapshot; refreshing
+                                       a transect would be a different (per-sample) operation, so hide
+                                       the button for non-Point geometries. */}
+                                  {feature.geometry.type === 'Point' && (() => {
+                                    const isRefreshing = refreshingPredictionSnapshotId === feature.id;
+                                    const failure = refreshPredictionSnapshotError?.id === feature.id
+                                      ? refreshPredictionSnapshotError.message
+                                      : null;
+                                    return (
+                                      <Tooltip
+                                        title={
+                                          failure
+                                            ? `Last refresh failed: ${failure}`
+                                            : 'Regenerate the RH98 prediction snapshot using the current map rescale/colormap'
+                                        }
+                                      >
+                                        {/* span wrapper so Tooltip works on a disabled button */}
+                                        <span>
+                                          <Button
+                                            size="small"
+                                            variant="outlined"
+                                            disabled={isRefreshing}
+                                            startIcon={
+                                              isRefreshing
+                                                ? <CircularProgress size={14} />
+                                                : <RefreshIcon fontSize="small" />
+                                            }
+                                            onClick={() => onRefreshPredictionSnapshot(feature)}
+                                            sx={{
+                                              textTransform: 'none',
+                                              borderColor: failure ? 'error.main' : ui.accentBorder,
+                                              color: failure ? 'error.main' : ui.accent,
+                                              backgroundColor: ui.accentSoft,
+                                              '&:hover': {
+                                                borderColor: failure ? 'error.main' : ui.accentBorder,
+                                                backgroundColor: ui.buttonHover,
+                                              },
+                                            }}
+                                          >
+                                            {isRefreshing ? 'Updating…' : 'Update'}
+                                          </Button>
+                                        </span>
+                                      </Tooltip>
+                                    );
+                                  })()}
+                                </Box>
                               </Box>
                             )}
                           </Box>

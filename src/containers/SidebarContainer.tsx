@@ -20,7 +20,7 @@ import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore
 import { parseUploadedFile } from '../utils/parseUploadedFile';
 import { API_BASE_URL, apiUrl } from '../utils/apiBase';
 import { getDiversityBandRange } from '../constants/layerRanges';
-import { listSavedFeatures, deleteSavedFeature, updateSavedFeature, type SavedFeature } from '../services/savedFeaturesApi';
+import { listSavedFeatures, deleteSavedFeature, updateSavedFeature, refreshPredictionSnapshot, type SavedFeature } from '../services/savedFeaturesApi';
 import { defaultFigureFilenameStem } from '../utils/figureFilenameStem';
 
 const max = 500;
@@ -180,6 +180,8 @@ export function SidebarContainer() {
   const [figuresToDbError, setFiguresToDbError] = React.useState<string | null>(null);
   const [deletingSavedFeatureId, setDeletingSavedFeatureId] = React.useState<number | null>(null);
   const [updatingSavedFeatureId, setUpdatingSavedFeatureId] = React.useState<number | null>(null);
+  const [refreshingPredictionSnapshotId, setRefreshingPredictionSnapshotId] = React.useState<number | null>(null);
+  const [refreshPredictionSnapshotError, setRefreshPredictionSnapshotError] = React.useState<{ id: number; message: string } | null>(null);
   const [savedFeaturesLoading, setSavedFeaturesLoading] = React.useState(false);
   const [savedFeaturesError, setSavedFeaturesError] = React.useState<string | null>(null);
   const highlightLayerRef = React.useRef<VectorLayer<VectorSource> | null>(null);
@@ -670,6 +672,9 @@ export function SidebarContainer() {
           id: m.id, name: m.name, visible: m.visible, opacity: m.opacity,
           zIndex: m.zIndex, type: m.type, metadata: m.metadata,
         })));
+        // Also update fgbLayer so style updates (colorByProperty, conditional rendering, etc.)
+        // apply to the naturalness layer rather than the kept sentinel2-grid layer.
+        setFgbLayer(newVectorLayer);
       } else {
         setFgbLayer(newVectorLayer);
       }
@@ -1160,6 +1165,65 @@ export function SidebarContainer() {
       }
     },
     [setSavedMapFeatures],
+  );
+
+  const handleRefreshPredictionSnapshot = React.useCallback(
+    async (feature: SavedFeature) => {
+      setRefreshingPredictionSnapshotId(feature.id);
+      setRefreshPredictionSnapshotError(null);
+
+      // Match the visible RH98 Q1 prediction layer's rescale/colormap so the
+      // refreshed snapshot reflects what's currently on the map (the backend
+      // falls back to the saved metadata, then to 0..500/inferno).
+      // Prefer a layer whose year matches the feature; otherwise fall back to
+      // the first visible RH98 Q1 candidate.
+      const targetYear = Number((feature.metadata as any)?.year);
+      const predictionCandidates = (layerManager?.getLayersByType('prediction') ?? [])
+        .filter((l: any) =>
+          l?.visible
+          && l?.metadata
+          && Number(l.metadata.rhIndex) === 98
+          && Number(l.metadata.qIndex) === 1
+          && l.metadata.layerType !== 'diversity_indices',
+        );
+      const matchedLayer =
+        predictionCandidates.find((l: any) => Number.isFinite(targetYear) && Number(l.metadata.year) === targetYear)
+        ?? predictionCandidates[0];
+      const viz = matchedLayer?.metadata
+        ? {
+          rescale_min: Number.isFinite(Number(matchedLayer.metadata.rescaleMin))
+            ? Number(matchedLayer.metadata.rescaleMin)
+            : undefined,
+          rescale_max: Number.isFinite(Number(matchedLayer.metadata.rescaleMax))
+            ? Number(matchedLayer.metadata.rescaleMax)
+            : undefined,
+          colormap: typeof matchedLayer.metadata.colormap === 'string' && matchedLayer.metadata.colormap.trim()
+            ? matchedLayer.metadata.colormap
+            : undefined,
+        }
+        : undefined;
+
+      try {
+        const refreshed = await refreshPredictionSnapshot(feature.id, viz);
+        setSavedMapFeatures((prev) => prev.map((f) => (f.id === feature.id ? refreshed : f)));
+        // The endpoint returns the feature even if the snapshot itself was
+        // unavailable (e.g., missing tile file). Surface that to the user so
+        // they don't think the refresh silently succeeded.
+        const status = refreshed.metadata?.prediction_snapshot_status;
+        if (status && status !== 'ok') {
+          const reason = refreshed.metadata?.prediction_snapshot_error || status;
+          setRefreshPredictionSnapshotError({ id: feature.id, message: String(reason) });
+        }
+      } catch (err) {
+        setRefreshPredictionSnapshotError({
+          id: feature.id,
+          message: err instanceof Error ? err.message : 'Failed to refresh prediction snapshot',
+        });
+      } finally {
+        setRefreshingPredictionSnapshotId(null);
+      }
+    },
+    [layerManager, setSavedMapFeatures],
   );
 
   const handleInspectModeChange = (active: boolean) => {
@@ -1655,6 +1719,9 @@ export function SidebarContainer() {
       onReloadSavedFeatures={handleReloadSavedFeatures}
       deletingSavedFeatureId={deletingSavedFeatureId}
       updatingSavedFeatureId={updatingSavedFeatureId}
+      refreshingPredictionSnapshotId={refreshingPredictionSnapshotId}
+      refreshPredictionSnapshotError={refreshPredictionSnapshotError}
+      onRefreshPredictionSnapshot={handleRefreshPredictionSnapshot}
       onDeleteSavedFeature={handleDeleteSavedFeature}
       onUpdateSavedFeature={handleUpdateSavedFeature}
       onJumpToFeature={handleJumpToFeature}

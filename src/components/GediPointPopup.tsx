@@ -5,6 +5,7 @@ import {
 import CloseIcon from '@mui/icons-material/Close';
 import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import CheckIcon from '@mui/icons-material/Check';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { transform } from 'ol/proj';
 import { fetchVerticalProfile } from '../utils/verticalProfile';
 import { apiUrl } from '../utils/apiBase';
@@ -251,21 +252,69 @@ function DiversityTable({ gedi, cog, interval }: {
     { label: `2D ENL (${interval}m)`, gedi: gedi.enl2d, cog: cog?.enl2d ?? null },
     { label: 'CR', gedi: gedi.cr, cog: cog?.cr ?? null },
   ];
+
+  // Copy the raw RH0–RH100 heights as TSV (one row per integer percentile),
+  // not the derived diversity metrics shown in this table. GEDI is keyed by
+  // its `rh_curve`; the COG column is filled in only where the percentile
+  // exists in `cog.rhCurve` so misaligned curves don't shift the column.
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(async () => {
+    const fmtRh = (v: number | null | undefined) =>
+      v != null && Number.isFinite(v) ? v.toFixed(4) : '';
+    const gediByRh = new Map<number, number>();
+    for (const p of gedi.rh_curve ?? []) gediByRh.set(Math.round(p.rh), p.value);
+    const cogByRh = new Map<number, number>();
+    for (const p of cog?.rhCurve ?? []) cogByRh.set(Math.round(p.rh), p.value);
+    const hasCog = cogByRh.size > 0;
+    const header = hasCog ? ['RH', 'GEDI', 'COG'] : ['RH', 'GEDI'];
+    const lines = [header.join('\t')];
+    for (let rh = 0; rh <= 100; rh++) {
+      const g = gediByRh.get(rh);
+      if (g == null && !cogByRh.has(rh)) continue;
+      const row = hasCog
+        ? [String(rh), fmtRh(g), fmtRh(cogByRh.get(rh))]
+        : [String(rh), fmtRh(g)];
+      lines.push(row.join('\t'));
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      console.warn('Copy RH values failed', e);
+    }
+  }, [gedi, cog]);
+
   return (
     <Box sx={{
       mx: 1, mb: 1, border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden',
     }}>
       <Box sx={{
-        display: 'grid', gridTemplateColumns: '1fr 100px 100px',
+        display: 'grid', gridTemplateColumns: '1fr 100px 100px 28px',
         bgcolor: 'grey.100', px: 1.5, py: 0.5,
+        alignItems: 'center',
       }}>
         <Typography variant="caption" sx={{ fontWeight: 700 }}>Metric</Typography>
         <Typography variant="caption" sx={{ fontWeight: 700, textAlign: 'right', color: '#1976d2' }}>GEDI</Typography>
         <Typography variant="caption" sx={{ fontWeight: 700, textAlign: 'right', color: '#e65100' }}>COG</Typography>
+        <Tooltip title={copied ? 'Copied!' : 'Copy RH0–RH100 values (TSV)'} placement="left">
+          <IconButton
+            size="small"
+            onClick={handleCopy}
+            aria-label="Copy RH0–RH100 values"
+            sx={{
+              p: 0.25,
+              ml: 0.5,
+              color: copied ? 'success.main' : 'action.active',
+            }}
+          >
+            {copied ? <CheckIcon sx={{ fontSize: 16 }} /> : <ContentCopyIcon sx={{ fontSize: 14 }} />}
+          </IconButton>
+        </Tooltip>
       </Box>
       {rows.map((row, i) => (
         <Box key={row.label} sx={{
-          display: 'grid', gridTemplateColumns: '1fr 100px 100px',
+          display: 'grid', gridTemplateColumns: '1fr 100px 100px 28px',
           px: 1.5, py: 0.4,
           borderTop: 1, borderColor: 'divider',
           bgcolor: i % 2 === 1 ? 'grey.50' : 'transparent',
@@ -277,6 +326,7 @@ function DiversityTable({ gedi, cog, interval }: {
           <Typography variant="body2" sx={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
             {fmt(row.cog)}
           </Typography>
+          <Box />
         </Box>
       ))}
     </Box>

@@ -160,3 +160,37 @@ export async function updateSavedFeature(
   }
   return data.feature;
 }
+
+/** Re-render the RH98 prediction snapshot for a saved Point feature.
+ *  Optional `viz` overrides the rescale/colormap (defaults to the saved
+ *  visualization, then the live-map defaults 0..500/inferno).
+ *  Returns the refreshed feature; throws on transport errors. A successful
+ *  response can still indicate the snapshot itself was unavailable —
+ *  callers should check `feature.metadata?.prediction_snapshot_status`.
+ */
+export async function refreshPredictionSnapshot(
+  id: number,
+  viz?: {
+    rescale_min?: number;
+    rescale_max?: number;
+    colormap?: string;
+    year?: number;
+    q_index?: number;
+    source?: string;
+  },
+): Promise<SavedFeature> {
+  const response = await fetch(apiUrl(`/saved-features/${id}/refresh-prediction-snapshot`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(viz ?? {}),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Failed to refresh prediction snapshot (${response.status})`);
+  }
+  const data = (await response.json()) as { feature?: SavedFeature };
+  if (!data.feature) {
+    throw new Error('API did not return refreshed feature');
+  }
+  return data.feature;
+}

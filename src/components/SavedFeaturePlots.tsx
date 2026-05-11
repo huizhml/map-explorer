@@ -3,13 +3,17 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   Box,
   Button,
+  IconButton,
   Paper,
+  Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
 import type { Theme } from '@mui/material/styles';
 import { LineChart } from '@mui/x-charts';
 import { ChartsReferenceLine } from '@mui/x-charts/ChartsReferenceLine';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import CheckIcon from '@mui/icons-material/Check';
 import type { SavedFeaturePlotData } from '../services/savedFeaturesApi';
 import type { VerticalProfilePoint } from '../stores/mapStore';
 import { apiUrl } from '../utils/apiBase';
@@ -168,6 +172,7 @@ export function VerticalProfileSummary({
   metrics,
   dimmed,
   heightBinM,
+  profile,
 }: {
   metrics?: {
     fhd?: number | null;
@@ -178,6 +183,12 @@ export function VerticalProfileSummary({
   dimmed?: boolean;
   /** RH diversity histogram bin width (m); defaults to Tools setting. */
   heightBinM?: number;
+  /**
+   * Source RH0–RH100 percentile→height samples. Used **only** for the copy
+   * button (not the metric rows) so the user can export the raw RH curve
+   * that produced these diversity metrics.
+   */
+  profile?: VerticalProfilePoint[];
 }) {
   const storeBinM = useMapStore((s) => s.diversityHeightBinM);
   const binM = heightBinM ?? storeBinM;
@@ -189,13 +200,58 @@ export function VerticalProfileSummary({
     { label: 'CR', value: formatMetric(metrics?.cr ?? null) },
   ];
 
+  // Copy the raw RH0–RH100 values as TSV (`RH\tHeight (m)`), one row per
+  // integer percentile present in `profile`. Missing / NaN samples are
+  // skipped so the clipboard payload only contains real measurements.
+  const canCopyRh = Boolean(
+    profile?.some((p) => p.value != null && !p.missing && Number.isFinite(p.value)),
+  );
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(async () => {
+    if (!profile) return;
+    const lines = ['RH\tHeight (m)'];
+    for (const p of profile) {
+      if (p.value == null || p.missing || !Number.isFinite(p.value)) continue;
+      lines.push(`${Math.round(p.rh)}\t${(p.value as number).toFixed(4)}`);
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      console.warn('Copy RH values failed', e);
+    }
+  }, [profile]);
+
   return (
-    <Paper variant="outlined" sx={{ mb: 1, width: '100%', opacity: dimmed ? 0.65 : 1 }}>
+    <Paper variant="outlined" sx={{ mb: 1, width: '100%', opacity: dimmed ? 0.65 : 1, position: 'relative' }}>
+      {canCopyRh && (
+        <Tooltip title={copied ? 'Copied!' : 'Copy RH0–RH100 values (TSV)'} placement="left">
+          <IconButton
+            size="small"
+            onClick={handleCopy}
+            aria-label="Copy RH0–RH100 values"
+            sx={{
+              position: 'absolute',
+              top: 2,
+              right: 2,
+              p: 0.25,
+              color: copied ? 'success.main' : 'action.active',
+              zIndex: 1,
+            }}
+          >
+            {copied ? <CheckIcon sx={{ fontSize: 16 }} /> : <ContentCopyIcon sx={{ fontSize: 14 }} />}
+          </IconButton>
+        </Tooltip>
+      )}
       {rows.map((row, idx) => (
         <Box
           key={row.label}
           sx={{
             px: 1.25,
+            // First row leaves room for the copy button (only when rendered);
+            // tabular-nums keeps the value column visually aligned across rows.
+            pr: idx === 0 && canCopyRh ? 4 : 1.25,
             py: 0.5,
             display: 'flex',
             alignItems: 'center',
@@ -1278,7 +1334,7 @@ export function SavedFeaturePlots({
           featureName={featureName}
         />
       )}
-      {hasVerticalMetrics && <VerticalProfileSummary metrics={verticalMetricsData} />}
+      {hasVerticalMetrics && <VerticalProfileSummary metrics={verticalMetricsData} profile={verticalData} />}
       {hasNumericVerticalValues && hasVerticalCurve && verticalData && verticalCurveData && (
         <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 1.5, alignItems: 'flex-start' }}>
           <Box sx={{ flex: 1, minWidth: 0 }}>

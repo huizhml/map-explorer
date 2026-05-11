@@ -455,7 +455,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
             )}
             {showVerticalSummary && (
               <>
-                <VerticalProfileSummary metrics={verticalMetricsData} dimmed={hasStaleVertical} heightBinM={profileMeta?.fhdInterval} />
+                <VerticalProfileSummary metrics={verticalMetricsData} dimmed={hasStaleVertical} heightBinM={profileMeta?.fhdInterval} profile={verticalData} />
               </>
             )}
             {showVerticalPlots && (

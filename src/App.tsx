@@ -238,12 +238,45 @@ function App() {
                 rescale_min: Number.isFinite(Number(l.metadata.rescaleMin)) ? Number(l.metadata.rescaleMin) : undefined,
                 rescale_max: Number.isFinite(Number(l.metadata.rescaleMax)) ? Number(l.metadata.rescaleMax) : undefined,
               })) ?? [];
+
+            // Forward the visible RH98 Q1 prediction layer's rescale/colormap so
+            // the backend snapshot uses the same visualization as what the user
+            // sees on the map (otherwise the snapshot defaults to 0..500/inferno).
+            // Match the draft's year when present; fall back to any visible RH98
+            // Q1 layer if no year match is found.
+            const draftYear = Number((draft.metadata as any)?.year);
+            const predictionCandidates = (layerManager?.getLayersByType('prediction') ?? [])
+              .filter((l: any) =>
+                l?.visible
+                && l?.metadata
+                && Number(l.metadata.rhIndex) === 98
+                && Number(l.metadata.qIndex) === 1
+                && l.metadata.layerType !== 'diversity_indices',
+              );
+            const predictionLayer =
+              predictionCandidates.find((l: any) => Number.isFinite(draftYear) && Number(l.metadata.year) === draftYear)
+              ?? predictionCandidates[0];
+            const predictionVisualization = predictionLayer?.metadata
+              ? {
+                rescale_min: Number.isFinite(Number(predictionLayer.metadata.rescaleMin))
+                  ? Number(predictionLayer.metadata.rescaleMin)
+                  : undefined,
+                rescale_max: Number.isFinite(Number(predictionLayer.metadata.rescaleMax))
+                  ? Number(predictionLayer.metadata.rescaleMax)
+                  : undefined,
+                colormap: typeof predictionLayer.metadata.colormap === 'string' && predictionLayer.metadata.colormap.trim()
+                  ? predictionLayer.metadata.colormap
+                  : undefined,
+              }
+              : undefined;
+
             setSaveFeatureError(null);
             setFeatureDraft({
               ...draft,
               metadata: {
                 ...(draft.metadata ?? {}),
                 sentinel2_layers: sentinelLayers,
+                ...(predictionVisualization ? { prediction_visualization: predictionVisualization } : {}),
               },
             });
           }}

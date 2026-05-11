@@ -336,7 +336,7 @@ async def gedi_point_profile(request: GEDIPointProfileRequest):
     try:
         raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(
             rhs,
-            interval=request.fhd_interval,
+            bin_width=request.fhd_interval,
             max_height=MAX_HEIGHT,
         )
         fhd = _safe_scalar(float(raw_fhd))

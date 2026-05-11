@@ -57,6 +57,23 @@ class SavedFeatureUpdateRequest(BaseModel):
     tags: Optional[List[str]] = None
 
 
+class RefreshPredictionSnapshotRequest(BaseModel):
+    """Optional caller overrides for re-rendering a saved point's prediction
+    snapshot. When fields are omitted the saved feature's existing metadata is
+    used; the snapshot function itself falls back to the live-map defaults
+    (0..500, inferno) when neither caller nor metadata supplies them."""
+
+    rescale_min: Optional[float] = None
+    rescale_max: Optional[float] = None
+    colormap: Optional[str] = None
+    # Allow overriding year / q_index / source too, so the user can ask for a
+    # different visualization than the one stored at save time (e.g., switch
+    # to Q0 after the fact). Defaults come from the saved metadata.
+    year: Optional[int] = None
+    q_index: Optional[int] = None
+    source: Optional[str] = None
+
+
 class FigureBandSpec(BaseModel):
     band_index: int
     band_name: Optional[str] = None
@@ -432,6 +449,9 @@ def _extract_prediction_rh98_snapshot(
     q_index: int,
     tile_name: Optional[str] = None,
     buffer_m: float = 75.0,
+    rescale_min: Optional[float] = None,
+    rescale_max: Optional[float] = None,
+    colormap: Optional[str] = None,
 ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
     path_or_url, resolved_tile, url_error = _prediction_rh98_url_for_point(
         lat,
@@ -443,15 +463,35 @@ def _extract_prediction_rh98_snapshot(
     )
     if not path_or_url:
         return None, url_error or "prediction_path_unavailable"
-    try:
-        webm = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
-        center_x, center_y = webm.transform(lon, lat)
-        xmin, ymin = center_x - buffer_m, center_y - buffer_m
-        xmax, ymax = center_x + buffer_m, center_y + buffer_m
 
+    # Match the live map visualization defaults so the saved snapshot looks
+    # the same as what the user sees on the map. The frontend renders RH98
+    # tiles with inferno over 0..500 (raw integer units = 0.1 m per count,
+    # i.e. 0..50 m canopy) — see src/constants/predictions.ts
+    # (FALLBACK_RESCALE_MAX = 500). The previous implementation stretched
+    # against the local 2..98 percentile of the 150 m window, which made the
+    # saved image saturate completely differently from the on-screen layer.
+    lo = float(rescale_min) if rescale_min is not None and np.isfinite(float(rescale_min)) else 0.0
+    hi = float(rescale_max) if rescale_max is not None and np.isfinite(float(rescale_max)) else 500.0
+    if hi <= lo:
+        hi = lo + 1.0
+    cmap_name = (colormap or "inferno").strip() or "inferno"
+
+    try:
         with rasterio.open(path_or_url) as src:
-            src_bounds = transform_bounds("EPSG:3857", src.crs, xmin, ymin, xmax, ymax, densify_pts=21)
-            window = from_bounds(*src_bounds, transform=src.transform)
+            # The MGRS prediction tiles are stored in their local UTM CRS,
+            # whose units are true ground meters. Build the buffer directly
+            # in that CRS so `buffer_m` is honored as a ground-meter half-side.
+            # Routing through EPSG:3857 first would shrink the box by cos(lat)
+            # (Web Mercator units are stretched by 1/cos(lat)) and produce an
+            # anisotropic AABB that no longer matches the satellite snapshot's
+            # 75 m buffer.
+            to_utm = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+            center_x, center_y = to_utm.transform(lon, lat)
+            xmin, ymin = center_x - buffer_m, center_y - buffer_m
+            xmax, ymax = center_x + buffer_m, center_y + buffer_m
+
+            window = from_bounds(xmin, ymin, xmax, ymax, transform=src.transform)
             full_window = Window(0, 0, src.width, src.height)
             window = window.intersection(full_window).round_offsets().round_lengths()
             if window.width <= 0 or window.height <= 0:
@@ -461,14 +501,11 @@ def _extract_prediction_rh98_snapshot(
             nodata = src.nodata
             if nodata is not None:
                 arr[arr == nodata] = np.nan
-            valid = np.isfinite(arr)
-            if not np.any(valid):
+            # Sentinel values used by the pipeline for missing/invalid pixels.
+            arr[np.isin(arr, [32767.0, 32768.0, -9999.0])] = np.nan
+            if not np.any(np.isfinite(arr)):
                 return None, "prediction_window_all_nodata"
 
-            lo = float(np.percentile(arr[valid], 2))
-            hi = float(np.percentile(arr[valid], 98))
-            if hi <= lo:
-                hi = lo + 1.0
             norm = np.clip((arr - lo) / (hi - lo), 0.0, 1.0)
 
         try:
@@ -486,7 +523,7 @@ def _extract_prediction_rh98_snapshot(
 
         fig, ax = plt.subplots(figsize=(4, 4), dpi=180)
         ax.set_axis_off()
-        ax.imshow(norm, cmap="inferno", vmin=0.0, vmax=1.0)
+        ax.imshow(norm, cmap=cmap_name, vmin=0.0, vmax=1.0)
         fig.savefig(out_path, format="png", bbox_inches="tight", pad_inches=0.03)
         plt.close(fig)
 
@@ -503,6 +540,9 @@ def _extract_prediction_rh98_snapshot(
             "q_index": q_index,
             "tile_name": resolved_tile,
             "source": source,
+            "rescale_min": lo,
+            "rescale_max": hi,
+            "colormap": cmap_name,
         }, None
     except Exception as exc:
         return None, f"{type(exc).__name__}:{exc}"
@@ -703,6 +743,14 @@ async def create_saved_feature(payload: SavedFeatureCreateRequest) -> Dict[str, 
             pred_source = str(metadata_payload.get("prediction_source") or "blended").strip().lower() or "blended"
             pred_q_index = int(metadata_payload.get("q_index") or 1)
             tile_name = _resolve_prediction_tile_name(metadata_payload, lat, lon)
+            # Optional rescale/colormap forwarded by the frontend so the saved
+            # snapshot matches whatever the user currently sees on the map.
+            # Falls back to the live-map defaults (0..500, inferno) inside the
+            # snapshot function when these are absent.
+            pred_vis = metadata_payload.get("prediction_visualization") or {}
+            pred_rmin = pred_vis.get("rescale_min") if isinstance(pred_vis, dict) else None
+            pred_rmax = pred_vis.get("rescale_max") if isinstance(pred_vis, dict) else None
+            pred_cmap = pred_vis.get("colormap") if isinstance(pred_vis, dict) else None
             pred_snapshot, pred_error = _extract_prediction_rh98_snapshot(
                 lon,
                 lat,
@@ -711,6 +759,9 @@ async def create_saved_feature(payload: SavedFeatureCreateRequest) -> Dict[str, 
                 q_index=pred_q_index,
                 tile_name=str(tile_name) if tile_name else None,
                 buffer_m=75.0,
+                rescale_min=float(pred_rmin) if isinstance(pred_rmin, (int, float)) else None,
+                rescale_max=float(pred_rmax) if isinstance(pred_rmax, (int, float)) else None,
+                colormap=str(pred_cmap) if isinstance(pred_cmap, str) and pred_cmap.strip() else None,
             )
             if pred_snapshot:
                 _upsert_export(pred_snapshot)
@@ -1292,6 +1343,172 @@ async def update_saved_feature(feature_id: int, payload: SavedFeatureUpdateReque
     return {"feature": _row_to_feature(row)}
 
 
+@router.post("/saved-features/{feature_id}/refresh-prediction-snapshot")
+async def refresh_saved_feature_prediction_snapshot(
+    feature_id: int,
+    payload: Optional[RefreshPredictionSnapshotRequest] = None,
+) -> Dict[str, Any]:
+    """Re-generate the RH98 prediction snapshot for a saved Point feature.
+
+    Useful when the snapshot rendering logic, MGRS tile resolution, or the
+    user's chosen rescale/colormap has changed since the feature was saved —
+    `View plots` will then show a fresh snapshot without having to delete and
+    re-save the feature. Only Points are supported (transects already render
+    their own per-sample snapshots through a different flow).
+    """
+    payload = payload or RefreshPredictionSnapshotRequest()
+
+    with _db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, name, description, category, geometry_type, geometry_json, metadata_json, plot_data_json, created_at
+            FROM saved_features WHERE id = ?
+            """,
+            (feature_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Saved feature not found")
+    if row["geometry_type"] != "Point":
+        raise HTTPException(status_code=400, detail="Prediction snapshot refresh is only supported for Point features")
+
+    try:
+        coordinates = json.loads(row["geometry_json"])
+        lon, lat = float(coordinates[0]), float(coordinates[1])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Saved feature has invalid Point coordinates")
+
+    metadata_payload: Dict[str, Any] = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+    if not isinstance(metadata_payload, dict):
+        metadata_payload = {}
+    plot_data_payload: Dict[str, Any] = json.loads(row["plot_data_json"]) if row["plot_data_json"] else {}
+    if not isinstance(plot_data_payload, dict):
+        plot_data_payload = {}
+
+    # Resolve year / q_index / source: caller override > stored metadata > default.
+    pred_year = int(payload.year) if payload.year is not None else int(metadata_payload.get("year") or 2020)
+    pred_q_index = int(payload.q_index) if payload.q_index is not None else int(metadata_payload.get("q_index") or 1)
+    pred_source = (
+        (payload.source or metadata_payload.get("prediction_source") or "blended")
+        .strip()
+        .lower()
+        or "blended"
+    )
+    tile_name = _resolve_prediction_tile_name(metadata_payload, lat, lon)
+
+    # Visualization: caller override > stored prediction_visualization > snapshot defaults.
+    stored_vis = metadata_payload.get("prediction_visualization") or {}
+    if not isinstance(stored_vis, dict):
+        stored_vis = {}
+
+    def _pick_float(override: Optional[float], stored_key: str) -> Optional[float]:
+        if override is not None and np.isfinite(float(override)):
+            return float(override)
+        stored = stored_vis.get(stored_key)
+        if isinstance(stored, (int, float)) and np.isfinite(float(stored)):
+            return float(stored)
+        return None
+
+    rescale_min = _pick_float(payload.rescale_min, "rescale_min")
+    rescale_max = _pick_float(payload.rescale_max, "rescale_max")
+    colormap_override = payload.colormap if isinstance(payload.colormap, str) and payload.colormap.strip() else None
+    colormap = colormap_override or (str(stored_vis.get("colormap")).strip() if isinstance(stored_vis.get("colormap"), str) else None)
+
+    # Best-effort cleanup of the previous snapshot file so we don't accumulate
+    # orphaned PNGs in the image root. Failures here are non-fatal — the new
+    # snapshot will overwrite the export entry either way.
+    existing_exports = plot_data_payload.get("image_exports")
+    if not isinstance(existing_exports, list):
+        existing_exports = []
+    existing_exports = [item for item in existing_exports if isinstance(item, dict)]
+    prev_pred_layer_id = f"prediction_rh98_q{pred_q_index}"
+    for item in existing_exports:
+        if item.get("layer_id") == prev_pred_layer_id:
+            rel = item.get("relative_path")
+            if isinstance(rel, str) and rel:
+                try:
+                    p = (IMAGE_ROOT / rel).resolve()
+                    if IMAGE_ROOT.resolve() in p.parents and p.is_file():
+                        p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            break
+
+    pred_snapshot, pred_error = _extract_prediction_rh98_snapshot(
+        lon,
+        lat,
+        year=pred_year,
+        source=pred_source,
+        q_index=pred_q_index,
+        tile_name=str(tile_name) if tile_name else None,
+        buffer_m=75.0,
+        rescale_min=rescale_min,
+        rescale_max=rescale_max,
+        colormap=colormap,
+    )
+
+    # Update both metadata status flags and the image_exports list.
+    if pred_snapshot:
+        existing_exports = [item for item in existing_exports if item.get("layer_id") != pred_snapshot.get("layer_id")]
+        existing_exports.append(pred_snapshot)
+        plot_data_payload["image_exports"] = existing_exports
+        if pred_snapshot.get("relative_path"):
+            plot_data_payload["image_session_dir"] = Path(pred_snapshot["relative_path"]).parts[0]
+        metadata_payload["prediction_snapshot_status"] = "ok"
+        metadata_payload["prediction_snapshot"] = {
+            "rh": 98,
+            "q_index": pred_q_index,
+            "year": pred_year,
+            "source": pred_source,
+        }
+        # Echo the visualization actually used so the saved metadata reflects
+        # the current render (useful when the user later wants to compare or
+        # re-render with the same settings).
+        metadata_payload["prediction_visualization"] = {
+            "rescale_min": pred_snapshot.get("rescale_min"),
+            "rescale_max": pred_snapshot.get("rescale_max"),
+            "colormap": pred_snapshot.get("colormap"),
+        }
+        metadata_payload.pop("prediction_snapshot_error", None)
+        metadata_payload.pop("prediction_snapshot_debug", None)
+    else:
+        metadata_payload["prediction_snapshot_status"] = "unavailable"
+        if pred_error:
+            metadata_payload["prediction_snapshot_error"] = pred_error[:300]
+        metadata_payload["prediction_snapshot_debug"] = {
+            "tile_name": tile_name,
+            "year": pred_year,
+            "q_index": pred_q_index,
+            "source": pred_source,
+        }
+
+    with _db_connect() as conn:
+        conn.execute(
+            "UPDATE saved_features SET metadata_json = ?, plot_data_json = ? WHERE id = ?",
+            (
+                json.dumps(metadata_payload) if metadata_payload else None,
+                json.dumps(plot_data_payload) if plot_data_payload else None,
+                feature_id,
+            ),
+        )
+        conn.commit()
+        updated_row = conn.execute(
+            """
+            SELECT id, name, description, category, geometry_type, geometry_json, metadata_json, plot_data_json, created_at
+            FROM saved_features WHERE id = ?
+            """,
+            (feature_id,),
+        ).fetchone()
+
+    if updated_row is None:
+        raise HTTPException(status_code=500, detail="Failed to load refreshed feature")
+
+    return {
+        "feature": _row_to_feature(updated_row),
+        "snapshot_status": metadata_payload.get("prediction_snapshot_status"),
+        "snapshot_error": metadata_payload.get("prediction_snapshot_error"),
+    }
+
+
 def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
     """Overlay a metric scale bar on the lower-left corner of a stitched
     satellite PNG (re-encoded). Used by export paths that save a standalone
@@ -1771,6 +1988,12 @@ def _render_transect_figure(req: TransectFigureRequest) -> tuple[bytes, str]:
     x_vals = lons if req.x_axis == "lon" else lats
     x_label = "Longitude" if req.x_axis == "lon" else "Latitude"
 
+    # JRC TMF 1D strip glued to the top of the heatmap — same plotting-rect
+    # width and x-axis, so the user can read forest class transitions directly
+    # against the energy heatmap. Tentatively reserved; dropped below if the
+    # EE fetch fails (e.g. EE not configured in this environment).
+    EE_STRIP_HEIGHT_PX = 15
+
     # Panel selection (each becomes a row in plt.subplots).
     panels: List[str] = []
     height_ratios: List[float] = []
@@ -1783,6 +2006,10 @@ def _render_transect_figure(req: TransectFigureRequest) -> tuple[bytes, str]:
         panels.append("map")
         height_ratios.append(req.map_height_px)
     if req.include_heatmap:
+        # Strip is tentative — removed below if EE fetch fails. Sits immediately
+        # above the heatmap so the two share visual gridlines.
+        panels.append("ee_strip")
+        height_ratios.append(EE_STRIP_HEIGHT_PX)
         panels.append("heatmap")
         height_ratios.append(req.heatmap_height_px)
     if req.include_enl_fhd:
@@ -1855,34 +2082,48 @@ def _render_transect_figure(req: TransectFigureRequest) -> tuple[bytes, str]:
                 auto_h = target_panel_px * _correction
             height_ratios[map_idx] = max(60, int(round(auto_h)))
 
-    # Optional JRC TMF AnnualChanges panel — same buffered bbox as the
-    # satellite map, auto-sized using the same hspace-aware formula.
+    # JRC TMF AnnualChanges fetch — shared by the optional 2D panel (buffered
+    # bbox, full image) and the always-on 1D strip above the heatmap (which
+    # samples this same array at each transect (lon, lat)).  Doing one fetch
+    # rather than two halves the Earth Engine round-trip when both are on.
     ee_arr = None
     ee_meta: Optional[dict] = None
-    if "ee_annualchanges" in panels:
+    if "ee_annualchanges" in panels or "ee_strip" in panels:
         _ee_lons = np.array([s.lon for s in samples], dtype=float)
         _ee_lats = np.array([s.lat for s in samples], dtype=float)
+        # Use the satellite buffer when the 2D panel is on (it needs the buffered
+        # context around the line); a tiny buffer is enough when only the strip
+        # is on (we sample at the line, the bbox just needs to be non-degenerate).
+        _ee_buffer_m = req.satellite_buffer_m if "ee_annualchanges" in panels else 10.0
         ee_arr, ee_meta = _fetch_ee_annualchanges_array(
             float(np.min(_ee_lons)),
             float(np.max(_ee_lons)),
             float(np.min(_ee_lats)),
             float(np.max(_ee_lats)),
-            buffer_m=req.satellite_buffer_m,
+            buffer_m=_ee_buffer_m,
             max_dimension=2048,
         )
-        if ee_arr is not None:
-            ee_aspect = ee_arr.shape[0] / ee_arr.shape[1]
-            target_panel_px = req.figure_width_px * inner_frac * ee_aspect
-            n_panels = len(panels)
-            ee_idx = panels.index("ee_annualchanges")
-            S_other = sum(height_ratios) - height_ratios[ee_idx]
-            auto_h = target_panel_px
-            for _ in range(3):
-                _avg_panel_h_in = ((auto_h + S_other) / LAYOUT_DPI) / max(1, n_panels)
-                _hspace_est = max(0.10, min(0.60, hsp_in / _avg_panel_h_in))
-                _correction = (n_panels + (n_panels - 1) * _hspace_est) / n_panels
-                auto_h = target_panel_px * _correction
-            height_ratios[ee_idx] = max(60, int(round(auto_h)))
+
+    # Drop the strip from the layout if EE is unavailable — the heatmap stays;
+    # we just don't insert an empty header row above it.
+    if "ee_strip" in panels and ee_arr is None:
+        _idx = panels.index("ee_strip")
+        panels.pop(_idx)
+        height_ratios.pop(_idx)
+
+    if "ee_annualchanges" in panels and ee_arr is not None:
+        ee_aspect = ee_arr.shape[0] / ee_arr.shape[1]
+        target_panel_px = req.figure_width_px * inner_frac * ee_aspect
+        n_panels = len(panels)
+        ee_idx = panels.index("ee_annualchanges")
+        S_other = sum(height_ratios) - height_ratios[ee_idx]
+        auto_h = target_panel_px
+        for _ in range(3):
+            _avg_panel_h_in = ((auto_h + S_other) / LAYOUT_DPI) / max(1, n_panels)
+            _hspace_est = max(0.10, min(0.60, hsp_in / _avg_panel_h_in))
+            _correction = (n_panels + (n_panels - 1) * _hspace_est) / n_panels
+            auto_h = target_panel_px * _correction
+        height_ratios[ee_idx] = max(60, int(round(auto_h)))
 
     total_h_px = sum(height_ratios)
     fig_h_in = total_h_px / LAYOUT_DPI
@@ -1959,6 +2200,18 @@ def _render_transect_figure(req: TransectFigureRequest) -> tuple[bytes, str]:
 
     x_min = float(np.min(x_vals))
     x_max = float(np.max(x_vals))
+
+    # Shared x-edges (one per sample, midpoints between adjacent samples). Used
+    # by both the heatmap (pcolormesh) and the EE strip above it so the two are
+    # column-aligned to the pixel.
+    shared_x_edges = np.empty(len(samples) + 1)
+    if len(samples) >= 2:
+        _mid = (x_vals[:-1] + x_vals[1:]) / 2.0
+        shared_x_edges[1:-1] = _mid
+        shared_x_edges[0] = x_vals[0] - (_mid[0] - x_vals[0])
+        shared_x_edges[-1] = x_vals[-1] + (x_vals[-1] - _mid[-1])
+    else:
+        shared_x_edges[:] = x_vals[0]
 
     # ---- map panel ------------------------------------------------------
     if "map" in panels:
@@ -2112,6 +2365,72 @@ def _render_transect_figure(req: TransectFigureRequest) -> tuple[bytes, str]:
             )
             ax.set_yticks([])
 
+    # ---- JRC TMF 1D strip (above heatmap) -------------------------------
+    # Samples the (already-styled, palette-applied) EE thumb RGBA at each
+    # transect (lon, lat) and renders as a Quadmesh that shares x-edges with
+    # the heatmap below, so every strip cell sits exactly above its heatmap
+    # column (works even when sample spacing along x is non-uniform).
+    if "ee_strip" in panels and ee_arr is not None and ee_meta is not None:
+        from matplotlib.colors import ListedColormap
+
+        ax = axes[panels.index("ee_strip")]
+        H_px, W_px = ee_arr.shape[:2]
+        ee_lon0 = ee_meta["min_lon"]
+        ee_lon1 = ee_meta["max_lon"]
+        ee_lat0 = ee_meta["min_lat"]
+        ee_lat1 = ee_meta["max_lat"]
+        # Image is origin='upper': row 0 = max_lat, row H-1 = min_lat.
+        lon_span = max(1e-12, ee_lon1 - ee_lon0)
+        lat_span = max(1e-12, ee_lat1 - ee_lat0)
+        cols = np.clip(
+            np.round((lons - ee_lon0) / lon_span * (W_px - 1)).astype(int),
+            0, W_px - 1,
+        )
+        rows = np.clip(
+            np.round((ee_lat1 - lats) / lat_span * (H_px - 1)).astype(int),
+            0, H_px - 1,
+        )
+        # Per-sample RGB(A); flatten alpha onto white so masked (no-forest)
+        # pixels read as solid white rather than letting the figure facecolor
+        # bleed through.
+        sampled = ee_arr[rows, cols, :].astype(float)
+        if sampled.shape[1] == 4:
+            a = sampled[:, 3:4] / 255.0
+            rgb = sampled[:, :3] * a + 255.0 * (1.0 - a)
+        else:
+            rgb = sampled[:, :3]
+        palette = (rgb.clip(0, 255) / 255.0)  # (N, 3) float for ListedColormap
+
+        # Each sample is one quad. We pass column indices as the scalar field
+        # and a ListedColormap so quad i is drawn with palette[i] — sidesteps
+        # imshow's uniform-cell limitation and matches the heatmap's edges.
+        N = len(samples)
+        strip_cmap = ListedColormap(palette)
+        indices = np.arange(N, dtype=float).reshape(1, N)
+        ax.pcolormesh(
+            shared_x_edges,
+            np.array([0.0, 1.0]),
+            indices,
+            cmap=strip_cmap,
+            vmin=-0.5,
+            vmax=N - 0.5,
+            shading="flat",
+            edgecolors="none",
+            linewidth=0,
+            antialiased=False,
+            # Same rationale as the heatmap below: rasterise the quadmesh so
+            # PDF exports don't show hairline gaps between adjacent cells.
+            rasterized=True,
+        )
+        ax.set_ylim(0.0, 1.0)
+        ax.set_yticks([])
+        ax.tick_params(axis="y", left=False, labelleft=False)
+        # No ylabel — the strip reads as the heatmap's header band; the JRC
+        # palette is documented in the surrounding figure caption / legend.
+        # Hidden gutter on the right keeps the strip's plot rectangle the same
+        # width as the heatmap's (which has a visible colorbar in its gutter).
+        # `cbar_gutters` was already added for every axis; nothing else needed.
+
     # ---- heatmap panel --------------------------------------------------
     if "heatmap" in panels:
         ax = axes[panels.index("heatmap")]
@@ -2133,14 +2452,7 @@ def _render_transect_figure(req: TransectFigureRequest) -> tuple[bytes, str]:
         z_max = float(req.heatmap_colormap_max)
         # Build extent so x-axis maps directly to lon/lat (shared with all panels).
         # Place each sample at its actual coord; pcolormesh handles non-uniform spacing.
-        x_edges = np.empty(len(samples) + 1)
-        if len(samples) >= 2:
-            mid = (x_vals[:-1] + x_vals[1:]) / 2.0
-            x_edges[1:-1] = mid
-            x_edges[0] = x_vals[0] - (mid[0] - x_vals[0])
-            x_edges[-1] = x_vals[-1] + (x_vals[-1] - mid[-1])
-        else:
-            x_edges[:] = x_vals[0]
+        x_edges = shared_x_edges
         y_edges = np.linspace(0, max_h, n_bins + 1)
         mesh = ax.pcolormesh(
             x_edges,
@@ -2236,6 +2548,21 @@ def _render_transect_figure(req: TransectFigureRequest) -> tuple[bytes, str]:
         )
     for ax_obj in axes[:-1]:
         ax_obj.tick_params(axis='x', labelbottom=False, length=0)
+
+    # Glue the JRC strip flush against the top of the heatmap (zero hspace
+    # only for this pair — other panels keep the normal inter-panel gap).
+    # Done by overriding the strip's axes position post-layout: shift it down
+    # so its bottom edge touches the heatmap's top edge while keeping its
+    # original height. The hidden colorbar gutter follows automatically since
+    # `make_axes_locatable` tracks the parent axis position via a locator.
+    if "ee_strip" in panels and "heatmap" in panels:
+        strip_ax = axes[panels.index("ee_strip")]
+        hm_ax = axes[panels.index("heatmap")]
+        strip_pos = strip_ax.get_position()
+        hm_pos = hm_ax.get_position()
+        new_y0 = hm_pos.y0 + hm_pos.height  # bottom of strip == top of heatmap
+        strip_ax.set_position([strip_pos.x0, new_y0, strip_pos.width, strip_pos.height])
+
     # Output buffer.
     buf = io.BytesIO()
     if req.fmt == "pdf":

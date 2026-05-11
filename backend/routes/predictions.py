@@ -224,13 +224,37 @@ def _compute_profile_at_point(
             profile.append({"rh": rh, "value": val / 10.0 if val is not None else None, "missing": False})
 
     valid_vals = [p["value"] for p in profile if p["value"] is not None and not p["missing"]]
-    vertical_profile = pixel_vertical_profile(valid_vals)
-    fhd, enl1d, enl2d, cr = pixel_diversity_indices(valid_vals, bin_width=fhd_interval, max_height=MAX_HEIGHT)
-    vertical_profile_curve = [
-        {"z": z, "value": v}
-        for z, v in enumerate(vertical_profile)
-        if v is not None
-    ]
+
+    def _safe_scalar(v):
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if (math.isnan(fv) or math.isinf(fv)) else fv
+
+    vertical_profile_curve: List[Dict[str, float]] = []
+    fhd = enl1d = enl2d = cr = None
+    if len(valid_vals) >= 3:
+        try:
+            vp = pixel_vertical_profile(valid_vals)
+            # vp is a numpy int64 array — cast each element to Python int for JSON.
+            vp_list = vp.tolist() if hasattr(vp, "tolist") else list(vp)
+            vertical_profile_curve = [
+                {"z": int(z), "value": int(v)} for z, v in enumerate(vp_list)
+            ]
+        except Exception as e:
+            print(f"[vertical-profile] pixel_vertical_profile error: {e}")
+        try:
+            raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(
+                valid_vals, bin_width=fhd_interval, max_height=MAX_HEIGHT
+            )
+            fhd = _safe_scalar(raw_fhd)
+            enl1d = _safe_scalar(raw_enl1d)
+            enl2d = _safe_scalar(raw_enl2d)
+            cr = _safe_scalar(raw_cr)
+        except Exception as e:
+            print(f"[vertical-profile] pixel_diversity_indices error: {e}")
+
     return {
         "success": True,
         "tile_name": tile,
