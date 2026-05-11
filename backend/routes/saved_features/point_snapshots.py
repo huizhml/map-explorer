@@ -176,7 +176,7 @@ def _prediction_rh98_url_for_point(
     lat: float,
     lon: float,
     year: int,
-    source: str,
+    version: str,
     q_index: int,
     tile_name: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -185,29 +185,27 @@ def _prediction_rh98_url_for_point(
         return None, None, "missing_tile_name_for_prediction_snapshot"
 
     rh_index = 98
-    local_tpl = os.environ.get("PREDICTIONS_LOCAL_PATH_TEMPLATE", "{tile}/RH{rh}_Q{q}.tif")
+    # Unified local template (full absolute path with {version}, {tile}, {rh}, {q}).
+    # Replaces the old split base + relative-template pair.
+    local_tpl = os.environ.get("PREDICTIONS_LOCAL_PATH", "")
     remote_tpl = os.environ.get(
         "PREDICTIONS_REMOTE_PATH_TEMPLATE", "{zone}-{year}/{tile}/RH{rh}_Q{q}.tif"
     )
-    local_base_blended = os.environ.get("PREDICTIONS_LOCAL_BASE_PATH", "")
-    local_base_original = os.environ.get("PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH", "")
     remote_base = os.environ.get("PREDICTIONS_BASE_URL", "")
     zone = tile[:3].lower() if len(tile) >= 3 else tile.lower()
 
     try:
         if year == 2020:
-            local_base = local_base_original if source == "original" else local_base_blended
-            if not local_base:
-                return None, tile, "predictions_local_base_not_set"
-            rel = local_tpl.format(tile=tile, rh=rh_index, q=q_index)
-            path = os.path.join(local_base, rel)
+            if not local_tpl:
+                return None, tile, "predictions_local_path_not_set"
+            path = local_tpl.format(tile=tile, rh=rh_index, q=q_index, version=version, year=year)
             if not os.path.isfile(path):
                 return None, tile, "prediction_rh98_file_not_found"
             return path, tile, None
 
         if not remote_base:
             return None, tile, "predictions_remote_base_not_set"
-        rel = remote_tpl.format(zone=zone, year=year, tile=tile, rh=rh_index, q=q_index)
+        rel = remote_tpl.format(zone=zone, year=year, tile=tile, rh=rh_index, q=q_index, version=version)
         return remote_base.rstrip("/") + "/" + rel.lstrip("/"), tile, None
     except Exception as exc:
         return None, tile, f"prediction_path_error:{type(exc).__name__}"
@@ -269,7 +267,7 @@ def _extract_prediction_rh98_snapshot(
     lon: float,
     lat: float,
     year: int,
-    source: str,
+    version: str,
     q_index: int,
     tile_name: Optional[str] = None,
     buffer_m: float = 75.0,
@@ -278,7 +276,7 @@ def _extract_prediction_rh98_snapshot(
     colormap: Optional[str] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     path_or_url, resolved_tile, url_error = _prediction_rh98_url_for_point(
-        lat, lon, year, source, q_index, tile_name,
+        lat, lon, year, version, q_index, tile_name,
     )
     if not path_or_url:
         return None, url_error or "prediction_path_unavailable"
@@ -355,7 +353,7 @@ def _extract_prediction_rh98_snapshot(
             "year": year,
             "q_index": q_index,
             "tile_name": resolved_tile,
-            "source": source,
+            "version": version,
             "rescale_min": lo,
             "rescale_max": hi,
             "colormap": cmap_name,

@@ -38,23 +38,34 @@ router = APIRouter(prefix="/auxiliary", tags=["auxiliary"])
 # Env vars
 # ---------------------------------------------------------------------------
 
-PREDICTIONS_LOCAL_BASE_PATH = os.environ.get("PREDICTIONS_LOCAL_BASE_PATH", "")
-PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH = os.environ.get("PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH", "")
-PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE = os.environ.get("PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE", "{tile}_Q{q}.vrt")
+# Unified prediction path template (full absolute path with {version}, {tile}, {rh}, {q}).
+# Auxiliary needs it to build VRT inputs for entropy computation per-tile.
+PREDICTIONS_LOCAL_PATH = os.environ.get("PREDICTIONS_LOCAL_PATH", "")
+PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE = os.environ.get(
+    "PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE", "{tile}_Q{q}.vrt"
+)
 DISTANCE_MAPS_LOCAL_BASE_PATH = os.environ.get("DISTANCE_MAPS_LOCAL_BASE_PATH", "")
 CR_LOCAL_BASE_PATH = os.environ.get("CR_LOCAL_BASE_PATH", "")
-DIVERSITY_INDICES_LOCAL_BASE_PATH = os.environ.get("DIVERSITY_INDICES_LOCAL_BASE_PATH", "")
-ALS_LOCAL_TEMPLATE = os.environ.get("ALS_LOCAL_TEMPLATE", "")
+# Diversity-indices template: contains {year} and {version} placeholders; the
+# substituted result is the parent directory holding geotiff/ and cog/ subdirs.
+DIVERSITY_INDICES_LOCAL_PATH = os.environ.get("DIVERSITY_INDICES_LOCAL_PATH", "")
+# Full path template for ALS COGs (contains {tile} placeholder).
+ALS_LOCAL_PATH = os.environ.get("ALS_LOCAL_PATH", "")
 GEDI_LOCAL_BASE_PATH = os.environ.get("GEDI_LOCAL_BASE_PATH", "")
+
+# Allowed values for the prediction `version` parameter (matches predictions.py).
+VersionLiteral = Literal["original", "blended", "masked"]
 
 # ---------------------------------------------------------------------------
 # Computation helpers
 # ---------------------------------------------------------------------------
 
 
-async def _compute_cr(tile_id: str, year: int) -> Path:
-    path_a = Path(f"{PREDICTIONS_LOCAL_BASE_PATH}/{tile_id}/RH98_Q1.tif")
-    path_b = Path(f"{PREDICTIONS_LOCAL_BASE_PATH}/{tile_id}/RH25_Q1.tif")
+async def _compute_cr(tile_id: str, year: int, version: str = "original") -> Path:
+    if not PREDICTIONS_LOCAL_PATH:
+        raise HTTPException(status_code=500, detail="PREDICTIONS_LOCAL_PATH env var is not set.")
+    path_a = Path(PREDICTIONS_LOCAL_PATH.format(tile=tile_id, rh=98, q=1, version=version, year=year))
+    path_b = Path(PREDICTIONS_LOCAL_PATH.format(tile=tile_id, rh=25, q=1, version=version, year=year))
     path_cr = Path(f"{CR_LOCAL_BASE_PATH}/{year}/tiles/geotiff/{tile_id}.tif")
     path_cr_cog = Path(f"{CR_LOCAL_BASE_PATH}/{year}/tiles/cog/{tile_id}.tif")
 
@@ -85,17 +96,39 @@ async def _compute_cr(tile_id: str, year: int) -> Path:
     return path_cr_cog
 
 
-async def _compute_entropy(tile_id: str, year: int):
-    output_dir = Path(f"{DIVERSITY_INDICES_LOCAL_BASE_PATH}/{year}/tiles/geotiff")
-    output_path = output_dir / f'{tile_id}.tif'
-    output_cog_path = output_dir.parent / f'cog/{tile_id}.tif'
+async def _compute_entropy(tile_id: str, year: int, version: str = "original"):
+    if not DIVERSITY_INDICES_LOCAL_PATH:
+        raise HTTPException(status_code=500, detail="DIVERSITY_INDICES_LOCAL_PATH env var is not set.")
+    # DIVERSITY_INDICES_LOCAL_PATH points to the parent dir (.../{year}/{version}/tiles/);
+    # geotiff/ and cog/ live underneath it.
+    output_dir = Path(DIVERSITY_INDICES_LOCAL_PATH.format(year=year, version=version))
+    output_gtiff_path = output_dir / "geotiff" / f"{tile_id}.tif"
+    output_cog_path = output_dir / "cog" / f"{tile_id}.tif"
     if output_cog_path.exists():
         return output_cog_path
-    if not output_path.exists():
-        utils.compute_entropy(output_path=output_path, tile_id=tile_id, year=year)
+    output_gtiff_path.parent.mkdir(parents=True, exist_ok=True)
+    output_cog_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not output_gtiff_path.exists():
+        # Use the versioned VRT built from PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE so
+        # entropy is computed against the requested version's bands.
+        vrt_path: Optional[str] = None
+        if PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE:
+            try:
+                vrt_path = PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE.format(
+                    tile=tile_id, q=1, year=year, version=version,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Invalid PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE: {e}")
+        utils.compute_entropy(
+            output_path=output_gtiff_path,
+            tile_id=tile_id,
+            year=year,
+            vrt_path=vrt_path,
+        )
 
     translate_cmd = [
-        "gdal_translate", str(output_path), str(output_cog_path),
+        "gdal_translate", str(output_gtiff_path), str(output_cog_path),
         "-of", "COG", "-co", "COMPRESS=ZSTD", "-co", "OVERVIEW_RESAMPLING=AVERAGE",
     ]
     loop = asyncio.get_event_loop()
@@ -103,7 +136,7 @@ async def _compute_entropy(tile_id: str, year: int):
     if result.returncode != 0:
         raise HTTPException(status_code=500, detail=result.stderr)
 
-    output_path.unlink(missing_ok=True)
+    output_gtiff_path.unlink(missing_ok=True)
     return output_cog_path
 
 
@@ -212,15 +245,18 @@ class AuxiliaryGEDIRequest(BaseModel):
 class AuxiliaryCRRequest(BaseModel):
     tile_name: str
     year: int
+    version: VersionLiteral = "original"
 
 class AuxiliaryEntropyRequest(BaseModel):
     tile_name: str
     year: int
     metric: str = "entropy"
+    version: VersionLiteral = "original"
 
 class AuxiliaryDiversityIndicesRequest(BaseModel):
     tile_name: str
     year: int
+    version: VersionLiteral = "original"
 
 class AuxiliaryALSRequest(BaseModel):
     tile_name: str
@@ -387,8 +423,8 @@ async def load_or_compute_cr(request: AuxiliaryCRRequest):
     if path_cr.is_file():
         return {"success": True, "url": str(path_cr), "tile_name": request.tile_name, "layer_type": "cr"}
     try:
-        path_out = await _compute_cr(request.tile_name, request.year)
-        return {"success": True, "url": str(path_out), "tile_name": request.tile_name, "layer_type": "cr"}
+        path_out = await _compute_cr(request.tile_name, request.year, request.version)
+        return {"success": True, "url": str(path_out), "tile_name": request.tile_name, "layer_type": "cr", "version": request.version}
     except HTTPException as exc:
         return {"success": False, "error": exc.detail if isinstance(exc.detail, str) else str(exc.detail)}
     except Exception as e:
@@ -402,17 +438,21 @@ async def auxiliary_cr_options():
 
 @router.post("/profile-entropy")
 async def load_or_compute_profile_entropy(request: AuxiliaryEntropyRequest):
-    if not DIVERSITY_INDICES_LOCAL_BASE_PATH:
-        return {"success": False, "error": "DIVERSITY_INDICES_LOCAL_BASE_PATH env var is not set."}
+    if not DIVERSITY_INDICES_LOCAL_PATH:
+        return {"success": False, "error": "DIVERSITY_INDICES_LOCAL_PATH env var is not set."}
     metric = request.metric.strip().lower()
     if metric not in {"entropy", "enl1d", "enl2d"}:
         return {"success": False, "error": f"Invalid metric '{request.metric}'."}
-    path = Path(DIVERSITY_INDICES_LOCAL_BASE_PATH) / str(request.year) / "tiles" / "cog" / f"{request.tile_name}_{metric}.tif"
-    if path.is_file():
-        return {"success": True, "url": str(path), "tile_name": request.tile_name, "layer_type": "profile_entropy", "metric": metric}
     try:
-        path_out = await _compute_entropy(request.tile_name, request.year)
-        return {"success": True, "url": str(path_out), "tile_name": request.tile_name, "layer_type": "profile_entropy", "metric": metric}
+        output_dir = Path(DIVERSITY_INDICES_LOCAL_PATH.format(year=request.year, version=request.version))
+    except Exception as e:
+        return {"success": False, "error": f"Invalid DIVERSITY_INDICES_LOCAL_PATH template: {e}"}
+    path = output_dir / "cog" / f"{request.tile_name}_{metric}.tif"
+    if path.is_file():
+        return {"success": True, "url": str(path), "tile_name": request.tile_name, "layer_type": "profile_entropy", "metric": metric, "version": request.version}
+    try:
+        path_out = await _compute_entropy(request.tile_name, request.year, request.version)
+        return {"success": True, "url": str(path_out), "tile_name": request.tile_name, "layer_type": "profile_entropy", "metric": metric, "version": request.version}
     except HTTPException as exc:
         return {"success": False, "error": exc.detail if isinstance(exc.detail, str) else str(exc.detail)}
     except Exception as e:
@@ -427,9 +467,13 @@ async def auxiliary_profile_entropy_options():
 @router.post("/diversity-indices")
 async def load_or_compute_diversity_indices(request: AuxiliaryDiversityIndicesRequest):
     """Return a 4-band COG (FHD, 1D-ENL, 2D-ENL, CR), computing it on the fly if needed."""
-    if not DIVERSITY_INDICES_LOCAL_BASE_PATH:
-        return {"success": False, "error": "DIVERSITY_INDICES_LOCAL_BASE_PATH env var is not set."}
-    cog_path = Path(DIVERSITY_INDICES_LOCAL_BASE_PATH) / str(request.year) / "tiles" / "cog" / f"{request.tile_name}_Q1.tif"
+    if not DIVERSITY_INDICES_LOCAL_PATH:
+        return {"success": False, "error": "DIVERSITY_INDICES_LOCAL_PATH env var is not set."}
+    try:
+        output_dir = Path(DIVERSITY_INDICES_LOCAL_PATH.format(year=request.year, version=request.version))
+    except Exception as e:
+        return {"success": False, "error": f"Invalid DIVERSITY_INDICES_LOCAL_PATH template: {e}"}
+    cog_path = output_dir / "cog" / f"{request.tile_name}.tif"
     if cog_path.is_file():
         return {
             "success": True,
@@ -437,15 +481,17 @@ async def load_or_compute_diversity_indices(request: AuxiliaryDiversityIndicesRe
             "tile_name": request.tile_name,
             "layer_type": "diversity_indices",
             "bands": ["FHD", "1D ENL", "2D ENL", "CR"],
+            "version": request.version,
         }
     try:
-        path_out = await _compute_entropy(request.tile_name, request.year)
+        path_out = await _compute_entropy(request.tile_name, request.year, request.version)
         return {
             "success": True,
             "url": str(path_out),
             "tile_name": request.tile_name,
             "layer_type": "diversity_indices",
             "bands": ["FHD", "1D ENL", "2D ENL", "CR"],
+            "version": request.version,
         }
     except HTTPException as exc:
         return {"success": False, "error": exc.detail if isinstance(exc.detail, str) else str(exc.detail)}
@@ -460,10 +506,10 @@ async def auxiliary_diversity_indices_options():
 
 @router.post("/als")
 async def load_als(request: AuxiliaryALSRequest):
-    if not ALS_LOCAL_TEMPLATE:
-        return {"success": False, "error": "ALS_LOCAL_TEMPLATE env var is not set."}
+    if not ALS_LOCAL_PATH:
+        return {"success": False, "error": "ALS_LOCAL_PATH env var is not set."}
     try:
-        candidate = Path(ALS_LOCAL_TEMPLATE.format(tile=request.tile_name))
+        candidate = Path(ALS_LOCAL_PATH.format(tile=request.tile_name))
         if candidate.is_file():
             return {"success": True, "url": str(candidate), "tile_name": request.tile_name, "layer_type": "als"}
     except Exception:

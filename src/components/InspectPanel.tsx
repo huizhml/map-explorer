@@ -141,7 +141,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
         tile: profileMeta?.tileName,
         year: profileMeta?.year,
         q_index: profileMeta?.qIndex,
-        source: profileMeta?.source,
+        version: profileMeta?.version,
         metrics: profileMetrics,
         profile: verticalProfile,
       };
@@ -172,19 +172,14 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
       tileName: activeTransectSample?.tile_name ?? '',
       year: profileMeta?.year ?? panel.profileMeta?.year ?? 0,
       qIndex: profileMeta?.qIndex ?? panel.profileMeta?.qIndex ?? 1,
-      source: profileMeta?.source,
+      version: profileMeta?.version,
       maxHeight: profileMeta?.maxHeight ?? panel.profileMeta?.maxHeight,
       heatmapMaxHeight: profileMeta?.heatmapMaxHeight ?? panel.profileMeta?.heatmapMaxHeight,
       fhdInterval: profileMeta?.fhdInterval ?? panel.profileMeta?.fhdInterval,
     }
     : profileMeta;
   const verticalLoadingFirst = (isVertical || isVerticalLine) && loading && !(verticalData?.length ?? 0);
-  const sourceLabel =
-    profileMetaData?.source === 'original'
-      ? 'original'
-      : profileMetaData?.source === 'blended'
-        ? 'blended'
-        : profileMetaData?.source || '';
+  const versionLabel = profileMetaData?.version ?? '';
   const hasNumericVerticalValues = Boolean(
     verticalData?.some((p) => p.value != null && !p.missing && Number.isFinite(p.value)),
   );
@@ -206,7 +201,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
       ? {
         geometry: { type: 'Point', coordinates: [lon, lat] },
         metadata: {
-          source: isVertical || isVerticalLine ? sourceLabel || undefined : undefined,
+          version: isVertical || isVerticalLine ? versionLabel || undefined : undefined,
           tile_name: profileMetaData?.tileName || undefined,
           year: profileMetaData?.year,
           q_index: profileMetaData?.qIndex,
@@ -245,7 +240,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
       ? {
         geometry: { type: 'LineString', coordinates: transectProfile.lineCoordinates },
         metadata: {
-          source: sourceLabel || undefined,
+          version: versionLabel || undefined,
           tile_name: profileMetaData?.tileName || undefined,
           year: profileMetaData?.year,
           q_index: profileMetaData?.qIndex,
@@ -399,10 +394,10 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
         {(isVertical || isVerticalLine) && profileMetaData?.tileName && (
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
             Tile <strong>{profileMetaData.tileName}</strong> · {profileMetaData.year} · Q{profileMetaData.qIndex}
-            {sourceLabel && (
+            {versionLabel && (
               <>
                 {' '}
-                · <strong>{sourceLabel}</strong>
+                · <strong>{versionLabel}</strong>
               </>
             )}
           </Typography>

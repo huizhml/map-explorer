@@ -1,5 +1,6 @@
 import { apiUrl } from './apiBase';
 import { DEFAULT_DIVERSITY_HEIGHT_BIN_M } from '../constants/diversityMetrics';
+import { DEFAULT_VSM_VERSION, type VsmVersion } from '../constants/predictions';
 
 export type VerticalProfileResponse = {
   success: boolean;
@@ -11,7 +12,7 @@ export type VerticalProfileResponse = {
   lat?: number;
   profile?: Array<{ rh: number; value: number | null; missing?: boolean }>;
   vertical_profile_curve?: Array<{ z: number; value: number }>;
-  source?: string;
+  version?: VsmVersion;
   fhd?: number | null;
   enl1d?: number | null;
   enl2d?: number | null;
@@ -39,7 +40,7 @@ export type VerticalProfileLineResponse = {
   success: boolean;
   error?: string;
   year?: number;
-  source?: string;
+  version?: VsmVersion;
   q_index?: number;
   sample_count?: number;
   total_length_m?: number;
@@ -52,12 +53,16 @@ export type VerticalProfileLineResponse = {
   fhd_interval?: number;
 };
 
-/** Vertical profile uses original COGs for 2020; remote year uses blended URL layout. */
+/**
+ * Vertical profile is only versioned for year==2020 (the only year with on-disk
+ * original/blended/masked tiles). For other years the backend ignores `version`.
+ */
 export async function fetchVerticalProfile(
   lon: number,
   lat: number,
   year: number,
   fhdInterval: number = DEFAULT_DIVERSITY_HEIGHT_BIN_M,
+  version: VsmVersion = DEFAULT_VSM_VERSION,
 ): Promise<VerticalProfileResponse> {
   const res = await fetch(apiUrl('/predictions/vertical-profile'), {
     method: 'POST',
@@ -66,7 +71,7 @@ export async function fetchVerticalProfile(
       lon,
       lat,
       year,
-      source: year === 2020 ? 'original' : 'blended',
+      version,
       q_index: 1,
       fhd_interval: fhdInterval,
     }),
@@ -82,17 +87,18 @@ export async function fetchVerticalProfileLine(
   lineCoordinates: Array<[number, number]>,
   year: number,
   fhdInterval: number = DEFAULT_DIVERSITY_HEIGHT_BIN_M,
+  version: VsmVersion = DEFAULT_VSM_VERSION,
 ): Promise<VerticalProfileLineResponse> {
   const body: {
     line_coordinates: Array<[number, number]>;
     year: number;
-    source: 'original' | 'blended';
+    version: VsmVersion;
     q_index: number;
     fhd_interval: number;
   } = {
     line_coordinates: lineCoordinates,
     year,
-    source: year === 2020 ? 'original' : 'blended',
+    version,
     q_index: 1,
     fhd_interval: fhdInterval,
   };

@@ -1,5 +1,16 @@
 /** Default rescale max by RH index for prediction visualization. Fallback 500. */
 
+/**
+ * Pipeline version of the prediction outputs. Only year==2020 has on-disk
+ * versioned tiles — 'original' is the raw model output, 'blended' fills
+ * cross-tile seams, 'masked' applies the no-vegetation mask.
+ */
+export type VsmVersion = 'original' | 'blended' | 'masked';
+
+export const VSM_VERSION_OPTIONS: ReadonlyArray<VsmVersion> = ['original', 'blended', 'masked'];
+
+export const DEFAULT_VSM_VERSION: VsmVersion = 'original';
+
 /** Single quantiles: 5%, median, 95%. Ranges: 95%-5%, 95%-50%, 50%-5%. Skewness. */
 export type VsmQChoice =
   | '5%'

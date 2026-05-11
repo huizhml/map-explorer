@@ -36,12 +36,13 @@ class RefreshPredictionSnapshotRequest(BaseModel):
     rescale_min: Optional[float] = None
     rescale_max: Optional[float] = None
     colormap: Optional[str] = None
-    # Allow overriding year / q_index / source too, so the user can ask for a
+    # Allow overriding year / q_index / version too, so the user can ask for a
     # different visualization than the one stored at save time (e.g., switch
-    # to Q0 after the fact). Defaults come from the saved metadata.
+    # to Q0 after the fact, or re-render under a different pipeline version).
+    # Defaults come from the saved metadata.
     year: Optional[int] = None
     q_index: Optional[int] = None
-    source: Optional[str] = None
+    version: Optional[str] = None
 
 
 class FigureBandSpec(BaseModel):

@@ -140,9 +140,16 @@ def _attach_feature_popup_snapshots(
 
         # ---- RH98 prediction ----
         pred_year = int(metadata_payload.get("year") or 2020)
-        pred_source = (
-            str(metadata_payload.get("prediction_source") or "blended").strip().lower()
-            or "blended"
+        # Accept either the new "version" key or legacy "prediction_source"/
+        # "source" keys from older saved metadata; default to "original".
+        pred_version = (
+            str(
+                metadata_payload.get("version")
+                or metadata_payload.get("prediction_source")
+                or metadata_payload.get("source")
+                or "original"
+            ).strip().lower()
+            or "original"
         )
         pred_q_index = int(metadata_payload.get("q_index") or 1)
         tile_name = _resolve_prediction_tile_name(metadata_payload, lat, lon)
@@ -156,7 +163,7 @@ def _attach_feature_popup_snapshots(
         pred_cmap = pred_vis.get("colormap") if isinstance(pred_vis, dict) else None
         pred_snapshot, pred_error = _extract_prediction_rh98_snapshot(
             lon, lat,
-            year=pred_year, source=pred_source, q_index=pred_q_index,
+            year=pred_year, version=pred_version, q_index=pred_q_index,
             tile_name=str(tile_name) if tile_name else None,
             buffer_m=75.0,
             rescale_min=float(pred_rmin) if isinstance(pred_rmin, (int, float)) else None,
@@ -170,7 +177,7 @@ def _attach_feature_popup_snapshots(
                 "rh": 98,
                 "q_index": pred_q_index,
                 "year": pred_year,
-                "source": pred_source,
+                "version": pred_version,
             }
         else:
             metadata_payload["prediction_snapshot_status"] = "unavailable"
@@ -180,7 +187,7 @@ def _attach_feature_popup_snapshots(
                 "tile_name": tile_name,
                 "year": pred_year,
                 "q_index": pred_q_index,
-                "source": pred_source,
+                "version": pred_version,
             }
 
         # ---- Sentinel-2 ----
@@ -461,14 +468,22 @@ async def refresh_saved_feature_prediction_snapshot(
     if not isinstance(plot_data_payload, dict):
         plot_data_payload = {}
 
-    # Resolve year / q_index / source: caller override > stored metadata > default.
+    # Resolve year / q_index / version: caller override > stored metadata > default.
+    # Stored metadata may use the new "version" key or the legacy
+    # "prediction_source"/"source" keys, so we fall through them in order.
     pred_year = int(payload.year) if payload.year is not None else int(metadata_payload.get("year") or 2020)
     pred_q_index = int(payload.q_index) if payload.q_index is not None else int(metadata_payload.get("q_index") or 1)
-    pred_source = (
-        (payload.source or metadata_payload.get("prediction_source") or "blended")
+    pred_version = (
+        (
+            payload.version
+            or metadata_payload.get("version")
+            or metadata_payload.get("prediction_source")
+            or metadata_payload.get("source")
+            or "original"
+        )
         .strip()
         .lower()
-        or "blended"
+        or "original"
     )
     tile_name = _resolve_prediction_tile_name(metadata_payload, lat, lon)
 
@@ -509,7 +524,7 @@ async def refresh_saved_feature_prediction_snapshot(
 
     pred_snapshot, pred_error = _extract_prediction_rh98_snapshot(
         lon, lat,
-        year=pred_year, source=pred_source, q_index=pred_q_index,
+        year=pred_year, version=pred_version, q_index=pred_q_index,
         tile_name=str(tile_name) if tile_name else None,
         buffer_m=75.0,
         rescale_min=rescale_min,
@@ -524,7 +539,7 @@ async def refresh_saved_feature_prediction_snapshot(
             "rh": 98,
             "q_index": pred_q_index,
             "year": pred_year,
-            "source": pred_source,
+            "version": pred_version,
         }
         # Echo the visualization actually used so the saved metadata reflects
         # the current render (useful when the user later wants to compare or
@@ -544,7 +559,7 @@ async def refresh_saved_feature_prediction_snapshot(
             "tile_name": tile_name,
             "year": pred_year,
             "q_index": pred_q_index,
-            "source": pred_source,
+            "version": pred_version,
         }
 
     with db_connect() as conn:

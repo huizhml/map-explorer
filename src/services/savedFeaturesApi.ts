@@ -8,7 +8,10 @@ export type SavedFeatureGeometry = {
 };
 
 export type SavedFeatureMetadata = {
+  /** Origin descriptor for the saved feature (e.g. "feature_popup", "area_images"). */
   source?: string;
+  /** Prediction pipeline version ("original" | "blended" | "masked"). */
+  version?: string;
   tile_name?: string;
   year?: number;
   q_index?: number;
@@ -176,7 +179,7 @@ export async function refreshPredictionSnapshot(
     colormap?: string;
     year?: number;
     q_index?: number;
-    source?: string;
+    version?: string;
   },
 ): Promise<SavedFeature> {
   const response = await fetch(apiUrl(`/saved-features/${id}/refresh-prediction-snapshot`), {

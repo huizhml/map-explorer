@@ -8,6 +8,12 @@ import asyncio
 import os
 import re
 import requests
+from typing import Literal
+
+# Allowed values for the prediction `version` parameter. Only year==2020
+# has on-disk versioned outputs ('original' is the raw model output,
+# 'blended' fills cross-tile seams, 'masked' applies the no-veg mask).
+VersionLiteral = Literal["original", "blended", "masked"]
 
 import mgrs as mgrs_lib
 import rasterio
@@ -22,9 +28,10 @@ router = APIRouter(tags=["predictions"])
 # Module-level env vars (read at import time; same as before)
 # ---------------------------------------------------------------------------
 
-PREDICTIONS_LOCAL_BASE_PATH = os.environ.get("PREDICTIONS_LOCAL_BASE_PATH", "")
-PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH = os.environ.get("PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH", "")
-PREDICTIONS_LOCAL_PATH_TEMPLATE = os.environ.get("PREDICTIONS_LOCAL_PATH_TEMPLATE", "{tile}/RH{rh}_Q{q}.tif")
+# Unified local path template: full absolute path with {version}, {tile}, {rh}, {q}
+# placeholders. Replaces the old split PREDICTIONS_LOCAL_BASE_PATH +
+# PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH + PREDICTIONS_LOCAL_PATH_TEMPLATE trio.
+PREDICTIONS_LOCAL_PATH = os.environ.get("PREDICTIONS_LOCAL_PATH", "")
 PREDICTIONS_BASE_URL = os.environ.get("PREDICTIONS_BASE_URL", "")
 PREDICTIONS_REMOTE_PATH_TEMPLATE = os.environ.get("PREDICTIONS_REMOTE_PATH_TEMPLATE", "{zone}-{year}/{tile}/RH{rh}_Q{q}.tif")
 VERTICAL_PROFILE_WORKERS = max(4, min(48, int(os.environ.get("VERTICAL_PROFILE_WORKERS", "28"))))
@@ -145,31 +152,29 @@ def _sample_points_along_line(line_coordinates: List[Tuple[float, float]]) -> Tu
     return out, total
 
 
-def _build_profile_paths(year: int, source: str, q_index: int, tile_name: str):
+def _build_profile_paths(year: int, version: str, q_index: int, tile_name: str):
     zone = tile_name[:3].lower() if len(tile_name) >= 3 else tile_name.lower()
-    fmt_base = dict(zone=zone, year=year, tile=tile_name, q=q_index)
+    fmt_base = dict(zone=zone, year=year, tile=tile_name, q=q_index, version=version)
 
     if year == 2020:
-        local_base = PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH if source == "original" else PREDICTIONS_LOCAL_BASE_PATH
-        if not local_base:
-            return None, None, fmt_base, "PREDICTIONS_LOCAL_BASE_PATH not set."
-        return local_base, PREDICTIONS_LOCAL_PATH_TEMPLATE, fmt_base, None
+        if not PREDICTIONS_LOCAL_PATH:
+            return None, fmt_base, "PREDICTIONS_LOCAL_PATH not set."
+        return PREDICTIONS_LOCAL_PATH, fmt_base, None
 
     if not PREDICTIONS_BASE_URL:
-        return None, None, fmt_base, "PREDICTIONS_BASE_URL not set."
-    return None, None, fmt_base, None
+        return None, fmt_base, "PREDICTIONS_BASE_URL not set."
+    return None, fmt_base, None
 
 
-def _path_for_rh(year: int, local_base: Optional[str], local_tpl: Optional[str], fmt_base: Dict[str, Union[str, int]], rh: int) -> Optional[str]:
+def _path_for_rh(year: int, local_tpl: Optional[str], fmt_base: Dict[str, Union[str, int]], rh: int) -> Optional[str]:
     fmt_rh = {**fmt_base, "rh": rh}
     if year == 2020:
-        if not local_base or not local_tpl:
+        if not local_tpl:
             return None
         try:
-            rel = local_tpl.format(**fmt_rh)
+            return local_tpl.format(**fmt_rh)
         except Exception:
             return None
-        return os.path.join(local_base, rel)
     try:
         rel = PREDICTIONS_REMOTE_PATH_TEMPLATE.format(**fmt_rh)
     except Exception:
@@ -181,7 +186,7 @@ def _compute_profile_at_point(
     lon: float,
     lat: float,
     year: int,
-    source: str,
+    version: str,
     q_index: int,
     tile_name: Optional[str] = None,
     max_workers: int = VERTICAL_PROFILE_WORKERS,
@@ -193,14 +198,14 @@ def _compute_profile_at_point(
     if not tile:
         return {"success": False, "error": "Could not determine MGRS tile."}
 
-    local_base, local_tpl, fmt_base, setup_error = _build_profile_paths(year, source, q_index, tile)
+    local_tpl, fmt_base, setup_error = _build_profile_paths(year, version, q_index, tile)
     if setup_error:
         return {"success": False, "error": setup_error, "tile_name": tile}
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def work(rh: int):
-        p = _path_for_rh(year, local_base, local_tpl, fmt_base, rh)
+        p = _path_for_rh(year, local_tpl, fmt_base, rh)
         if not p:
             return rh, None, True
         if year == 2020 and not os.path.isfile(p):
@@ -260,7 +265,7 @@ def _compute_profile_at_point(
         "tile_name": tile,
         "year": year,
         "q_index": q_index,
-        "source": source,
+        "version": version,
         "lon": lon,
         "lat": lat,
         "profile": profile,
@@ -311,14 +316,14 @@ class PredictionsRequest(BaseModel):
     tile_name: str
     rh_index: int
     q_index: Union[int, str]
-    source: str = "blended"
+    version: VersionLiteral = "original"
 
 
 class VerticalProfileRequest(BaseModel):
     lon: float
     lat: float
     year: int = 2020
-    source: str = "blended"
+    version: VersionLiteral = "original"
     q_index: int = 1
     tile_name: Optional[str] = None
     fhd_interval: int = Field(
@@ -332,7 +337,7 @@ class VerticalProfileRequest(BaseModel):
 class VerticalProfileLineRequest(BaseModel):
     line_coordinates: List[Tuple[float, float]]
     year: int = 2020
-    source: str = "blended"
+    version: VersionLiteral = "original"
     q_index: int = 1
     sample_count: Optional[int] = None
     fhd_interval: int = Field(default=5, ge=1, le=50)
@@ -343,8 +348,13 @@ class VerticalProfileLineRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/predictions/mosaic-url")
-async def get_mosaic_url(year: int, rh_index: int = 98, q_index: Union[int, str] = 1):
-    fmt = dict(year=year, rh=rh_index, q=q_index)
+async def get_mosaic_url(
+    year: int,
+    rh_index: int = 98,
+    q_index: Union[int, str] = 1,
+    version: VersionLiteral = "original",
+):
+    fmt = dict(year=year, rh=rh_index, q=q_index, version=version)
 
     if year == 2020:
         template = os.environ.get("PREDICTIONS_MOSAIC_LOCAL_PATH", "")
@@ -356,7 +366,7 @@ async def get_mosaic_url(year: int, rh_index: int = 98, q_index: Union[int, str]
             return {"success": False, "error": f"Invalid PREDICTIONS_MOSAIC_LOCAL_PATH: {e}"}
         if not os.path.isfile(path):
             return {"success": False, "error": f"Mosaic file not found: {path}"}
-        return {"success": True, "url": path, "year": year, "source": "local"}
+        return {"success": True, "url": path, "year": year, "version": version, "location": "local"}
     else:
         template = os.environ.get("PREDICTIONS_MOSAIC_REMOTE_URL", "")
         if not template:
@@ -365,25 +375,26 @@ async def get_mosaic_url(year: int, rh_index: int = 98, q_index: Union[int, str]
             url = template.format(**fmt)
         except Exception as e:
             return {"success": False, "error": f"Invalid PREDICTIONS_MOSAIC_REMOTE_URL: {e}"}
-        return {"success": True, "url": url, "year": year, "source": "remote"}
+        return {"success": True, "url": url, "year": year, "location": "remote"}
 
 
 @router.post("/predictions/load")
 async def load_predictions(request: PredictionsRequest):
     zone = request.tile_name[:3].lower()
-    fmt = dict(zone=zone, year=request.year, tile=request.tile_name, rh=request.rh_index, q=request.q_index)
+    fmt = dict(
+        zone=zone, year=request.year, tile=request.tile_name,
+        rh=request.rh_index, q=request.q_index, version=request.version,
+    )
 
     if request.year == 2020:
-        local_base = PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH if request.source == "original" else PREDICTIONS_LOCAL_BASE_PATH
-        if not local_base:
-            return {"success": False, "error": "PREDICTIONS_LOCAL_BASE_PATH env var is not set."}
+        if not PREDICTIONS_LOCAL_PATH:
+            return {"success": False, "error": "PREDICTIONS_LOCAL_PATH env var is not set."}
         try:
-            local_rel = PREDICTIONS_LOCAL_PATH_TEMPLATE.format(**fmt)
+            local_path = PREDICTIONS_LOCAL_PATH.format(**fmt)
         except Exception as e:
-            return {"success": False, "error": f"Invalid template: {e}"}
-        local_path = os.path.join(local_base, local_rel)
+            return {"success": False, "error": f"Invalid PREDICTIONS_LOCAL_PATH template: {e}"}
         if os.path.isfile(local_path):
-            return {"success": True, "url": local_path, "tile_name": request.tile_name, "rh_index": request.rh_index, "q_index": request.q_index, "year": request.year, "source": "local"}
+            return {"success": True, "url": local_path, "tile_name": request.tile_name, "rh_index": request.rh_index, "q_index": request.q_index, "year": request.year, "version": request.version, "location": "local"}
         return {"success": False, "error": f"Local file not found: {local_path}"}
     else:
         if not PREDICTIONS_BASE_URL:
@@ -396,7 +407,7 @@ async def load_predictions(request: PredictionsRequest):
         try:
             resp = requests.head(cog_url, timeout=10)
             resp.raise_for_status()
-            return {"success": True, "url": cog_url, "tile_name": request.tile_name, "rh_index": request.rh_index, "q_index": request.q_index, "year": request.year, "source": "remote"}
+            return {"success": True, "url": cog_url, "tile_name": request.tile_name, "rh_index": request.rh_index, "q_index": request.q_index, "year": request.year, "version": request.version, "location": "remote"}
         except Exception as e:
             return {"success": False, "error": str(e), "url": cog_url}
 
@@ -413,7 +424,7 @@ async def predictions_vertical_profile(request: VerticalProfileRequest):
         request.lon,
         request.lat,
         request.year,
-        request.source,
+        request.version,
         request.q_index,
         request.tile_name,
         VERTICAL_PROFILE_WORKERS,
@@ -461,8 +472,8 @@ async def predictions_vertical_profile_line(request: VerticalProfileLineRequest)
 
         workers = max(4, min(8, VERTICAL_PROFILE_WORKERS))
         for tile_name, indices in tile_to_indices.items():
-            local_base, local_tpl, fmt_base, setup_error = _build_profile_paths(
-                request.year, request.source, request.q_index, tile_name
+            local_tpl, fmt_base, setup_error = _build_profile_paths(
+                request.year, request.version, request.q_index, tile_name
             )
             if setup_error:
                 return {"success": False, "error": setup_error, "tile_name": tile_name}
@@ -470,7 +481,7 @@ async def predictions_vertical_profile_line(request: VerticalProfileLineRequest)
             tile_points = [(out[i]["lon"], out[i]["lat"]) for i in indices]
 
             def work_rh(rh: int):
-                p = _path_for_rh(request.year, local_base, local_tpl, fmt_base, rh)
+                p = _path_for_rh(request.year, local_tpl, fmt_base, rh)
                 if not p:
                     return rh, [None] * len(tile_points), True
                 if request.year == 2020 and not os.path.isfile(p):
@@ -514,7 +525,7 @@ async def predictions_vertical_profile_line(request: VerticalProfileLineRequest)
         return {
             "success": True,
             "year": request.year,
-            "source": request.source,
+            "version": request.version,
             "q_index": request.q_index,
             "sample_count": len(sampled_points),
             "total_length_m": total_length_m,

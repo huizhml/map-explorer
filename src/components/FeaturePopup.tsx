@@ -23,6 +23,7 @@ import Point from 'ol/geom/Point';
 import { transform } from 'ol/proj';
 import { apiUrl } from '../utils/apiBase';
 import type { SavedFeatureDraft } from '../services/savedFeaturesApi';
+import { DEFAULT_VSM_VERSION, VSM_VERSION_OPTIONS, type VsmVersion } from '../constants/predictions';
 // @ts-ignore - Material React Table needs to be installed: npm install material-react-table @tanstack/react-table
 import { MaterialReactTable, useMaterialReactTable, type MRT_ColumnDef } from 'material-react-table';
 
@@ -81,7 +82,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [predError, setPredError] = useState<string | null>(null);
   const [predResult, setPredResult] = useState<any | null>(null);
   const [useGrowingMonths, setUseGrowingMonths] = useState(false);
-  const [predSource, setPredSource] = useState<'blended' | 'original'>('blended');
+  const [predVersion, setPredVersion] = useState<VsmVersion>(DEFAULT_VSM_VERSION);
   const [rhIndex, setRhIndex] = useState<string>('98');
   const [qChoice, setQChoice] = useState<'5%' | 'median' | '95%'>('median');
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
@@ -501,7 +502,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
           tile_name: properties.Name,
           rh_index,
           q_index,
-          source: predSource,
+          version: predVersion,
         }),
       });
       if (!response.ok) {
@@ -584,7 +585,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       const response = await fetch(apiUrl('/auxiliary/cr'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tile_name: properties.Name, year: yearNum }),
+        body: JSON.stringify({ tile_name: properties.Name, year: yearNum, version: predVersion }),
       });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -626,7 +627,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       const response = await fetch(apiUrl('/auxiliary/diversity-indices'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tile_name: properties.Name, year: yearNum }),
+        body: JSON.stringify({ tile_name: properties.Name, year: yearNum, version: predVersion }),
       });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -1006,17 +1007,20 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
               </Typography>
 
               <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>
-                <FormControl size="small" fullWidth>
-                  <InputLabel>Source</InputLabel>
+                {/* `version` only applies to the on-disk 2020 outputs; other years
+                    are served from a remote URL layout with no version branches. */}
+                <FormControl size="small" fullWidth disabled={year !== '2020'}>
+                  <InputLabel>Version</InputLabel>
                   <Select
-                    value={predSource}
-                    label="Source"
-                    onChange={(e) => setPredSource(e.target.value as 'blended' | 'original')}
+                    value={predVersion}
+                    label="Version"
+                    onChange={(e) => setPredVersion(e.target.value as VsmVersion)}
                     MenuProps={{ sx: { zIndex: 2100 } }}
                     sx={inputSx}
                   >
-                    <MenuItem value="blended">blended</MenuItem>
-                    <MenuItem value="original">original</MenuItem>
+                    {VSM_VERSION_OPTIONS.map((v) => (
+                      <MenuItem key={v} value={v}>{v}</MenuItem>
+                    ))}
                   </Select>
                 </FormControl>
                 <TextField

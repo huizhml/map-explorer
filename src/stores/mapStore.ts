@@ -5,7 +5,7 @@ import VectorLayer from 'ol/layer/Vector';
 import { Geometry } from 'ol/geom';
 import { LayerManager } from '../utils/LayerManager';
 import type { Layer } from '../components/LayerControl';
-import type { VsmLayerEntry, VsmQChoice } from '../constants/predictions';
+import type { VsmLayerEntry, VsmQChoice, VsmVersion } from '../constants/predictions';
 import { getVsmLayerId } from '../constants/predictions';
 import type { InspectLayerRow } from '../utils/inspectPoint';
 import { API_BASE_URL } from '../utils/apiBase';
@@ -80,7 +80,7 @@ export type InspectPanelState = {
     tileName: string;
     year: number;
     qIndex: number;
-    source?: string;
+    version?: VsmVersion;
     /** Diversity / histogram domain (m); from API `max_height`. */
     maxHeight?: number;
     /** Transect heatmap y-axis top (m); from API `heatmap_max_height`. */
