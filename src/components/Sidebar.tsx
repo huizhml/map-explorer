@@ -94,6 +94,9 @@ interface SidebarProps {
   onFigureFilenameStemChange: (stem: string) => void;
   /** Current automatic stem for “Use default name”. */
   suggestedFigureFilenameStem: string;
+  /** Also save a high-resolution Google Satellite snapshot of the drawn area. */
+  includeGoogleSatellite: boolean;
+  onIncludeGoogleSatelliteChange: (next: boolean) => void;
   availableFigureLayers: Array<{
     id: string;
     name: string;
@@ -427,6 +430,8 @@ export function Sidebar({
   figureFilenameStem,
   onFigureFilenameStemChange,
   suggestedFigureFilenameStem,
+  includeGoogleSatellite,
+  onIncludeGoogleSatelliteChange,
   availableFigureLayers,
   selectedFigureLayerIds,
   onToggleFigureLayer,
@@ -1859,13 +1864,29 @@ export function Sidebar({
                   </Box>
                 </Box>
 
+                <FormControlLabel
+                  sx={{ mt: 0.5, mb: -0.5 }}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={includeGoogleSatellite}
+                      onChange={(e) => onIncludeGoogleSatelliteChange(e.target.checked)}
+                    />
+                  }
+                  label={
+                    <Typography variant="body2" sx={{ color: ui.text }}>
+                      Also save HD Google Satellite snapshot
+                    </Typography>
+                  }
+                />
+
                 {figureSaveError && <Alert severity="error">{figureSaveError}</Alert>}
                 {figureSaveMessage && <Alert severity="success">{figureSaveMessage}</Alert>}
 
                 <Button
                   variant="contained"
                   onClick={onSaveFigures}
-                  disabled={savingFigures || !figureSelectionReady || selectedFigureLayerIds.length === 0}
+                  disabled={savingFigures || !figureSelectionReady || (selectedFigureLayerIds.length === 0 && !includeGoogleSatellite)}
                   startIcon={savingFigures ? <CircularProgress size={18} color="inherit" /> : undefined}
                   sx={{
                     py: 1.1,

@@ -84,6 +84,13 @@ class SaveAreaImagesRequest(BaseModel):
     name: Optional[str] = Field(default=None, max_length=120)
     description: Optional[str] = Field(default=None, max_length=2000)
     category: Optional[str] = Field(default=None, max_length=120)
+    # Optional Google Satellite snapshot of the drawing area.
+    # Uses the same `_stitch_bbox_satellite` retina-tile fetcher (scale=2)
+    # as the transect figure, so the output is high-resolution. 8192 px ≈ one
+    # extra zoom level vs. the transect default — saved exports are typically
+    # used at full resolution, so we trade some bandwidth for sharper detail.
+    include_google_satellite: bool = False
+    google_satellite_max_width_px: int = 4096 # 8192
 
 
 def _db_connect() -> sqlite3.Connection:
@@ -1039,6 +1046,51 @@ async def create_area_images_feature(payload: SaveAreaImagesRequest) -> Dict[str
         except Exception as exc:
             render_errors.append({"layer_id": layer.layer_id, "name": layer.name, "error": str(exc)})
 
+    # Optionally fetch a high-resolution Google Satellite snapshot of the same
+    # drawing area and add it to the saved feature's image_exports.  Always PNG
+    # — the retina (scale=2) tile fetcher returns lossless PNG data.
+    if payload.include_google_satellite:
+        try:
+            sat_bytes, sat_meta = _stitch_bbox_satellite(
+                float(wgs_bounds[0]),  # min lon
+                float(wgs_bounds[2]),  # max lon
+                float(wgs_bounds[1]),  # min lat
+                float(wgs_bounds[3]),  # max lat
+                buffer_m=0.0,
+                max_width_px=int(payload.google_satellite_max_width_px),
+            )
+            if sat_bytes is None:
+                render_errors.append({
+                    "layer_id": "_google_satellite",
+                    "name": "Google Satellite",
+                    "error": "Tile fetch failed (no provider returned imagery)",
+                })
+            else:
+                # Burn a metric scale bar into the lower-left corner so the
+                # exported HD satellite image is self-describing.
+                try:
+                    sat_bytes = _burn_scale_bar(sat_bytes, sat_meta)
+                except Exception:
+                    pass  # Scale bar is decorative; never block the export.
+                sat_file = f"google_satellite_{_sanitize_name(location_tag)}.png"
+                (session_dir / sat_file).write_bytes(sat_bytes)
+                image_exports.append({
+                    "layer_id": "_google_satellite",
+                    "layer_name": "Google Satellite",
+                    "filename": sat_file,
+                    "relative_path": str(Path(session_dir_name) / sat_file),
+                    "url": f"/saved-features/image/{(Path(session_dir_name) / sat_file).as_posix()}",
+                    "format": "png",
+                    "mime_type": "image/png",
+                    "meta": sat_meta,
+                })
+        except Exception as exc:
+            render_errors.append({
+                "layer_id": "_google_satellite",
+                "name": "Google Satellite",
+                "error": str(exc),
+            })
+
     if not image_exports:
         raise HTTPException(status_code=400, detail=f"No images were generated. Errors: {render_errors[:3]}")
 
@@ -1238,6 +1290,113 @@ async def update_saved_feature(feature_id: int, payload: SavedFeatureUpdateReque
     if row is None:
         raise HTTPException(status_code=500, detail="Failed to load updated feature")
     return {"feature": _row_to_feature(row)}
+
+
+def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
+    """Overlay a metric scale bar on the lower-left corner of a stitched
+    satellite PNG (re-encoded). Used by export paths that save a standalone
+    HD satellite image (the matplotlib transect figure draws its own scale
+    bar in axes coords, so this is NOT called from the transect path).
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    w, h = img.size
+
+    # Geographic extent → meters per pixel along x, cosine-corrected at the
+    # mean latitude of the image.
+    min_lon = float(meta.get("min_lon", 0.0))
+    max_lon = float(meta.get("max_lon", 0.0))
+    min_lat = float(meta.get("min_lat", 0.0))
+    max_lat = float(meta.get("max_lat", 0.0))
+    mean_lat = (min_lat + max_lat) / 2.0
+    span_m = (max_lon - min_lon) * 111320.0 * max(1e-6, math.cos(math.radians(mean_lat)))
+    if span_m <= 0 or w <= 0:
+        return png_bytes
+    m_per_px = span_m / w
+
+    # Pick a "nice" round bar length (1 / 2 / 5 × 10^k m) that fills ~12% of
+    # the image width.
+    target_m = m_per_px * w * 0.12
+    if target_m <= 0:
+        return png_bytes
+    pow10 = 10.0 ** math.floor(math.log10(target_m))
+    leading = target_m / pow10
+    if leading < 1.5:
+        bar_m = 1.0 * pow10
+    elif leading < 3.5:
+        bar_m = 2.0 * pow10
+    elif leading < 7.5:
+        bar_m = 5.0 * pow10
+    else:
+        bar_m = 10.0 * pow10
+    bar_px = bar_m / m_per_px
+    if bar_px < 20 or bar_px > w * 0.6:
+        return png_bytes  # degenerate scale — skip rather than overlay junk
+
+    # Layout: inset from lower-left corner. Geometry sized relative to image
+    # dimensions so it scales with the HD output.
+    # Scale the bar geometry from the LONGER side so very wide/short or very
+    # tall/narrow crops still get a legible bar — using only `h` makes the
+    # text shrink to nothing on landscape-thin crops.
+    ref = max(w, h)
+    inset_x = max(16, int(w * 0.015))
+    inset_y = max(20, int(h * 0.035))
+    line_w = max(5, int(ref * 0.005))
+    tick_h = max(16, int(ref * 0.020))
+    font_px = max(56, int(ref * 0.060))
+
+    bar_y = h - inset_y
+    bar_x0 = inset_x
+    bar_x1 = int(round(bar_x0 + bar_px))
+
+    draw = ImageDraw.Draw(img)
+
+    # Bar + end ticks. Draw white halo first (thicker), black line on top.
+    halo_w = line_w + 2
+    draw.line([(bar_x0, bar_y), (bar_x1, bar_y)], fill="white", width=halo_w)
+    draw.line([(bar_x0, bar_y), (bar_x1, bar_y)], fill="black", width=line_w)
+    for xv in (bar_x0, bar_x1):
+        draw.line([(xv, bar_y - tick_h), (xv, bar_y + tick_h)], fill="white", width=halo_w)
+        draw.line([(xv, bar_y - tick_h), (xv, bar_y + tick_h)], fill="black", width=line_w)
+
+    # Label centered above the bar with a 2-px white stroke for readability.
+    label_text = f"{int(bar_m)} m" if bar_m < 1000 else f"{bar_m / 1000:g} km"
+    font = None
+    for candidate in ("DejaVuSans.ttf", "Arial.ttf", "Helvetica.ttc", "/System/Library/Fonts/Helvetica.ttc"):
+        try:
+            font = ImageFont.truetype(candidate, font_px)
+            break
+        except (IOError, OSError):
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+
+    label_cx = (bar_x0 + bar_x1) // 2
+    label_baseline_y = bar_y - tick_h - max(2, int(h * 0.005))
+    # Pillow ≥ 8 supports stroke_width / stroke_fill for crisp haloed text.
+    try:
+        draw.text(
+            (label_cx, label_baseline_y),
+            label_text,
+            fill="black",
+            font=font,
+            anchor="md",  # middle / descender baseline
+            stroke_width=2,
+            stroke_fill="white",
+        )
+    except TypeError:
+        # Older Pillow without stroke / anchor — fall back to manual halo.
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                draw.text((label_cx + dx, label_baseline_y + dy), label_text, fill="white", font=font)
+        draw.text((label_cx, label_baseline_y), label_text, fill="black", font=font)
+
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
 
 
 def _stitch_bbox_satellite(

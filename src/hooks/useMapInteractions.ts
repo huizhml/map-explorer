@@ -36,6 +36,7 @@ export function useMapInteractions(updateLayersList: () => void) {
     diversityHeightBinM,
     setDrawingActive,
     setSelectedTiles,
+    figureSelectionExtent,
     setFigureSelectionExtent,
     setFeatureCaptureType,
     setFeatureDraft,
@@ -187,6 +188,17 @@ export function useMapInteractions(updateLayersList: () => void) {
     return null;
   }, []);
 
+  // Clear the persistent rectangle layer when the export extent is reset
+  // (e.g. when the user locates a saved feature, or after a successful save).
+  // Without this the user would see a rectangle on the map but the export
+  // panel would say "Draw a rectangle first" because the state is null.
+  useEffect(() => {
+    if (figureSelectionExtent === null && drawLayerRef.current && map) {
+      map.removeLayer(drawLayerRef.current);
+      drawLayerRef.current = null;
+    }
+  }, [figureSelectionExtent, map]);
+
   // Draw interaction
   useEffect(() => {
     if (!map || !drawingActive) return;
@@ -194,10 +206,30 @@ export function useMapInteractions(updateLayersList: () => void) {
     if (labelLayerRef.current) { map.removeLayer(labelLayerRef.current); labelLayerRef.current = null; }
 
     const drawSource = new VectorSource();
+    // Attach drawSource to a visible VectorLayer so the drawn rectangle stays
+    // on the map after drawend (without it, the OL sketch disappears and the
+    // user has no visual confirmation of their selection extent).
+    const drawLayer = new VectorLayer({
+      source: drawSource,
+      style: new Style({
+        stroke: new Stroke({ color: 'rgba(33, 150, 243, 0.95)', width: 2 }),
+        fill: new Fill({ color: 'rgba(33, 150, 243, 0.10)' }),
+      }),
+      zIndex: 9500,
+    });
+    map.addLayer(drawLayer);
+    drawLayerRef.current = drawLayer;
+
     const drawInteraction = new Draw({
       source: drawSource,
       type: 'Circle',
       condition: primaryPointerAllowShift,
+      // `freehandCondition` defaults to `shiftKeyOnly`, which would put the
+      // interaction into freehand mode the moment the user pressed Shift to
+      // request a square — the geometryFunction wouldn't be honoured and the
+      // drawn shape wouldn't end up in the source. Disable it: Shift is for
+      // the geometry function only (via shiftKeyHeldRef), never for freehand.
+      freehandCondition: never,
       geometryFunction: createSquareWhenShift(shiftKeyHeldRef),
     });
     map.addInteraction(drawInteraction);

@@ -167,6 +167,8 @@ export function SidebarContainer() {
   const [figureFormat, setFigureFormat] = React.useState<'jpg' | 'png' | 'pdf'>('pdf');
   const [figureOutputFolder, setFigureOutputFolder] = React.useState('/maps/projects/dereeco/data/gvs');
   const [figureFilenameStem, setFigureFilenameStem] = React.useState('');
+  /** Also save a high-resolution Google Satellite snapshot of the drawn area. */
+  const [includeGoogleSatellite, setIncludeGoogleSatellite] = React.useState(false);
   const lastExtentForStemRef = React.useRef<string | null>(null);
   const [selectedFigureLayerIds, setSelectedFigureLayerIds] = React.useState<string[]>([]);
   const [figureLayerOverrides, setFigureLayerOverrides] = React.useState<Record<string, FigureLayerOverrides>>({});
@@ -1039,6 +1041,7 @@ export function SidebarContainer() {
     setDrawingMode,
     selectedTiles,
     figureSelectionExtent,
+    setFigureSelectionExtent,
     inspectMode,
     setInspectMode,
     inspectKind,
@@ -1066,8 +1069,29 @@ export function SidebarContainer() {
     void handleReloadSavedFeatures();
   }, [handleReloadSavedFeatures]);
 
+  // The "located saved feature" highlight (added by handleJumpToFeature) lives
+  // at zIndex 9999 and is purely a viewing aid. When the user starts drawing a
+  // new rectangle for export, drop it — otherwise it visually overlays the
+  // fresh rectangle and gives the impression the saved geometry is what's
+  // being exported, even though the actual extent submitted comes from the
+  // new draw.
+  React.useEffect(() => {
+    if (!drawingActive || !map) return;
+    if (highlightLayerRef.current) {
+      map.removeLayer(highlightLayerRef.current);
+      highlightLayerRef.current = null;
+    }
+  }, [drawingActive, map]);
+
   const handleJumpToFeature = React.useCallback((feature: SavedFeature) => {
     if (!map) return;
+
+    // Locating a feature is view-only: it must NOT inherit the export bbox.
+    // Reset any prior drawn extent so the user is required to draw a fresh
+    // rectangle for the next export — otherwise a stale value (set by an
+    // earlier draw, possibly the one that *created* this feature) would be
+    // sent silently to /saved-features/area-images.
+    setFigureSelectionExtent(null);
 
     // Remove previous highlight
     if (highlightLayerRef.current) {
@@ -1111,7 +1135,7 @@ export function SidebarContainer() {
     } else {
       map.getView().fit(highlightSource.getExtent(), { padding: [80, 80, 80, 80], duration: 800, maxZoom: 16 });
     }
-  }, [map]);
+  }, [map, setFigureSelectionExtent]);
 
   const handleDeleteSavedFeature = React.useCallback(async (featureId: number) => {
     setDeletingSavedFeatureId(featureId);
@@ -1417,6 +1441,7 @@ export function SidebarContainer() {
           output_dir: figureOutputFolder.trim(),
           format: figureFormat,
           ...(figureFilenameStem.trim() ? { filename_stem: figureFilenameStem.trim() } : {}),
+          include_google_satellite: includeGoogleSatellite,
           layers: selectedLayers.map((layer) => {
             const ovr = figureLayerOverrides[layer.id];
             const isDiversity = layer.layerSubType === 'diversity_indices';
@@ -1491,6 +1516,7 @@ export function SidebarContainer() {
     figureFilenameStem,
     figureOutputFolder,
     figureSelectionExtent,
+    includeGoogleSatellite,
     selectedFigureLayerIds,
   ]);
 
@@ -1518,6 +1544,7 @@ export function SidebarContainer() {
           category: featureInfo.category || undefined,
           extent_3857: figureSelectionExtent,
           format: figureFormat === 'jpg' ? 'jpg' : 'png',
+          include_google_satellite: includeGoogleSatellite,
           layers: layersToUse.map((layer) => {
             const ovr = figureLayerOverrides[layer.id];
             const isDiversity = layer.layerSubType === 'diversity_indices';
@@ -1574,6 +1601,7 @@ export function SidebarContainer() {
     figureFormat,
     figureLayerOverrides,
     figureSelectionExtent,
+    includeGoogleSatellite,
     selectedFigureLayerIds,
   ]);
 
@@ -1605,6 +1633,8 @@ export function SidebarContainer() {
       figureFilenameStem={figureFilenameStem}
       onFigureFilenameStemChange={setFigureFilenameStem}
       suggestedFigureFilenameStem={suggestedFigureFilenameStem}
+      includeGoogleSatellite={includeGoogleSatellite}
+      onIncludeGoogleSatelliteChange={setIncludeGoogleSatellite}
       availableFigureLayers={exportableFigureLayers.map(({ id, name, bandNames, colormap, rescaleMin, rescaleMax, selectedBand }) => ({ id, name, bandNames, defaultColormap: colormap, defaultRescaleMin: rescaleMin, defaultRescaleMax: rescaleMax, defaultSelectedBand: selectedBand }))}
       selectedFigureLayerIds={selectedFigureLayerIds}
       onToggleFigureLayer={handleToggleFigureLayer}

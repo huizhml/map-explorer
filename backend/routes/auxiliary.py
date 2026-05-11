@@ -255,6 +255,12 @@ class SaveFiguresRequest(BaseModel):
         None,
         description="Optional base filename stem; auto layer+location naming when omitted.",
     )
+    # Optional Google Satellite HD snapshot of the same drawing area. 8192 px
+    # ≈ one extra zoom level vs. the transect figure's 4096 default, trading
+    # bandwidth for sharper detail since saved exports are typically used at
+    # full resolution.
+    include_google_satellite: bool = False
+    google_satellite_max_width_px: int =4096 # 8192
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +734,48 @@ async def save_figures(request: SaveFiguresRequest):
                     saved_files.append(path)
         except Exception as e:
             errors.append({"layer_id": layer.layer_id, "name": layer.name, "error": str(e)})
+
+    # Optionally save a high-resolution Google Satellite snapshot of the same
+    # drawing area alongside the per-layer figures.
+    if request.include_google_satellite:
+        try:
+            from routes.saved_features import _stitch_bbox_satellite, _burn_scale_bar  # noqa: WPS433
+            sat_bytes, sat_meta = _stitch_bbox_satellite(
+                float(wgs_bounds[0]),
+                float(wgs_bounds[2]),
+                float(wgs_bounds[1]),
+                float(wgs_bounds[3]),
+                buffer_m=0.0,
+                max_width_px=int(request.google_satellite_max_width_px),
+            )
+            if sat_bytes is None:
+                errors.append({
+                    "layer_id": "_google_satellite",
+                    "name": "Google Satellite",
+                    "error": "Tile fetch failed (no provider returned imagery)",
+                })
+            else:
+                # Burn a metric scale bar into the lower-left corner so the
+                # exported HD satellite image is self-describing.
+                try:
+                    sat_bytes = _burn_scale_bar(sat_bytes, sat_meta)
+                except Exception:
+                    pass  # Scale bar is decorative; never block the export.
+                stem = (request.filename_stem or "").strip()
+                sat_name = (
+                    f"{_sanitize_name(stem)}_google_satellite.png"
+                    if stem
+                    else f"google_satellite_{_sanitize_name(loc_tag)}.png"
+                )
+                sat_path = output_dir / sat_name
+                sat_path.write_bytes(sat_bytes)
+                saved_files.append(str(sat_path))
+        except Exception as e:
+            errors.append({
+                "layer_id": "_google_satellite",
+                "name": "Google Satellite",
+                "error": str(e),
+            })
 
     return {
         "success": len(saved_files) > 0,
