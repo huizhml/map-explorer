@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, Paper, Typography } from '@mui/material';
 import type { Layer } from './LayerControl';
+import { COLORMAP_GRADIENTS } from '../constants/colormaps';
 
 type ColorbarGroup = {
   key: string;
@@ -9,13 +10,6 @@ type ColorbarGroup = {
   max: number;
   layerNames: string[];
   topZIndex: number;
-};
-
-const COLORMAP_GRADIENTS: Record<string, string[]> = {
-  inferno: ['#000004', '#420a68', '#932667', '#dd513a', '#fba40a', '#fcffa4'],
-  greens: ['#f7fcf5', '#d9f0d3', '#a6dba0', '#5aae61', '#1b7837', '#00441b'],
-  ylgn_r: ['#004529', '#238443', '#78c679', '#c2e699', '#ffffcc'],
-  rdbu: ['#67001f', '#d6604d', '#f7f7f7', '#4393c3', '#053061'],
 };
 
 function getGradient(colormap: string): string {

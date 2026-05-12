@@ -83,7 +83,9 @@ async def _compute_cr(tile_id: str, year: int, version: str = "original") -> Pat
     ]
     translate_cmd = [
         "gdal_translate", str(path_cr), str(path_cr_cog),
-        "-of", "COG", "-co", "COMPRESS=DEFLATE", "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+        "-of", "COG",
+        "-a_nodata", "-9999",  # Ensure the nodata tag survives the COG conversion.
+        "-co", "COMPRESS=DEFLATE", "-co", "OVERVIEW_RESAMPLING=AVERAGE",
     ]
 
     loop = asyncio.get_event_loop()
@@ -120,6 +122,41 @@ async def _compute_entropy(tile_id: str, year: int, version: str = "original"):
                 )
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Invalid PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE: {e}")
+
+        # The VRT is a build artifact; create it on demand from the per-tile
+        # COG directory (e.g. .../{version}/tiles/cog/{tile}/RH*_Q1.tif) if it
+        # doesn't already exist. Without this, the `masked` version — which
+        # ships COGs but no pre-built VRT — fails with "No such file".
+        if vrt_path and not Path(vrt_path).expanduser().exists():
+            if not PREDICTIONS_LOCAL_PATH:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"VRT not found and PREDICTIONS_LOCAL_PATH is unset: {vrt_path}",
+                )
+            try:
+                tile_dir = Path(
+                    PREDICTIONS_LOCAL_PATH.format(version=version, tile=tile_id, rh=98, q=1, year=year)
+                ).parent
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Invalid PREDICTIONS_LOCAL_PATH: {e}")
+            if not tile_dir.is_dir():
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Prediction tile directory not found: {tile_dir}",
+                )
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda: utils.create_vrt(str(tile_dir), vrt_path, q_idx="1"),
+                )
+            except AssertionError as e:
+                # create_vrt asserts on file count (expects 100 RH bands).
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Cannot build VRT for {tile_id} ({version}): {e}",
+                )
+
         utils.compute_entropy(
             output_path=output_gtiff_path,
             tile_id=tile_id,
@@ -129,7 +166,9 @@ async def _compute_entropy(tile_id: str, year: int, version: str = "original"):
 
     translate_cmd = [
         "gdal_translate", str(output_gtiff_path), str(output_cog_path),
-        "-of", "COG", "-co", "COMPRESS=ZSTD", "-co", "OVERVIEW_RESAMPLING=AVERAGE",
+        "-of", "COG",
+        "-a_nodata", "-9999",  # Ensure the nodata tag survives the COG conversion.
+        "-co", "COMPRESS=ZSTD", "-co", "OVERVIEW_RESAMPLING=AVERAGE",
     ]
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, lambda: subprocess.run(translate_cmd, capture_output=True, text=True))
@@ -564,7 +603,7 @@ async def save_figures(request: SaveFiguresRequest):
         "spectral": "Spectral", "rdbu": "RdBu", "greys": "Greys",
         "blues": "Blues", "reds": "Reds", "oranges": "Oranges",
         "ylgn_r": "YlGn_r", "ylgnbu_r": "YlGnBu_r", "gnbu_r": "GnBu_r",
-        "bugn_r": "BuGn_r", "pubu_r": "PuBu_r", "rdylgn_r": "RdYlGn_r",
+        "bugn_r": "BuGn_r", "pubu_r": "PuBu_r", "rdylgn_r": "RdYlGn_r", 'rdgy': 'RdGy',
         "spectral_r": "Spectral_r", "rdbu_r": "RdBu_r",
     }
 

@@ -46,20 +46,30 @@ const parseCoordinates = (input: string): { lat: number; lon: number } | null =>
 };
 
 // Get coordinates from tile name
-const getTileCoordinates = async (tileName: string): Promise<{ lon: number; lat: number } | null> => {
+const getTileCoordinates = async (
+  tileName: string
+): Promise<{ lon: number; lat: number } | { error: string }> => {
   try {
     // Call backend to get tile coordinates
     const response = await fetch(apiUrl(`/sentinel2/tile-coordinates/${tileName.toUpperCase()}`));
-    console.log('Response:', response);
     if (!response.ok) {
-      throw new Error('Tile not found');
+      return { error: `Request failed (HTTP ${response.status})` };
     }
     const data = await response.json();
-    console.log('Data:', data);
-    return { lon: data.longitude, lat: data.latitude };
-  } catch (error) {
+    // Backend returns { error: "..." } with HTTP 200 on lookup failures / STAC timeouts,
+    // so we must check the body, not just response.ok.
+    if (data && typeof data.error === 'string') {
+      return { error: data.error };
+    }
+    const lon = Number(data?.longitude);
+    const lat = Number(data?.latitude);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+      return { error: 'Backend returned invalid coordinates' };
+    }
+    return { lon, lat };
+  } catch (error: any) {
     console.error('Error fetching tile coordinates:', error);
-    return null;
+    return { error: error?.message || 'Network error' };
   }
 };
 
@@ -114,13 +124,16 @@ export function TileSearch({ map }: TileSearchProps) {
         }
       } else {
         // Try as tile name
-        coords = await getTileCoordinates(input);
-        if (!coords) {
-          setError('Not found. Try:\n• Tile name (e.g., 32TMS, 33UUP)\n• Coordinates (e.g., 40.7128, -74.0060)');
+        const result = await getTileCoordinates(input);
+        if ('error' in result) {
+          setError(
+            `${result.error}\n\nTry:\n• Tile name (e.g., 32TMS, 33UUP)\n• Coordinates (e.g., 40.7128, -74.0060)`
+          );
           return;
         }
+        coords = result;
       }
-      
+
       if (coords) {
         // Navigate to location
         const center = fromLonLat([coords.lon, coords.lat]);
@@ -219,7 +232,7 @@ export function TileSearch({ map }: TileSearchProps) {
             backgroundColor: '#ffebee',
           }}
         >
-          <Typography variant="caption" color="error">
+          <Typography variant="caption" color="error" sx={{ whiteSpace: 'pre-line' }}>
             {error}
           </Typography>
         </Paper>

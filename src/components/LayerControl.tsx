@@ -44,6 +44,7 @@ import {
 } from '@mui/icons-material';
 import { useMapStore, type ConditionalStyle } from '../stores/mapStore';
 import { PALETTES, type PaletteName } from '../constants/palettes';
+import { COLORMAPS } from '../constants/colormaps';
 import { getDefaultRescaleForRh } from '../constants/predictions';
 import {
   DIVERSITY_INDICES_BAND_NAMES,
@@ -86,12 +87,6 @@ function normalizeDiversityBandNames(bandNames?: string[]): string[] {
   if (bandNames.length === 3) return [...bandNames, 'CR'];
   return bandNames;
 }
-
-const COLORMAPS = [
-  'greens', 'viridis', 'inferno', 'magma', 'plasma', 'cividis',
-  'ylgn', 'ylgnbu', 'gnbu', 'bugn', 'pubu', 'rdylgn',
-  'spectral', 'rdbu', 'RdBu', 'greys', 'blues', 'reds', 'oranges', 'ylgn_r',
-];
 
 function DiversityIndicesStylePanel({ layer, onChangeOpacity, onChangeDiversityBandConfig }: {
   layer: Layer;

@@ -261,7 +261,14 @@ def compute_entropy(output_path: Path=None, tile_id:str=None, year:int=None, vrt
                 for fut in as_completed(futures):
                     ent, enl1d, enl2d, cr, col_off, row_off, w, h = fut.result()
                     win = Window(col_off, row_off, w, h)
-                    dst.write(np.stack([ent, enl1d, enl2d, cr], axis=0), window=win)
+                    # _chunk_diversity uses NaN as the in-memory nodata sentinel;
+                    # swap to NODATA_OUT at the I/O boundary so the pixels on
+                    # disk match the file's declared `nodata` tag (otherwise
+                    # tilers see "nodata=-9999" but find NaN pixels and render
+                    # them as the bottom of the color ramp).
+                    stack = np.stack([ent, enl1d, enl2d, cr], axis=0)
+                    stack = np.where(np.isfinite(stack), stack, NODATA_OUT).astype(np.float32)
+                    dst.write(stack, window=win)
                     monitor.tick()
         finally:
             dst.set_band_description(1, "fhd")

@@ -55,6 +55,7 @@ import type { SavedFeature } from '../services/savedFeaturesApi';
 import { SavedFeaturePlots } from './SavedFeaturePlots';
 import { useMapStore } from '../stores/mapStore';
 import { DIVERSITY_HEIGHT_BIN_OPTIONS } from '../constants/diversityMetrics';
+import { COLORMAPS } from '../constants/colormaps';
 import { EarthEngineLayerSection } from '../containers/EarthEngineLayerSection';
 
 export interface VsmLayerEntryDisplay {
@@ -1876,9 +1877,7 @@ export function Sidebar({
                                     sx={{ backgroundColor: ui.fieldBg, color: ui.fieldText }}
                                   >
                                     <MenuItem value=""><em>Default</em></MenuItem>
-                                    {['viridis','inferno','magma','plasma','cividis','greens','blues','reds','greys',
-                                      'ylgn','ylgnbu','gnbu','bugn','pubu','rdylgn','spectral','rdbu','oranges',
-                                      'ylgn_r','spectral_r','rdbu_r'].map((cm) => (
+                                    {COLORMAPS.map((cm) => (
                                       <MenuItem key={cm} value={cm}>{cm}</MenuItem>
                                     ))}
                                   </Select>

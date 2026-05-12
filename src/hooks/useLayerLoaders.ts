@@ -37,6 +37,10 @@ export function buildDiversityTileUrl(cogUrl: string, config: DiversityBandConfi
   const params = new URLSearchParams();
   params.set('url', cogUrl);
   params.set('return_mask', 'true');
+  // The diversity-indices COG is written with -9999 as nodata (see
+  // backend/utils.py NODATA_OUT), but gdal_translate -of COG doesn't always
+  // preserve the nodata tag; pass it explicitly so titiler masks those pixels.
+  params.set('nodata', '-9999');
 
   if (config.bandMode === 'grayscale') {
     const band = config.selectedBand ?? 1;
@@ -286,7 +290,10 @@ export function useLayerLoaders(updateLayersList: () => void) {
       const colormapMap: Record<string, string> = { cr: 'rdbu', als: 'inferno', profile_entropy: 'greens' };
       const colormap = colormapMap[data.layer_type];
       const colormapParam = colormap ? `&colormap_name=${colormap}` : '';
-      const nodataParam = data.layer_type === 'als' ? '&nodata=255' : '';
+      // CR and profile_entropy COGs are written with -9999 nodata; ALS uses 255.
+      const nodataValueByType: Record<string, string> = { als: '255', cr: '-9999', profile_entropy: '-9999' };
+      const nodataValue = nodataValueByType[data.layer_type];
+      const nodataParam = nodataValue ? `&nodata=${nodataValue}` : '';
       const tileUrl = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=${rescale}${nodataParam}${colormapParam}`);
 
       const layerOpts: any = {
