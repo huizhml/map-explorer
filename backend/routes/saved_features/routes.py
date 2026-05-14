@@ -17,12 +17,14 @@ from .config import IMAGE_ROOT
 from .db import (
     FEATURE_COLUMNS,
     compute_feature_key,
+    compute_geom_uid,
     db_connect,
     row_to_feature,
     upsert_feature,
     validate_geometry,
 )
 from .models import (
+    GeometryLookupRequest,
     RefreshPredictionSnapshotRequest,
     SaveAreaImagesRequest,
     SavedFeatureCreateRequest,
@@ -42,6 +44,7 @@ from .utils import (
     existing_image_exports,
     image_url_for,
     new_session_dir,
+    normalize_tags,
     sanitize_name,
     unlink_export_file,
     upsert_image_export,
@@ -65,6 +68,66 @@ async def list_saved_features() -> Dict[str, Any]:
     return {"features": [row_to_feature(row) for row in rows]}
 
 
+@router.get("/saved-features/tags")
+async def list_saved_feature_tags() -> Dict[str, Any]:
+    """All distinct tags across saved features, case-insensitive.
+
+    First-seen casing wins (matching the normalizer's behaviour per-feature),
+    so a tag originally saved as "Forest" stays "Forest" even if a later
+    feature uses "forest". Frontend uses this for the tag autocomplete.
+    """
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT metadata_json FROM saved_features "
+            "WHERE metadata_json IS NOT NULL AND metadata_json != '' "
+            "ORDER BY id ASC"
+        ).fetchall()
+    seen: Dict[str, str] = {}
+    for row in rows:
+        try:
+            meta = json.loads(row["metadata_json"]) if row["metadata_json"] else None
+        except Exception:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        tags = meta.get("tags")
+        if not isinstance(tags, list):
+            continue
+        for raw in tags:
+            text = str(raw).strip() if raw is not None else ""
+            if not text:
+                continue
+            key = text.casefold()
+            if key not in seen:
+                seen[key] = text
+    return {"tags": sorted(seen.values(), key=lambda s: s.casefold())}
+
+
+@router.post("/saved-features/lookup-by-geometry")
+async def lookup_saved_feature_by_geometry(
+    payload: GeometryLookupRequest,
+) -> Dict[str, Any]:
+    """Return the most-recent saved feature with the same `geom_uid`, if any.
+
+    The save dialog calls this on open to prefill name / category / description
+    / tags so the user doesn't have to re-type them when revisiting an area.
+    Always returns 200; `feature` is null when no match exists.
+    """
+    geometry_dict = payload.geometry.model_dump()
+    validate_geometry(geometry_dict)
+    geom_uid = compute_geom_uid(geometry_dict)
+    with db_connect() as conn:
+        row = conn.execute(
+            f"SELECT {FEATURE_COLUMNS} FROM saved_features "
+            f"WHERE geom_uid = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (geom_uid,),
+        ).fetchone()
+    return {
+        "geom_uid": geom_uid,
+        "feature": row_to_feature(row) if row is not None else None,
+    }
+
+
 @router.post("/saved-features")
 async def create_saved_feature(payload: SavedFeatureCreateRequest) -> Dict[str, Any]:
     geometry_dict = payload.geometry.model_dump()
@@ -78,6 +141,14 @@ async def create_saved_feature(payload: SavedFeatureCreateRequest) -> Dict[str, 
 
     metadata_payload: Dict[str, Any] = dict(payload.metadata or {})
     plot_data_payload: Dict[str, Any] = dict(payload.plot_data or {})
+
+    # Tags live inside metadata so they stay with the feature without a schema
+    # change; explicit `tags` on the request overrides any tags already in
+    # `metadata.tags` (the dialog always sends the latest).
+    if payload.tags is not None:
+        metadata_payload["tags"] = normalize_tags(payload.tags)
+    elif "tags" in metadata_payload:
+        metadata_payload["tags"] = normalize_tags(metadata_payload.get("tags"))
 
     # For saved popup points, attempt 75 m exports (satellite + RH98 + Sentinel-2).
     if geometry_dict["type"] == "Point" and metadata_payload.get("source") == "feature_popup":
@@ -309,6 +380,10 @@ async def create_area_images_feature(payload: SaveAreaImagesRequest) -> Dict[str
         "image_session_dir": session_dir_name,
         "errors": render_errors,
     }
+    if payload.tags:
+        cleaned = normalize_tags(payload.tags)
+        if cleaned:
+            metadata["tags"] = cleaned
     plot_data = {
         "image_exports": image_exports,
         "extent_3857": payload.extent_3857,
@@ -384,12 +459,7 @@ async def update_saved_feature(
         params.append(description)
 
     if payload.tags is not None:
-        clean_tags: List[str] = []
-        for tag in payload.tags:
-            t = str(tag).strip()
-            if t:
-                clean_tags.append(t[:60])
-        clean_tags = list(dict.fromkeys(clean_tags))[:30]
+        clean_tags = normalize_tags(payload.tags)
 
         with db_connect() as conn:
             row = conn.execute(

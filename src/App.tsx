@@ -14,8 +14,12 @@ import { LayerManager } from './utils/LayerManager';
 import { useMapStore } from './stores/mapStore';
 import { InspectPanel } from './components/InspectPanel';
 import { SavedGediPointsList } from './components/SavedGediPointsList';
-import { SavedFeatureDialog } from './components/SavedFeatureDialog';
-import { createSavedFeature } from './services/savedFeaturesApi';
+import { SavedFeatureDialog, type SavedFeatureDialogPrefill } from './components/SavedFeatureDialog';
+import {
+  createSavedFeature,
+  listSavedFeatureTags,
+  lookupSavedFeatureByGeometry,
+} from './services/savedFeaturesApi';
 
 import { useLayerLoaders } from './hooks/useLayerLoaders';
 import { useAutoLoadVSM } from './hooks/useAutoLoadVSM';
@@ -34,11 +38,50 @@ function App() {
   const [saveFeatureError, setSaveFeatureError] = React.useState<string | null>(null);
   const [saveSuccessOpen, setSaveSuccessOpen] = React.useState(false);
   const [saveSuccessName, setSaveSuccessName] = React.useState('');
+  const [existingTags, setExistingTags] = React.useState<string[]>([]);
+  const [dialogPrefill, setDialogPrefill] = React.useState<SavedFeatureDialogPrefill | null>(null);
 
   useEffect(() => {
     if (featureDraft) {
       setSaveFeatureError(null);
+    } else {
+      // Closing the dialog discards any prefill — the next save starts fresh.
+      setDialogPrefill(null);
     }
+  }, [featureDraft]);
+
+  // Look up an existing save of the same geometry and refresh the tag-suggestion
+  // list each time the dialog is about to open. Best-effort: if either request
+  // fails the dialog still opens empty.
+  useEffect(() => {
+    if (!featureDraft) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [lookup, tags] = await Promise.all([
+          lookupSavedFeatureByGeometry(featureDraft.geometry),
+          listSavedFeatureTags(),
+        ]);
+        if (cancelled) return;
+        setExistingTags(tags);
+        if (lookup.feature) {
+          const existing = lookup.feature;
+          setDialogPrefill({
+            name: existing.name,
+            description: existing.description ?? '',
+            category: existing.category ?? '',
+            tags: Array.isArray(existing.metadata?.tags) ? existing.metadata!.tags : [],
+            fromExistingId: existing.id,
+          });
+        } else {
+          setDialogPrefill(null);
+        }
+      } catch {
+        // Network / 5xx: leave dialog empty rather than blocking the save.
+        if (!cancelled) setDialogPrefill(null);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [featureDraft]);
 
   // Initialize layer manager
@@ -136,7 +179,7 @@ function App() {
     setFeatureCaptureType(null);
   }, [setFeatureDraft, setFeatureCaptureType]);
 
-  const handleSaveFeatureDraft = useCallback(async (payload: { name: string; description: string; category: string }) => {
+  const handleSaveFeatureDraft = useCallback(async (payload: { name: string; description: string; category: string; tags: string[] }) => {
     if (!featureDraft) return;
     setSaveFeatureError(null);
     setSavingFeature(true);
@@ -145,6 +188,7 @@ function App() {
         name: payload.name,
         category: payload.category || undefined,
         description: payload.description || undefined,
+        tags: payload.tags.length > 0 ? payload.tags : undefined,
         geometry: featureDraft.geometry,
         metadata: featureDraft.metadata,
         plot_data: featureDraft.plot_data,
@@ -310,6 +354,8 @@ function App() {
           saving={savingFeature}
           error={saveFeatureError}
           existingCategories={existingCategories}
+          existingTags={existingTags}
+          prefill={dialogPrefill}
           onCancel={handleCancelFeatureDraft}
           onSubmit={handleSaveFeatureDraft}
         />

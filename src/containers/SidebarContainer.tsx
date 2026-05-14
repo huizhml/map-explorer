@@ -22,7 +22,16 @@ import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore
 import { parseUploadedFile } from '../utils/parseUploadedFile';
 import { API_BASE_URL, apiUrl } from '../utils/apiBase';
 import { getDiversityBandRange } from '../constants/layerRanges';
-import { listSavedFeatures, deleteSavedFeature, updateSavedFeature, refreshPredictionSnapshot, type SavedFeature } from '../services/savedFeaturesApi';
+import {
+  listSavedFeatures,
+  listSavedFeatureTags,
+  lookupSavedFeatureByGeometry,
+  deleteSavedFeature,
+  updateSavedFeature,
+  refreshPredictionSnapshot,
+  type SavedFeature,
+} from '../services/savedFeaturesApi';
+import type { SavedFeatureDialogPrefill } from '../components/SavedFeatureDialog';
 import { defaultFigureFilenameStem } from '../utils/figureFilenameStem';
 
 const max = 500;
@@ -1072,6 +1081,61 @@ export function SidebarContainer() {
     }
   }, [setSavedMapFeatures]);
 
+  // Tag autocomplete for the save dialogs. Refreshed on mount, after each
+  // save (via `setSavedMapFeatures` watcher below), and when the user opens
+  // the area-image save dialog.
+  const [savedFeatureTags, setSavedFeatureTags] = React.useState<string[]>([]);
+  const refreshTagList = React.useCallback(async () => {
+    try {
+      const tags = await listSavedFeatureTags();
+      setSavedFeatureTags(tags);
+    } catch {
+      // Suggestions are nice-to-have; never block saving on a failed fetch.
+    }
+  }, []);
+  React.useEffect(() => { refreshTagList(); }, [refreshTagList]);
+  // Keep suggestions in sync when the saved-features list changes (covers
+  // create / update / delete from any path without coupling to each handler).
+  React.useEffect(() => { refreshTagList(); }, [savedMapFeatures, refreshTagList]);
+
+  // Prefill for the area-image save dialog, computed when the user opens it.
+  const [areaImagePrefill, setAreaImagePrefill] = React.useState<SavedFeatureDialogPrefill | null>(null);
+  const handlePrepareAreaImageSave = React.useCallback(async () => {
+    setAreaImagePrefill(null);
+    refreshTagList();
+    if (!figureSelectionExtent || figureSelectionExtent.length !== 4) return;
+    // Build the same WGS84 polygon ring that the backend constructs from
+    // `extent_3857`, so the lookup hash matches a previous save of the same
+    // rectangle (see `create_area_images_feature` in routes.py).
+    const [xmin, ymin, xmax, ymax] = figureSelectionExtent as [number, number, number, number];
+    const wgs = transformExtent([xmin, ymin, xmax, ymax], 'EPSG:3857', 'EPSG:4326');
+    const ring: [number, number][] = [
+      [wgs[0], wgs[1]],
+      [wgs[2], wgs[1]],
+      [wgs[2], wgs[3]],
+      [wgs[0], wgs[3]],
+      [wgs[0], wgs[1]],
+    ];
+    try {
+      const lookup = await lookupSavedFeatureByGeometry({
+        type: 'Polygon',
+        coordinates: [ring],
+      });
+      if (lookup.feature) {
+        const existing = lookup.feature;
+        setAreaImagePrefill({
+          name: existing.name,
+          description: existing.description ?? '',
+          category: existing.category ?? '',
+          tags: Array.isArray(existing.metadata?.tags) ? existing.metadata!.tags : [],
+          fromExistingId: existing.id,
+        });
+      }
+    } catch {
+      // Best-effort: keep prefill null on failure so the dialog still opens.
+    }
+  }, [figureSelectionExtent, refreshTagList]);
+
   React.useEffect(() => {
     void handleReloadSavedFeatures();
   }, [handleReloadSavedFeatures]);
@@ -1625,7 +1689,7 @@ export function SidebarContainer() {
     selectedFigureLayerIds,
   ]);
 
-  const handleSaveFiguresToDb = React.useCallback(async (featureInfo: { name: string; description: string; category: string }) => {
+  const handleSaveFiguresToDb = React.useCallback(async (featureInfo: { name: string; description: string; category: string; tags: string[] }) => {
     setFiguresToDbError(null);
     setFiguresToDbMessage(null);
     if (!figureSelectionExtent) {
@@ -1647,6 +1711,7 @@ export function SidebarContainer() {
           name: featureInfo.name,
           description: featureInfo.description || undefined,
           category: featureInfo.category || undefined,
+          tags: featureInfo.tags.length > 0 ? featureInfo.tags : undefined,
           extent_3857: figureSelectionExtent,
           format: figureFormat === 'jpg' ? 'jpg' : 'png',
           include_google_satellite: includeGoogleSatellite,
@@ -1729,6 +1794,9 @@ export function SidebarContainer() {
       savingFiguresToDb={savingFiguresToDb}
       figuresToDbMessage={figuresToDbMessage}
       figuresToDbError={figuresToDbError}
+      savedFeatureTags={savedFeatureTags}
+      areaImagePrefill={areaImagePrefill}
+      onPrepareAreaImageSave={handlePrepareAreaImageSave}
       selectedTiles={selectedTiles}
       figureSelectionReady={!!figureSelectionExtent}
       figureFormat={figureFormat}

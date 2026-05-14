@@ -14,6 +14,7 @@ import numpy as np
 import requests
 from fastapi import HTTPException
 
+from .config import JRC_TMF_CLASSES
 from .models import TransectFigureRequest
 from .satellite import _stitch_bbox_eox_s2cloudless, _stitch_bbox_satellite
 
@@ -110,7 +111,6 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap
     from matplotlib.ticker import FuncFormatter, MaxNLocator
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
 
     samples = req.samples
     if len(samples) < 2:
@@ -119,7 +119,37 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     lons = np.array([s.lon for s in samples], dtype=float)
     lats = np.array([s.lat for s in samples], dtype=float)
     x_vals = lons if req.x_axis == "lon" else lats
-    x_label = "Longitude" if req.x_axis == "lon" else "Latitude"
+
+    # Tick label formatters: signed decimal degrees rendered with a cardinal
+    # hemisphere suffix (e.g. `12.345°N`, `75.120°W`) so the labels are
+    # self-identifying — no separate "Longitude"/"Latitude" axis label needed.
+    def _fmt_lat(v: float, _pos=None) -> str:
+        if v == 0:
+            return "0.00°"
+        return f"{abs(v):.2f}°{'N' if v > 0 else 'S'}"
+
+    def _fmt_lon(v: float, _pos=None) -> str:
+        if v == 0:
+            return "0.00°"
+        return f"{abs(v):.2f}°{'E' if v > 0 else 'W'}"
+
+    # Shared source-label style used by every panel (satellite, JRC TMF,
+    # heatmap, metrics). One helper so the look is identical and tweaks
+    # (e.g. the user-requested grey edge) only need to be made in one place.
+    # Always pinned to the top-right corner with a small gap below the plot
+    # top so the bbox doesn't kiss the spine.
+    def _source_badge(ax_obj, text: str) -> None:
+        ax_obj.text(
+            0.99, 0.92, text,
+            transform=ax_obj.transAxes, ha="right", va="top",
+            fontsize=max(5, req.font_size - 4),
+            color="#222",
+            bbox=dict(
+                facecolor="white", alpha=0.7,
+                edgecolor="#888", linewidth=0.6, pad=3.0,
+            ),
+            zorder=6,
+        )
 
     # JRC TMF 1D strip glued to the top of the heatmap — same plotting-rect
     # width and x-axis, so the user can read forest class transitions directly
@@ -145,9 +175,10 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         height_ratios.append(EE_STRIP_HEIGHT_PX)
         panels.append("heatmap")
         height_ratios.append(req.heatmap_height_px)
-    # Merged metrics panel — FHD/1D ENL/2D ENL share the left y-axis; CR uses
-    # a twinx right y-axis when it's selected alongside any of the others, or
-    # the primary axis when it's the only selected metric.
+    # Merged metrics panel — FHD / 1D ENL / 2D ENL / CR.  By default all four
+    # share the left y-axis (integer ticks) so trends can be compared directly;
+    # set `cr_own_yaxis=True` to give CR its own twin right y-axis (0..1.1) when
+    # it's plotted alongside any of the others.
     show_any_metric = req.show_fhd or req.show_enl1d or req.show_enl2d or req.show_cr
     if show_any_metric:
         panels.append("metrics")
@@ -169,10 +200,19 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     # Margins in font-size-relative inches (DPI-independent).
     font_in = req.font_size / 72.0          # 1 em in inches
     left_in  = font_in * 10.0              # rotated ylabel + tick nums + padding
-    right_in = font_in * 4.5              # colorbar label + pad
+    # Right margin is plain whitespace now — the heatmap colorbar lives in the
+    # bottom legend strip rather than to the right of the panel, so no special
+    # reservation is needed here.
+    right_in = font_in * 1.0
     top_in   = font_in * 1.0
     bot_in   = font_in * 0.5
     hsp_in   = font_in * 0.8              # gap between subplots (in inches)
+    # NOTE on the heatmap's JRC TMF strip: it's glued flush to the heatmap's
+    # top by the post-layout step at the bottom of this function (so it reads
+    # as the heatmap's header band), and panels above the strip are shifted
+    # down by exactly the original strip↔heatmap gridspec gap — that way every
+    # remaining inter-panel gap (satellite↔JRC, JRC↔strip, heatmap↔metrics)
+    # stays equal to a single `hspace`. No extra floor on `hsp_in` is needed.
 
     left_frac  = max(0.06, min(0.28, left_in  / fig_w_in))
     right_frac = max(0.04, min(0.18, right_in / fig_w_in))
@@ -280,7 +320,7 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     fig_h_in = total_h_px / LAYOUT_DPI
     avg_panel_h_in = fig_h_in / max(1, len(panels))
 
-    # Axis labels (Latitude / Height (m) / ENL/FHD / CR / Longitude) use the
+    # The remaining axis label ("Height (m)" on the heatmap) uses the
     # user-requested font size. Tick numerals on every axis (and the colorbar)
     # are 2 pt smaller so they sit visually subordinate to the labels.
     _tick_fs = max(6, req.font_size - 2)
@@ -308,15 +348,10 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         hspace = max(0.03, min(0.40, hsp_in / avg_panel_h_in)),
     )
 
-    # Reserve a colorbar-sized gutter on every panel so the heatmap's plotting
-    # rectangle (x-axis) lines up exactly with map / ENL/FHD / CR panels.
-    # Only the heatmap renders into its gutter; the others stay invisible.
-    cbar_gutters = []
-    for ax_obj in axes:
-        divider = make_axes_locatable(ax_obj)
-        cax = divider.append_axes("right", size="2%", pad=0.05)
-        cax.set_visible(False)
-        cbar_gutters.append(cax)
+    # Colorbar gutter is reserved in the figure's right margin (above), so
+    # every panel's plot rectangle ends at the same x — no per-panel divider
+    # needed. The heatmap's colorbar is placed manually via `fig.add_axes`
+    # after layout (see the heatmap panel below).
 
     # Colormap matching the frontend hsl-based ramp (blue → orange).
     n_steps = 256
@@ -378,8 +413,13 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
                 interpolation=interpolation,
             )
             ax.plot(lons, lats, color="#ff5252", linewidth=1.0)
-            ax.set_ylabel("Lat.")
             ax.set_ylim(extent_lat[0], extent_lat[1])
+            # Latitude axis — single mid-range tick (user-requested) with the
+            # N/S-suffixed formatter. `FixedLocator`-style via `set_yticks` so
+            # we get exactly one tick regardless of the data span (MaxNLocator
+            # would still float between 0 and 2 ticks depending on the range).
+            ax.yaxis.set_major_formatter(FuncFormatter(_fmt_lat))
+            ax.set_yticks([(extent_lat[0] + extent_lat[1]) / 2.0])
         else:
             ax.imshow(
                 np.transpose(arr, (1, 0, 2))[::-1],
@@ -389,10 +429,10 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
                 interpolation=interpolation,
             )
             ax.plot(lats, lons, color="#ff5252", linewidth=1.0)
-            ax.set_ylabel("Lon.")
             ax.set_ylim(extent_lon[0], extent_lon[1])
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.3f}"))
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=2, prune="both"))
+            # Longitude axis — user-requested 2 ticks total with E/W suffixes.
+            ax.yaxis.set_major_formatter(FuncFormatter(_fmt_lon))
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=2, prune="both"))
 
     # ---- map panel ------------------------------------------------------
     if "map" in panels:
@@ -450,17 +490,10 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
                 path_effects=halo, zorder=6,
             )
 
-            # Source label (lower-right corner) — matches the JRC strip footer
-            # style so EOX vs. Google snapshots are self-identifying in exports.
+            # Source label (lower-right corner) — uses the shared badge style
+            # so EOX vs. Google snapshots are self-identifying in exports.
             if sat_source_label:
-                ax.text(
-                    0.99, 0.04, sat_source_label,
-                    transform=ax.transAxes, ha="right", va="bottom",
-                    fontsize=max(5, req.font_size - 4),
-                    color="#222",
-                    bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", pad=1.2),
-                    zorder=6,
-                )
+                _source_badge(ax, sat_source_label)
         else:
             unavailable_label = (
                 f"{sat_source_label} unavailable"
@@ -475,15 +508,9 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         ax = axes[panels.index("ee_annualchanges")]
         if ee_arr is not None and ee_meta is not None:
             _draw_imshow_panel(ax, ee_arr, ee_meta, "nearest")  # preserve sharp class boundaries
-            # Tiny corner annotation so the reader knows what they're looking at
-            # (axis title would crowd into the panel above; do a small footer).
-            ax.text(
-                0.99, 0.04, "JRC TMF AnnualChanges · Dec 2020",
-                transform=ax.transAxes, ha="right", va="bottom",
-                fontsize=max(6, req.font_size - 4),
-                color="#222",
-                bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", pad=1.2),
-            )
+            # Footer annotation so the reader knows what they're looking at
+            # (an axis title would crowd into the panel above).
+            _source_badge(ax, "JRC TMF AnnualChanges · Dec 2020")
         else:
             ax.text(
                 0.5, 0.5,
@@ -558,6 +585,12 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # No ylabel — the strip reads as the heatmap's header band; the JRC
         # palette is documented in the surrounding figure caption / legend.
 
+    # Hoisted from the heatmap panel so the bottom legend strip (below) can
+    # build the now-horizontal colorbar after every panel position has settled.
+    heatmap_mesh = None
+    heatmap_z_min = 0.0
+    heatmap_z_max = 1.0
+
     # ---- heatmap panel --------------------------------------------------
     if "heatmap" in panels:
         ax = axes[panels.index("heatmap")]
@@ -600,21 +633,32 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             rasterized=True,
         )
         ax.set_facecolor("#fafafa")
-        ax.set_ylabel("Height (m)")
+        # ax.set_ylabel("Height (m)")
         ax.set_ylim(0, max_h)
         ax.grid(False)
-        # Use the pre-reserved gutter so the heatmap's plot rectangle keeps
-        # the same width as the other panels.
-        cax = cbar_gutters[panels.index("heatmap")]
-        cax.set_visible(True)
-        cbar = fig.colorbar(mesh, cax=cax)
-        cbar.set_label("Energy (%)")
+        # Sparse y-ticks so the heatmap reads as a strip; default ~6 ticks is
+        # noisy at typical export sizes. Lock to exactly 3 ticks at the bottom,
+        # mid-height, and top of the panel — `MaxNLocator(nbins=2)` previously
+        # used here is only an *upper bound* and can still surface 4+ ticks
+        # when it finds nicer round values in the data span.
+        ax.set_yticks([0.0, max_h / 2.0, max_h])
+        ax.set_yticklabels(['0m',f'{max_h / 2.0:.0f}m',f'{max_h:.0f}m'])
+        # Hand the mesh + colour range off to the bottom legend strip; the
+        # colorbar itself is built there (horizontal, beside the JRC and metric
+        # legends) once every panel's final position has settled.
+        heatmap_mesh = mesh
+        heatmap_z_min = z_min
+        heatmap_z_max = z_max
+        # Top-right source label — pinned where the data is sparsest (canopy
+        # top is mostly low-energy blue, so a white-backed badge sits
+        # comfortably without obscuring meaningful cells).
+        _source_badge(ax, "VSM Vertical Profile")
 
     # ---- Merged metrics panel (FHD / 1D ENL / 2D ENL / CR) --------------
-    # CR uses a separate y-scale (0..1.1) so when it's plotted alongside the
-    # left-axis metrics it lives on `ax.twinx()` (right axis). If CR is the
-    # ONLY selected metric, it gets the primary axis to avoid the visual
-    # clutter of an empty left axis.
+    # By default all four metrics share the left y-axis with integer ticks.
+    # When `req.cr_own_yaxis` is True AND CR is plotted alongside at least one
+    # of the other three, CR moves to a `twinx()` right y-axis with its own
+    # 0..1.1 scale; if CR is the only metric, it stays on the primary axis.
     metrics_twin_ax = None  # populated only when CR is on a twin axis
     if "metrics" in panels:
         ax = axes[panels.index("metrics")]
@@ -623,44 +667,83 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         enl2 = np.array([s.enl2d if s.enl2d is not None else np.nan for s in samples], dtype=float)
         cr = np.array([s.cr if s.cr is not None else np.nan for s in samples], dtype=float)
         has_left = req.show_fhd or req.show_enl1d or req.show_enl2d
+        cr_on_twin = req.show_cr and req.cr_own_yaxis and has_left
 
-        # Left axis: FHD / 1D ENL / 2D ENL.
-        if has_left:
-            if req.show_fhd and np.any(np.isfinite(fhd)):
-                ax.plot(x_vals, fhd, label="FHD", color="#1f77b4", linewidth=1.5)
-            if req.show_enl1d and np.any(np.isfinite(enl1)):
-                ax.plot(x_vals, enl1, label="1D ENL", color="#2ca02c", linewidth=1.5)
-            if req.show_enl2d and np.any(np.isfinite(enl2)):
-                ax.plot(x_vals, enl2, label="2D ENL", color="#d62728", linewidth=1.5)
-            ax.set_ylabel("ENL / FHD")
+        # Left axis lines (FHD / 1D ENL / 2D ENL, plus CR when it shares).
+        if req.show_fhd and np.any(np.isfinite(fhd)):
+            ax.plot(x_vals, fhd, label="FHD", color="#1f77b4", linewidth=1.5)
+        if req.show_enl1d and np.any(np.isfinite(enl1)):
+            ax.plot(x_vals, enl1, label="1D ENL", color="#2ca02c", linewidth=1.5)
+        if req.show_enl2d and np.any(np.isfinite(enl2)):
+            ax.plot(x_vals, enl2, label="2D ENL", color="#d62728", linewidth=1.5)
+        if req.show_cr and not cr_on_twin and np.any(np.isfinite(cr)):
+            ax.plot(x_vals, cr, label="CR", color="#9467bd", linewidth=1.5)
 
-        # CR: twin right axis when paired with left-axis metrics; otherwise
-        # primary axis.
-        if req.show_cr and has_left:
+        # No ylabel on the metrics panel — the legend below the figure
+        # identifies each line, so a redundant "Diversity indices" / "CR"
+        # label would just steal horizontal real estate.
+        if has_left or not req.show_cr:
+            # Fixed [0, 8] range for the diversity-indices view: FHD/ENL
+            # typically top out around 4–6, so 8 leaves headroom for the
+            # top-right source badge without crowding the data.
+            ax.set_ylim(0, 8)
+            # Integer y-ticks across the [0, 8] range — sparse (≤5) so the
+            # panel reads as a strip rather than a dense ladder, and
+            # `integer=True` forces whole-number values regardless of the span.
+            # `prune="upper"` drops the topmost tick (8) so the source badge
+            # sitting above the data doesn't visually collide with a label.
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=5, integer=True, prune="upper"))
+        else:
+            # CR-only on the primary axis — keep the dedicated 0..1.1 scale
+            # so the line uses the full panel height rather than the upper
+            # sliver an integer-tick auto-range would leave it in.
+            ax.set_ylim(0, 1.1)
+            ax.set_yticks([0.0, 0.5, 1.0])
+
+        # CR on its own twin right y-axis (only when paired with left-axis lines).
+        if cr_on_twin:
             metrics_twin_ax = ax.twinx()
+            # The cbar gutter lives in subplots_adjust's right margin (not in
+            # a per-axis divider), so `twinx()` naturally inherits the parent
+            # axes' bbox via the shared subplotspec — no locator copy needed
+            # for the twin's right spine to line up with every other panel.
             if np.any(np.isfinite(cr)):
                 metrics_twin_ax.plot(
                     x_vals, cr, label="CR", color="#9467bd", linewidth=1.5,
                 )
-            metrics_twin_ax.set_ylabel("CR")
             metrics_twin_ax.set_ylim(0, 1.1)
-            # Match left-axis tick label font size; mpl picks up rcParams by default.
             metrics_twin_ax.tick_params(axis="y", labelsize=_tick_fs)
-        elif req.show_cr:
-            # CR only — use primary axis.
-            if np.any(np.isfinite(cr)):
-                ax.plot(x_vals, cr, label="CR", color="#9467bd", linewidth=1.5)
-            ax.set_ylabel("CR")
-            ax.set_ylim(0, 1.1)
+            metrics_twin_ax.set_yticks([0.0, 0.5, 1.0])
 
         ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.5)
+        # Top-right source label — drawn on the twin axis (when CR sits there)
+        # so it renders above the primary grid; the panel's data fits below
+        # `y=8` (or `y=1.0` for CR-only) so the badge has clear space above.
+        _source_badge(
+            metrics_twin_ax if metrics_twin_ax is not None else ax,
+            "VSM Diversity indices",
+        )
 
-    # All sharex panels — only label the bottom-most.
-    axes[-1].set_xlabel(x_label)
-    axes[-1].set_xlim(x_min, x_max)
-    # Sparse x-ticks (sharex propagates this to every panel above).
-    axes[-1].xaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
-    axes[-1].xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v:.3f}"))
+    # No x-axis label — cardinal-suffixed tick values are self-identifying.
+    # Pin xlim on every axis (and the metrics twinx, when present) rather than
+    # relying on `sharex=True` alone: per-axis autoscaling triggered by
+    # successive `plot()` calls — especially with `twinx()` — can drift a
+    # fraction of a unit past x_max, making that row's x-axis spine visibly
+    # longer than the panels above.  Setting xlim explicitly here guarantees
+    # an identical span everywhere.
+    for ax_obj in axes:
+        ax_obj.set_xlim(x_min, x_max)
+    if metrics_twin_ax is not None:
+        metrics_twin_ax.set_xlim(x_min, x_max)
+    # Sparse x-ticks with cardinal-suffixed labels (sharex propagates this to
+    # every panel above). Longitude → 2 ticks; latitude → a single mid-range
+    # tick (both user-requested, since transect bboxes are typically narrow).
+    if req.x_axis == "lon":
+        axes[-1].xaxis.set_major_locator(MaxNLocator(nbins=2, prune="both"))
+        axes[-1].xaxis.set_major_formatter(FuncFormatter(_fmt_lon))
+    else:
+        axes[-1].set_xticks([(x_min + x_max) / 2.0])
+        axes[-1].xaxis.set_major_formatter(FuncFormatter(_fmt_lat))
 
     # Align all y-axis labels to the same x position so they form a neat column.
     fig.align_ylabels(list(axes))
@@ -680,39 +763,133 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
                 legend_handles.append(hi)
                 legend_labels.append(li)
 
-    if legend_handles:
-        # Anchor relative to the bottom-most axis so the legend always sits below
-        # its x-label regardless of figure height. bbox_inches="tight" on save
-        # will extend the canvas to include it.
-        fig.legend(
-            legend_handles,
-            legend_labels,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.8),
-            bbox_transform=axes[-1].transAxes,
-            ncol=len(legend_handles),
-            frameon=False,
-            fontsize=max(7, req.font_size - 2),
-            handlelength=1.2,
-            columnspacing=1.2,
-            handletextpad=0.35,
-        )
+    # The metric legend is now rendered as column 3 of the bottom legend strip
+    # (alongside the JRC TMF class legend and horizontal heatmap colorbar) —
+    # see the post-layout block at the end of this function.
     for ax_obj in axes[:-1]:
         ax_obj.tick_params(axis='x', labelbottom=False, length=0)
 
-    # Glue the JRC strip flush against the top of the heatmap (zero hspace
-    # only for this pair — other panels keep the normal inter-panel gap).
-    # Done by overriding the strip's axes position post-layout: shift it down
-    # so its bottom edge touches the heatmap's top edge while keeping its
-    # original height. The hidden colorbar gutter follows automatically since
-    # `make_axes_locatable` tracks the parent axis position via a locator.
+    # Glue the JRC strip flush against the top of the heatmap, then shift the
+    # panels above it down by exactly the original strip↔heatmap gridspec gap
+    # so every remaining inter-panel gap (satellite↔JRC, JRC↔strip,
+    # heatmap↔metrics) ends up equal to one `hspace`. The strip is treated as
+    # the heatmap's header band — the only zero-gap join in the figure.
+    # Now that no axis carries an AxesDivider locator (the cbar gutter is
+    # part of the figure's right margin), these set_position calls are
+    # durable — they survive subsequent draws and savefig.
     if "ee_strip" in panels and "heatmap" in panels:
         strip_ax = axes[panels.index("ee_strip")]
         hm_ax = axes[panels.index("heatmap")]
         strip_pos = strip_ax.get_position()
         hm_pos = hm_ax.get_position()
         new_y0 = hm_pos.y0 + hm_pos.height  # bottom of strip == top of heatmap
+        shift_down = strip_pos.y0 - new_y0  # how far the strip moved down (>=0)
         strip_ax.set_position([strip_pos.x0, new_y0, strip_pos.width, strip_pos.height])
+        # Shift every panel above the strip down by the same amount the strip
+        # itself moved. That preserves the original gridspec gap between the
+        # JRC-2D panel (or whatever sits directly above) and the strip — so it
+        # matches every other inter-panel gap in the figure.
+        strip_idx = panels.index("ee_strip")
+        for i in range(strip_idx):
+            above_ax = axes[i]
+            pos = above_ax.get_position()
+            above_ax.set_position([pos.x0, pos.y0 - shift_down, pos.width, pos.height])
+
+    # Belt-and-suspenders: force every panel's horizontal plot-rect extent
+    # to match the heatmap's (or the first panel's). The gridspec + the
+    # explicit `set_xlim` loop above SHOULD already align everything, but
+    # `twinx()` plus `plot()`-triggered autoscaling on the metrics axis can
+    # leave the diversity-indices panel's right spine sitting a fraction of
+    # a percent past every other panel's — visible as a "longer" x-axis. A
+    # single draw lets all gridspec locators settle to their final bbox;
+    # then copy that reference x0/width onto every other axis (including the
+    # metrics twin, when present) so all spines line up exactly.
+    fig.canvas.draw()
+    ref_idx = panels.index("heatmap") if "heatmap" in panels else 0
+    ref_pos = axes[ref_idx].get_position()
+    for ax_obj in axes:
+        pos = ax_obj.get_position()
+        if abs(pos.x0 - ref_pos.x0) > 1e-6 or abs(pos.width - ref_pos.width) > 1e-6:
+            ax_obj.set_position([ref_pos.x0, pos.y0, ref_pos.width, pos.height])
+    if metrics_twin_ax is not None:
+        twin_pos = metrics_twin_ax.get_position()
+        metrics_twin_ax.set_position([ref_pos.x0, twin_pos.y0, ref_pos.width, twin_pos.height])
+
+    # ---- Bottom legend strip (3 columns) -------------------------------
+    # Column 1: JRC TMF class swatches  ·  Column 2: horizontal heatmap
+    # colorbar  ·  Column 3: stacked metric line legend. All three are
+    # anchored relative to the now-finalised bottom-most panel position so
+    # the row stays horizontally aligned even after the strip-glue and
+    # draw-pin steps above. `bbox_inches="tight"` on save will extend the
+    # canvas downward to include whatever this strip emits.
+    from matplotlib.patches import Patch  # local import — only used here
+
+    bp = axes[-1].get_position()
+    _strip_fs = max(7, req.font_size - 2)
+    # Top edge of the strip in figure-fraction coords. ~6% of figure height
+    # below the bottom panel — enough to clear the x-tick labels.
+    strip_top_y = bp.y0 - 0.06
+    # Equal-width columns centered at 1/6, 3/6, 5/6 of the bottom panel's
+    # horizontal extent.
+    col_centers = [bp.x0 + bp.width * (2 * i + 1) / 6.0 for i in range(3)]
+
+    # Column 1 — JRC TMF class legend (palette index i ↔ class id i+1).
+    if "ee_annualchanges" in panels or "ee_strip" in panels:
+        jrc_patches = [
+            Patch(
+                facecolor=f"#{_JRC_TMF_ANNUALCHANGES_PALETTE[i]}",
+                edgecolor="#888", linewidth=0.5,
+                label=JRC_TMF_CLASSES.get(i + 1, str(i + 1)),
+            )
+            for i in range(len(_JRC_TMF_ANNUALCHANGES_PALETTE))
+        ]
+        fig.legend(
+            handles=jrc_patches,
+            loc="upper center",
+            bbox_to_anchor=(col_centers[0], strip_top_y),
+            bbox_transform=fig.transFigure,
+            ncol=1,
+            frameon=False,
+            title="JRC TMF",
+            title_fontsize=_strip_fs,
+            fontsize=_strip_fs,
+            handlelength=1.0,
+            handletextpad=0.4,
+            borderaxespad=0.0,
+        )
+
+    # Column 2 — horizontal heatmap colorbar.
+    if heatmap_mesh is not None:
+        cbar_w_fig = bp.width * 0.20
+        cbar_h_fig = 0.012
+        # Sit the bar just below `strip_top_y` so its visual top aligns with
+        # the legends' title rows; tick labels + axis label flow downward.
+        cax = fig.add_axes([
+            col_centers[1] - cbar_w_fig / 2.0,
+            strip_top_y - 0.025,
+            cbar_w_fig,
+            cbar_h_fig,
+        ])
+        cbar = fig.colorbar(heatmap_mesh, cax=cax, orientation="horizontal")
+        cbar.set_label("Energy (%)", fontsize=_strip_fs)
+        cbar.set_ticks([heatmap_z_min, heatmap_z_max])
+        cbar.ax.tick_params(labelsize=_tick_fs)
+
+    # Column 3 — stacked metric legend (FHD / 1D ENL / 2D ENL / CR).
+    if legend_handles:
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            loc="upper center",
+            bbox_to_anchor=(col_centers[2], strip_top_y),
+            bbox_transform=fig.transFigure,
+            ncol=1,
+            frameon=False,
+            fontsize=_strip_fs,
+            handlelength=1.2,
+            handletextpad=0.4,
+            borderaxespad=0.0,
+        )
 
     # Output buffer.
     buf = io.BytesIO()

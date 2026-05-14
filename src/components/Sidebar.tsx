@@ -3,10 +3,6 @@ import {
   Box,
   Typography,
   Button,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
   styled,
   TextField,
   List,
@@ -52,6 +48,7 @@ import type { VsmQChoice } from '../constants/predictions';
 import type { FigureLayerOverrides } from '../containers/SidebarContainer';
 import { apiUrl } from '../utils/apiBase';
 import type { SavedFeature } from '../services/savedFeaturesApi';
+import { SavedFeatureDialog, type SavedFeatureDialogPrefill } from './SavedFeatureDialog';
 import { SavedFeaturePlots } from './SavedFeaturePlots';
 import { useMapStore } from '../stores/mapStore';
 import { DIVERSITY_HEIGHT_BIN_OPTIONS } from '../constants/diversityMetrics';
@@ -80,10 +77,19 @@ interface SidebarProps {
   onGetTiles: () => void;
   onCreateFiguresDraw: () => void;
   onCreateDbFiguresDraw: () => void;
-  onSaveFiguresToDb: (payload: { name: string; description: string; category: string }) => void;
+  onSaveFiguresToDb: (payload: { name: string; description: string; category: string; tags: string[] }) => void;
   savingFiguresToDb: boolean;
   figuresToDbMessage: string | null;
   figuresToDbError: string | null;
+  /** Distinct tags across all saved features, used by the save dialog's tag autocomplete. */
+  savedFeatureTags: string[];
+  /** Prefill values for the area-images save dialog, computed by the container when
+   *  the dialog opens via `onPrepareAreaImageSave`. Null when no prior save matches
+   *  the current drawing's geometry. */
+  areaImagePrefill: SavedFeatureDialogPrefill | null;
+  /** Called when the user clicks "Save area images to DB" — triggers the container
+   *  to look up an existing save at the same geometry and refresh tag suggestions. */
+  onPrepareAreaImageSave: () => void;
   selectedTiles: string[];
   figureSelectionReady: boolean;
   figureFormat: 'jpg' | 'png' | 'pdf';
@@ -474,6 +480,9 @@ export function Sidebar({
   onLoadForestNaturalnessData,
   onLoadForestNaturalnessDataVal,
   onLoadEoxS2CloudlessMosaic,
+  savedFeatureTags,
+  areaImagePrefill,
+  onPrepareAreaImageSave,
 }: SidebarProps) {
   const diversityHeightBinM = useMapStore((s) => s.diversityHeightBinM);
   const setDiversityHeightBinM = useMapStore((s) => s.setDiversityHeightBinM);
@@ -510,9 +519,6 @@ export function Sidebar({
   const [editSavedDescription, setEditSavedDescription] = useState('');
   const [editSavedTags, setEditSavedTags] = useState('');
   const [openDbSaveDialog, setOpenDbSaveDialog] = useState(false);
-  const [dbFeatureName, setDbFeatureName] = useState('');
-  const [dbFeatureCategory, setDbFeatureCategory] = useState('area_images');
-  const [dbFeatureDescription, setDbFeatureDescription] = useState('');
 
   const savedCategories = Array.from(new Set(savedMapFeatures.map((f) => f.category).filter(Boolean))) as string[];
 
@@ -1116,7 +1122,10 @@ export function Sidebar({
                   {figuresToDbMessage && <Alert severity="success" sx={{ mb: 0.75 }}>{figuresToDbMessage}</Alert>}
                   <Button
                     variant="contained"
-                    onClick={() => setOpenDbSaveDialog(true)}
+                    onClick={() => {
+                      onPrepareAreaImageSave();
+                      setOpenDbSaveDialog(true);
+                    }}
                     disabled={savingFiguresToDb || !figureSelectionReady}
                     startIcon={savingFiguresToDb ? <CircularProgress size={16} color="inherit" /> : undefined}
                     sx={{
@@ -1131,56 +1140,23 @@ export function Sidebar({
                   </Button>
                 </Box>
 
-                <Dialog open={openDbSaveDialog} onClose={savingFiguresToDb ? undefined : () => setOpenDbSaveDialog(false)} maxWidth="sm" fullWidth>
-                  <DialogTitle>Save area feature to database</DialogTitle>
-                  <DialogContent>
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-                      Geometry type: Polygon
-                    </Typography>
-                    <TextField
-                      autoFocus
-                      required
-                      fullWidth
-                      margin="dense"
-                      label="Name"
-                      value={dbFeatureName}
-                      onChange={(event) => setDbFeatureName(event.target.value)}
-                    />
-                    <TextField
-                      fullWidth
-                      margin="dense"
-                      label="Category"
-                      value={dbFeatureCategory}
-                      onChange={(event) => setDbFeatureCategory(event.target.value)}
-                    />
-                    <TextField
-                      fullWidth
-                      margin="dense"
-                      label="Description"
-                      multiline
-                      minRows={3}
-                      value={dbFeatureDescription}
-                      onChange={(event) => setDbFeatureDescription(event.target.value)}
-                    />
-                  </DialogContent>
-                  <DialogActions>
-                    <Button onClick={() => setOpenDbSaveDialog(false)} disabled={savingFiguresToDb}>Cancel</Button>
-                    <Button
-                      onClick={() => {
-                        onSaveFiguresToDb({
-                          name: dbFeatureName.trim(),
-                          description: dbFeatureDescription.trim(),
-                          category: dbFeatureCategory.trim(),
-                        });
-                        setOpenDbSaveDialog(false);
-                      }}
-                      variant="contained"
-                      disabled={savingFiguresToDb || !dbFeatureName.trim()}
-                    >
-                      {savingFiguresToDb ? 'Saving...' : 'Save'}
-                    </Button>
-                  </DialogActions>
-                </Dialog>
+                <SavedFeatureDialog
+                  open={openDbSaveDialog}
+                  geometryType="Polygon"
+                  saving={savingFiguresToDb}
+                  error={null}
+                  existingCategories={savedCategories}
+                  existingTags={savedFeatureTags}
+                  // When the user revisits the same drawing area, the container's
+                  // lookup fills name/category/description/tags; otherwise default
+                  // category to "area_images" to match the previous behaviour.
+                  prefill={areaImagePrefill ?? { category: 'area_images' }}
+                  onCancel={() => setOpenDbSaveDialog(false)}
+                  onSubmit={(payload) => {
+                    onSaveFiguresToDb(payload);
+                    setOpenDbSaveDialog(false);
+                  }}
+                />
               </Box>
             )}
 

@@ -113,6 +113,42 @@ def existing_image_exports(plot_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [item for item in exports if isinstance(item, dict)]
 
 
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+# Cap so a malicious / accidental payload can't blow up the metadata JSON.
+MAX_TAG_LENGTH = 60
+MAX_TAGS_PER_FEATURE = 30
+
+
+def normalize_tags(tags: Optional[List[Any]]) -> List[str]:
+    """Trim, dedupe (case-insensitive), and clamp a tag list.
+
+    Order is preserved by first occurrence. Casing of the first occurrence
+    wins — by the time we hit `routes`, the suggestion list is already
+    consistent across rows, so saving "Forest" then "forest" keeps "Forest".
+    """
+    if not isinstance(tags, list):
+        return []
+    seen: Dict[str, str] = {}
+    for raw in tags:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        if len(text) > MAX_TAG_LENGTH:
+            text = text[:MAX_TAG_LENGTH]
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen[key] = text
+        if len(seen) >= MAX_TAGS_PER_FEATURE:
+            break
+    return list(seen.values())
+
+
 def unlink_export_file(relative_path: Optional[str]) -> None:
     """Best-effort delete of an export file under `IMAGE_ROOT`. Never raises."""
     if not isinstance(relative_path, str) or not relative_path:

@@ -100,6 +100,12 @@ export type SavedFeature = {
   metadata?: SavedFeatureMetadata | null;
   plot_data?: SavedFeaturePlotData | null;
   created_at: string;
+  /** Stable hash of the geometry alone. Used to prefill the save dialog when
+   *  the user revisits a previously-saved area/point. */
+  geom_uid?: string | null;
+  /** Stable hash of (geometry, name, category). Same triple → same uid even
+   *  across re-saves. */
+  feature_uid?: string | null;
 };
 
 export async function listSavedFeatures(): Promise<SavedFeature[]> {
@@ -115,6 +121,7 @@ export async function createSavedFeature(input: {
   name: string;
   description?: string;
   category?: string;
+  tags?: string[];
   geometry: SavedFeatureGeometry;
   metadata?: SavedFeatureMetadata;
   plot_data?: SavedFeaturePlotData;
@@ -162,6 +169,41 @@ export async function updateSavedFeature(
     throw new Error('API did not return updated feature');
   }
   return data.feature;
+}
+
+/** All distinct tags seen across saved features (case-insensitive dedupe,
+ *  first-seen casing preserved). Used by the save dialog's tag autocomplete.
+ */
+export async function listSavedFeatureTags(): Promise<string[]> {
+  const response = await fetch(apiUrl('/saved-features/tags'));
+  if (!response.ok) {
+    throw new Error(`Failed to load tag list (${response.status})`);
+  }
+  const data = (await response.json()) as { tags?: string[] };
+  return Array.isArray(data.tags) ? data.tags : [];
+}
+
+/** Look up the most-recent saved feature with the same geometry (geom_uid).
+ *  Used to prefill name / category / description / tags so the user doesn't
+ *  retype them when saving the same area or popup again. Returns `null` when
+ *  there's no prior save for this geometry.
+ */
+export async function lookupSavedFeatureByGeometry(
+  geometry: SavedFeatureGeometry,
+): Promise<{ geom_uid: string; feature: SavedFeature | null }> {
+  const response = await fetch(apiUrl('/saved-features/lookup-by-geometry'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ geometry }),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to look up feature by geometry (${response.status})`);
+  }
+  const data = (await response.json()) as { geom_uid?: string; feature?: SavedFeature | null };
+  return {
+    geom_uid: typeof data.geom_uid === 'string' ? data.geom_uid : '',
+    feature: data.feature ?? null,
+  };
 }
 
 /** Re-render the RH98 prediction snapshot for a saved Point feature.

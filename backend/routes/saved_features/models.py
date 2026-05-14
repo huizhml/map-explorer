@@ -19,6 +19,16 @@ class SavedFeatureCreateRequest(BaseModel):
     geometry: GeometryPayload
     metadata: Optional[Dict[str, Any]] = None
     plot_data: Optional[Dict[str, Any]] = None
+    # Free-form labels merged into `metadata.tags`. Casing is preserved
+    # (first-seen wins across the table); dedupe is case-insensitive on save.
+    tags: Optional[List[str]] = None
+
+
+class GeometryLookupRequest(BaseModel):
+    """Lookup payload used by the save dialog to prefill from an existing save
+    of the same geometry."""
+
+    geometry: GeometryPayload
 
 
 class SavedFeatureUpdateRequest(BaseModel):
@@ -72,6 +82,7 @@ class SaveAreaImagesRequest(BaseModel):
     name: Optional[str] = Field(default=None, max_length=120)
     description: Optional[str] = Field(default=None, max_length=2000)
     category: Optional[str] = Field(default=None, max_length=120)
+    tags: Optional[List[str]] = None
     # Optional Google Satellite snapshot of the drawing area.
     # Uses the same `_stitch_bbox_satellite` retina-tile fetcher (scale=2)
     # as the transect figure, so the output is high-resolution. 8192 px ≈ one
@@ -116,14 +127,19 @@ class TransectFigureRequest(BaseModel):
     include_map: bool = True
     include_heatmap: bool = True
     # Per-line toggles for the merged metrics panel (FHD / 1D ENL / 2D ENL / CR).
-    # The panel is rendered iff at least one of these is True. FHD / 1D ENL /
-    # 2D ENL share the left y-axis; CR is plotted on a twin right y-axis when
-    # it's selected alongside any of the other three (0..1.1 scale), or on the
-    # primary axis when it's the only line selected.
+    # The panel is rendered iff at least one of these is True.  By default all
+    # four lines share the (left) y-axis with integer ticks; flip
+    # `cr_own_yaxis` to put CR back on its own twin right y-axis (0..1.1)
+    # when it's selected alongside any of the other three.
     show_fhd: bool = True
     show_enl1d: bool = True
     show_enl2d: bool = True
     show_cr: bool = True
+    # When True AND CR is plotted alongside another metric, CR moves to a
+    # `twinx()` right y-axis with its own 0..1.1 scale (matches the previous
+    # behaviour); when False, CR shares the left axis with FHD/ENL.  Ignored
+    # when CR is the only selected metric (it gets the primary axis either way).
+    cr_own_yaxis: bool = False
     # Optional: JRC TMF AnnualChanges (Dec 2020) for the same buffered bbox as
     # the satellite snapshot.  Renders as an additional sharex panel right
     # below the satellite map.  Shares `satellite_buffer_m`.

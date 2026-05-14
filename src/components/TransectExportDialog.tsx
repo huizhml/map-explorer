@@ -85,6 +85,7 @@ function buildFigurePayload(args: {
   showEnl1d: boolean;
   showEnl2d: boolean;
   showCr: boolean;
+  crOwnYaxis: boolean;
   figureWidth: number;
   mapHeight: number;
   heatmapHeight: number;
@@ -121,6 +122,7 @@ function buildFigurePayload(args: {
     show_enl1d: args.showEnl1d,
     show_enl2d: args.showEnl2d,
     show_cr: args.showCr,
+    cr_own_yaxis: args.crOwnYaxis,
     figure_width_px: args.figureWidth,
     map_height_px: args.mapHeight,
     heatmap_height_px: args.heatmapHeight,
@@ -184,6 +186,9 @@ export function TransectExportDialog({
   const [showEnl1d, setShowEnl1d] = useState(true);
   const [showEnl2d, setShowEnl2d] = useState(true);
   const [showCr, setShowCr] = useState(true);
+  // When true (and CR is plotted alongside another metric), CR gets its own
+  // twin right y-axis (0..1.1); otherwise all four lines share the left axis.
+  const [crOwnYaxis, setCrOwnYaxis] = useState(false);
 
   const safeWidth = clamp(figureWidth, 700, 3000);
   const safeMapPanelHeight = clamp(mapPanelHeight, 80, 1800);
@@ -258,6 +263,7 @@ export function TransectExportDialog({
         showEnl1d,
         showEnl2d,
         showCr,
+        crOwnYaxis,
         figureWidth: safeWidth,
         mapHeight: safeMapPanelHeight,
         heatmapHeight: safeHeatmapHeight,
@@ -303,6 +309,7 @@ export function TransectExportDialog({
       showEnl1d,
       showEnl2d,
       showCr,
+      crOwnYaxis,
       safeWidth,
       safeMapPanelHeight,
       safeHeatmapHeight,
@@ -593,6 +600,18 @@ export function TransectExportDialog({
           <FormControlLabel
             control={<Checkbox checked={showCr} onChange={(e) => setShowCr(e.target.checked)} />}
             label="CR"
+          />
+          {/* Disabled unless CR shares the panel with at least one other metric —
+              when CR is alone (or off) the twin-axis option has no effect. */}
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={crOwnYaxis}
+                onChange={(e) => setCrOwnYaxis(e.target.checked)}
+                disabled={!showCr || !(showFhd || showEnl1d || showEnl2d)}
+              />
+            }
+            label="CR on its own y-axis"
           />
         </Stack>
 
