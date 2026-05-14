@@ -141,7 +141,11 @@ interface SidebarProps {
   uploadingFile: boolean;
   onLoadForestNaturalnessData: () => void;
   onLoadForestNaturalnessDataVal: () => void;
+  onLoadEoxS2CloudlessMosaic: (year: number) => void;
 }
+
+/** EOX s2cloudless mosaic years currently published on tiles.maps.eox.at. */
+export const EOX_S2CLOUDLESS_YEARS = [2016, 2018, 2019, 2020, 2021, 2022, 2023, 2024] as const;
 
 const SidebarContainer = styled(Box)(() => ({
   position: 'absolute',
@@ -469,10 +473,16 @@ export function Sidebar({
   uploadingFile,
   onLoadForestNaturalnessData,
   onLoadForestNaturalnessDataVal,
+  onLoadEoxS2CloudlessMosaic,
 }: SidebarProps) {
   const diversityHeightBinM = useMapStore((s) => s.diversityHeightBinM);
   const setDiversityHeightBinM = useMapStore((s) => s.setDiversityHeightBinM);
   const [showAddedInfo, setShowAddedInfo] = useState(true);
+  const [eoxMosaicYear, setEoxMosaicYear] = useState<number>(
+    EOX_S2CLOUDLESS_YEARS.includes(2020 as (typeof EOX_S2CLOUDLESS_YEARS)[number])
+      ? 2020
+      : EOX_S2CLOUDLESS_YEARS[EOX_S2CLOUDLESS_YEARS.length - 1],
+  );
   const [expandedFigureLayer, setExpandedFigureLayer] = useState<string | null>(null);
   const [activePanel, setActivePanel] = useState<'layers' | 'tools' | 'saved' | 'export' | null>('layers');
   const [surfaceMode, setSurfaceMode] = useState<SidebarSurfaceMode>('dark');
@@ -812,6 +822,41 @@ export function Sidebar({
                 >
                   + Add Layer
                 </Button>
+
+                <Box sx={{ mt: 1, display: 'flex', gap: 1, alignItems: 'stretch' }}>
+                  <FormControl size="small" sx={{ minWidth: 96 }}>
+                    <InputLabel sx={{ color: ui.fieldLabel }}>Year</InputLabel>
+                    <Select
+                      label="Year"
+                      value={eoxMosaicYear}
+                      onChange={(e) => setEoxMosaicYear(Number(e.target.value))}
+                      sx={{
+                        backgroundColor: ui.fieldBg,
+                        color: ui.fieldText,
+                        '& .MuiSvgIcon-root': { color: ui.fieldLabel },
+                      }}
+                    >
+                      {EOX_S2CLOUDLESS_YEARS.map((y) => (
+                        <MenuItem key={y} value={y}>{y}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <Button
+                    variant="outlined"
+                    onClick={() => onLoadEoxS2CloudlessMosaic(eoxMosaicYear)}
+                    sx={{
+                      flex: 1,
+                      borderStyle: 'dashed',
+                      borderColor: ui.borderStrong,
+                      color: ui.textSecondary,
+                      py: 1,
+                      textTransform: 'none',
+                      '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
+                    }}
+                  >
+                    Load cloud free sentinel-2 mosaic
+                  </Button>
+                </Box>
 
                 <Button
                   variant="outlined"

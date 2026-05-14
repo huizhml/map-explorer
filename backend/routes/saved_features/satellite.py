@@ -174,6 +174,135 @@ def _stitch_bbox_satellite(
     return None, fallback_meta
 
 
+def _stitch_bbox_eox_s2cloudless(
+    min_lon: float,
+    max_lon: float,
+    min_lat: float,
+    max_lat: float,
+    buffer_m: float = 200.0,
+    max_width_px: int = 2048,
+    year: int = 2020,
+) -> Tuple[Optional[bytes], dict]:
+    """Fetch and stitch the EOX `s2cloudless-<year>` mosaic for a bbox + buffer.
+
+    Source: EOX `s2cloudless-<year>_3857` WMTS layer
+    (`https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-<year>_3857/default/g/{z}/{y}/{x}.jpg`).
+    Standard EPSG:3857 Web Mercator tile grid with 256×256 JPEGs; EOX publishes
+    zoom 0-14 only.
+
+    Returns (png_bytes, metadata) using the same shape as
+    `_stitch_bbox_satellite` so callers can swap the two interchangeably.
+    """
+    from PIL import Image
+
+    mean_lat = (min_lat + max_lat) / 2.0
+    lat_rad = math.radians(mean_lat)
+    lat_buf = buffer_m / 111320.0
+    lon_buf = buffer_m / (111320.0 * max(1e-6, math.cos(lat_rad)))
+
+    bmin_lon = min_lon - lon_buf
+    bmax_lon = max_lon + lon_buf
+    bmin_lat = min_lat - lat_buf
+    bmax_lat = max_lat + lat_buf
+
+    span_m = (bmax_lon - bmin_lon) * 111320.0 * max(1e-6, math.cos(lat_rad))
+    m_per_px_target = max(0.01, span_m / max_width_px)
+    m_per_px_zoom0 = 156543.03392 * max(0.1, math.cos(lat_rad))
+
+    tile_px = 256
+    # EOX caps the 3857 grid at zoom 14; clamp to that.
+    EOX_MAX_ZOOM = 14
+    zoom = int(math.floor(math.log2(m_per_px_zoom0 / m_per_px_target)))
+    zoom = max(0, min(EOX_MAX_ZOOM, zoom))
+
+    def _ll_to_world(lon_v: float, lat_v: float) -> Tuple[float, float]:
+        siny = math.sin(math.radians(lat_v))
+        siny = min(max(siny, -0.9999), 0.9999)
+        world = tile_px * (2 ** zoom)
+        return (
+            (lon_v + 180.0) / 360.0 * world,
+            (0.5 - math.log((1 + siny) / (1 - siny)) / (4 * math.pi)) * world,
+        )
+
+    left, top = _ll_to_world(bmin_lon, bmax_lat)
+    right, bottom = _ll_to_world(bmax_lon, bmin_lat)
+    img_w = max(1, int(round(right - left)))
+    img_h = max(1, int(round(bottom - top)))
+
+    min_tx = int(math.floor(left / tile_px))
+    max_tx = int(math.floor((right - 1) / tile_px))
+    min_ty = int(math.floor(top / tile_px))
+    max_ty = int(math.floor((bottom - 1) / tile_px))
+    world_tiles = 2 ** zoom
+
+    tiles = [
+        (tx, ty)
+        for ty in range(min_ty, max_ty + 1)
+        if 0 <= ty < world_tiles
+        for tx in range(min_tx, max_tx + 1)
+    ]
+
+    stitched_w = (max_tx - min_tx + 1) * tile_px
+    stitched_h = (max_ty - min_ty + 1) * tile_px
+    stitched = Image.new("RGB", (stitched_w, stitched_h))
+
+    base = (
+        f"https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-{int(year)}_3857"
+        f"/default/g/{zoom}/{{y}}/{{x}}.jpg"
+    )
+
+    def _fetch_one(tx_ty: Tuple[int, int]) -> Tuple[int, int, bytes]:
+        tx, ty = tx_ty
+        wrapped_tx = tx % world_tiles
+        url = base.format(y=ty, x=wrapped_tx)
+        # EOX rejects requests without a UA header on some edges; supply one.
+        resp = requests.get(
+            url,
+            timeout=20,
+            headers={"User-Agent": "map-explorer/transect-figure"},
+        )
+        resp.raise_for_status()
+        return tx, ty, resp.content
+
+    fallback_meta = {
+        "min_lon": bmin_lon, "max_lon": bmax_lon,
+        "min_lat": bmin_lat, "max_lat": bmax_lat,
+        "zoom": zoom, "width_px": 0, "height_px": 0,
+    }
+    try:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(16, max(1, len(tiles)))
+        ) as exe:
+            results = list(exe.map(_fetch_one, tiles))
+    except Exception:
+        return None, fallback_meta
+
+    try:
+        for tx, ty, data in results:
+            tile_img = Image.open(io.BytesIO(data)).convert("RGB")
+            if tile_img.size != (tile_px, tile_px):
+                # EOX should always return 256×256; refuse on mismatch.
+                return None, fallback_meta
+            stitched.paste(tile_img, ((tx - min_tx) * tile_px, (ty - min_ty) * tile_px))
+
+        crop_left = int(round(left - min_tx * tile_px))
+        crop_top = int(round(top - min_ty * tile_px))
+        cropped = stitched.crop((crop_left, crop_top, crop_left + img_w, crop_top + img_h))
+        out = io.BytesIO()
+        cropped.save(out, format="PNG")
+        return out.getvalue(), {
+            "min_lon": bmin_lon,
+            "max_lon": bmax_lon,
+            "min_lat": bmin_lat,
+            "max_lat": bmax_lat,
+            "zoom": zoom,
+            "width_px": img_w,
+            "height_px": img_h,
+        }
+    except Exception:
+        return None, fallback_meta
+
+
 def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
     """Overlay a metric scale bar on the lower-left corner of a stitched
     satellite PNG (re-encoded). Used by export paths that save a standalone

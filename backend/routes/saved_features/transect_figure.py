@@ -15,7 +15,7 @@ import requests
 from fastapi import HTTPException
 
 from .models import TransectFigureRequest
-from .satellite import _stitch_bbox_satellite
+from .satellite import _stitch_bbox_eox_s2cloudless, _stitch_bbox_satellite
 
 
 # JRC TMF AnnualChanges visualisation parameters — kept in sync with the
@@ -130,14 +130,14 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     # Panel selection (each becomes a row in plt.subplots).
     panels: List[str] = []
     height_ratios: List[float] = []
+    if req.include_map:
+        panels.append("map")
+        height_ratios.append(req.map_height_px)
     if req.include_ee_annualchanges:
         # JRC TMF AnnualChanges sits at the very top of the figure (forest-class
         # context first, then the natural-colour satellite snapshot below).
         panels.append("ee_annualchanges")
         height_ratios.append(req.ee_annualchanges_height_px)
-    if req.include_map:
-        panels.append("map")
-        height_ratios.append(req.map_height_px)
     if req.include_heatmap:
         # Strip is tentative — removed below if EE fetch fails. Sits immediately
         # above the heatmap so the two share visual gridlines.
@@ -145,12 +145,13 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         height_ratios.append(EE_STRIP_HEIGHT_PX)
         panels.append("heatmap")
         height_ratios.append(req.heatmap_height_px)
-    if req.include_enl_fhd:
-        panels.append("enl_fhd")
+    # Merged metrics panel — FHD/1D ENL/2D ENL share the left y-axis; CR uses
+    # a twinx right y-axis when it's selected alongside any of the others, or
+    # the primary axis when it's the only selected metric.
+    show_any_metric = req.show_fhd or req.show_enl1d or req.show_enl2d or req.show_cr
+    if show_any_metric:
+        panels.append("metrics")
         height_ratios.append(req.enl_fhd_height_px)
-    if req.include_cr:
-        panels.append("cr")
-        height_ratios.append(req.cr_height_px)
     if not panels:
         raise HTTPException(status_code=400, detail="Select at least one panel to render")
 
@@ -198,18 +199,47 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     # map panel to preserve the image's geographic aspect ratio.
     sat_arr = None
     sat_meta: Optional[dict] = None
+    # Tracks which basemap was actually used, for the panel's footer annotation.
+    sat_source_label: Optional[str] = None
     if "map" in panels:
-        _sat_bytes, sat_meta = _stitch_bbox_satellite(
-            float(np.min(lons)),
-            float(np.max(lons)),
-            float(np.min(lats)),
-            float(np.max(lats)),
-            buffer_m=req.satellite_buffer_m,
-            max_width_px=req.satellite_max_width_px,
-        )
+        if req.basemap_source == "eox_s2cloudless":
+            _sat_bytes, sat_meta = _stitch_bbox_eox_s2cloudless(
+                float(np.min(lons)),
+                float(np.max(lons)),
+                float(np.min(lats)),
+                float(np.max(lats)),
+                buffer_m=req.satellite_buffer_m,
+                max_width_px=req.satellite_max_width_px,
+                year=int(req.eox_year),
+            )
+            sat_source_label = f"Sentinel-2 cloudless {int(req.eox_year)} · EOX"
+        else:
+            _sat_bytes, sat_meta = _stitch_bbox_satellite(
+                float(np.min(lons)),
+                float(np.max(lons)),
+                float(np.min(lats)),
+                float(np.max(lats)),
+                buffer_m=req.satellite_buffer_m,
+                max_width_px=req.satellite_max_width_px,
+            )
+            sat_source_label = "Google Satellite (HD)"
         if _sat_bytes is not None:
             from PIL import Image as _PILImage
             sat_arr = np.asarray(_PILImage.open(io.BytesIO(_sat_bytes)).convert("RGB"))
+            # EOX s2cloudless JPEGs read dark over forest canopy; brighten via a
+            # gamma curve so midtones lift without clipping the (rare) highlights
+            # like clouds/snow. Skip when factor is ~1.0 to avoid pointless work.
+            if (
+                req.basemap_source == "eox_s2cloudless"
+                and req.eox_brightness > 0
+                and abs(req.eox_brightness - 1.0) > 1e-3
+            ):
+                inv_g = 1.0 / float(req.eox_brightness)
+                # uint8 → float [0,1] → gamma → uint8.
+                sat_arr = (
+                    np.clip(np.power(sat_arr.astype(np.float32) / 255.0, inv_g), 0.0, 1.0)
+                    * 255.0
+                ).astype(np.uint8)
             sat_aspect = sat_arr.shape[0] / sat_arr.shape[1]
             height_ratios[panels.index("map")] = _auto_panel_height_px(sat_aspect, "map")
 
@@ -419,8 +449,25 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
                 color="black",
                 path_effects=halo, zorder=6,
             )
+
+            # Source label (lower-right corner) — matches the JRC strip footer
+            # style so EOX vs. Google snapshots are self-identifying in exports.
+            if sat_source_label:
+                ax.text(
+                    0.99, 0.04, sat_source_label,
+                    transform=ax.transAxes, ha="right", va="bottom",
+                    fontsize=max(5, req.font_size - 4),
+                    color="#222",
+                    bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", pad=1.2),
+                    zorder=6,
+                )
         else:
-            ax.text(0.5, 0.5, "Satellite imagery unavailable", ha="center", va="center", transform=ax.transAxes)
+            unavailable_label = (
+                f"{sat_source_label} unavailable"
+                if sat_source_label
+                else "Satellite imagery unavailable"
+            )
+            ax.text(0.5, 0.5, unavailable_label, ha="center", va="center", transform=ax.transAxes)
             ax.set_yticks([])
 
     # ---- JRC TMF AnnualChanges panel ------------------------------------
@@ -563,30 +610,49 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         cbar = fig.colorbar(mesh, cax=cax)
         cbar.set_label("Energy (%)")
 
-    # ---- ENL/FHD panel --------------------------------------------------
-    if "enl_fhd" in panels:
-        ax = axes[panels.index("enl_fhd")]
+    # ---- Merged metrics panel (FHD / 1D ENL / 2D ENL / CR) --------------
+    # CR uses a separate y-scale (0..1.1) so when it's plotted alongside the
+    # left-axis metrics it lives on `ax.twinx()` (right axis). If CR is the
+    # ONLY selected metric, it gets the primary axis to avoid the visual
+    # clutter of an empty left axis.
+    metrics_twin_ax = None  # populated only when CR is on a twin axis
+    if "metrics" in panels:
+        ax = axes[panels.index("metrics")]
         fhd = np.array([s.fhd if s.fhd is not None else np.nan for s in samples], dtype=float)
         enl1 = np.array([s.enl1d if s.enl1d is not None else np.nan for s in samples], dtype=float)
         enl2 = np.array([s.enl2d if s.enl2d is not None else np.nan for s in samples], dtype=float)
-        if np.any(np.isfinite(fhd)):
-            ax.plot(x_vals, fhd, label="FHD", color="#1f77b4", linewidth=1.5)
-        if np.any(np.isfinite(enl1)):
-            ax.plot(x_vals, enl1, label="1D ENL", color="#2ca02c", linewidth=1.5)
-        if np.any(np.isfinite(enl2)):
-            ax.plot(x_vals, enl2, label="2D ENL", color="#d62728", linewidth=1.5)
-        ax.set_ylabel("ENL / FHD")
-        ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.5)
-
-    # ---- CR panel -------------------------------------------------------
-    if "cr" in panels:
-        ax = axes[panels.index("cr")]
         cr = np.array([s.cr if s.cr is not None else np.nan for s in samples], dtype=float)
-        if np.any(np.isfinite(cr)):
-            ax.plot(x_vals, cr, color="#9467bd", linewidth=1.5, label="CR")
-        ax.set_ylabel("CR")
-        # Slight headroom above 1.0 so points sitting at CR=1 stay visible.
-        ax.set_ylim(0, 1.1)
+        has_left = req.show_fhd or req.show_enl1d or req.show_enl2d
+
+        # Left axis: FHD / 1D ENL / 2D ENL.
+        if has_left:
+            if req.show_fhd and np.any(np.isfinite(fhd)):
+                ax.plot(x_vals, fhd, label="FHD", color="#1f77b4", linewidth=1.5)
+            if req.show_enl1d and np.any(np.isfinite(enl1)):
+                ax.plot(x_vals, enl1, label="1D ENL", color="#2ca02c", linewidth=1.5)
+            if req.show_enl2d and np.any(np.isfinite(enl2)):
+                ax.plot(x_vals, enl2, label="2D ENL", color="#d62728", linewidth=1.5)
+            ax.set_ylabel("ENL / FHD")
+
+        # CR: twin right axis when paired with left-axis metrics; otherwise
+        # primary axis.
+        if req.show_cr and has_left:
+            metrics_twin_ax = ax.twinx()
+            if np.any(np.isfinite(cr)):
+                metrics_twin_ax.plot(
+                    x_vals, cr, label="CR", color="#9467bd", linewidth=1.5,
+                )
+            metrics_twin_ax.set_ylabel("CR")
+            metrics_twin_ax.set_ylim(0, 1.1)
+            # Match left-axis tick label font size; mpl picks up rcParams by default.
+            metrics_twin_ax.tick_params(axis="y", labelsize=_tick_fs)
+        elif req.show_cr:
+            # CR only — use primary axis.
+            if np.any(np.isfinite(cr)):
+                ax.plot(x_vals, cr, label="CR", color="#9467bd", linewidth=1.5)
+            ax.set_ylabel("CR")
+            ax.set_ylim(0, 1.1)
+
         ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.5)
 
     # All sharex panels — only label the bottom-most.
@@ -600,9 +666,14 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     fig.align_ylabels(list(axes))
 
     # Collect legend entries from all data panels in order: FHD / ENL / CR.
+    # Include the metrics-panel twin axis (when CR sits on a right-side axis)
+    # so its handle is gathered alongside the primary-axis FHD/ENL handles.
     legend_handles: list = []
     legend_labels: list = []
-    for ax_obj in axes:
+    legend_sources: list = list(axes)
+    if metrics_twin_ax is not None:
+        legend_sources.append(metrics_twin_ax)
+    for ax_obj in legend_sources:
         h, l = ax_obj.get_legend_handles_labels()
         for hi, li in zip(h, l):
             if li not in legend_labels:

@@ -24,3 +24,8 @@ dist-ssr
 *.sw?
 *.pyc
 keys/
+
+# User-generated state — never sync these into the deploy target, or remote rows
+# get clobbered by the empty local placeholder on every sync.
+backend/data/saved_features.db
+backend/data/saved_features.db-*  # SQLite WAL / journal sidecars

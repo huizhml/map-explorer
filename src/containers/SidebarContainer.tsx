@@ -3,6 +3,8 @@ import { Sidebar } from '../components/Sidebar';
 import { PALETTES, type PaletteName } from '../constants/palettes';
 import GeoTIFF from 'ol/source/GeoTIFF';
 import WebGLTile from 'ol/layer/WebGLTile';
+import TileLayer from 'ol/layer/Tile';
+import XYZ from 'ol/source/XYZ';
 import VectorLayer from 'ol/layer/Vector';
 import VectorImageLayer from 'ol/layer/VectorImage';
 import VectorSource from 'ol/source/Vector';
@@ -1277,6 +1279,45 @@ export function SidebarContainer() {
     })));
   }, [map, layerManager, setLayers]);
 
+  const handleLoadEoxS2CloudlessMosaic = React.useCallback((year: number) => {
+    if (!map || !layerManager) return;
+    const layerId = `eox-s2cloudless-${year}`;
+    // Toggle off if this year's mosaic is already loaded.
+    if (layerManager.getLayer(layerId)) {
+      layerManager.removeLayer(layerId);
+      updateLayersList();
+      return;
+    }
+    const tileUrl =
+      `https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-${year}_3857/default/g/{z}/{y}/{x}.jpg`;
+    const newLayer = new TileLayer({
+      source: new XYZ({
+        url: tileUrl,
+        attributions:
+          `Sentinel-2 cloudless ${year} by <a href="https://s2maps.eu" target="_blank" rel="noreferrer">EOX IT Services GmbH</a> (contains modified Copernicus Sentinel data ${year})`,
+        crossOrigin: 'anonymous',
+        maxZoom: 14,
+        tilePixelRatio: 1,
+      }),
+      opacity: 1,
+      zIndex: 50,
+    });
+    map.addLayer(newLayer);
+    layerManager.addLayer(
+      layerId,
+      `EOX Sentinel-2 cloudless ${year}`,
+      'sentinel2',
+      newLayer,
+      {
+        provider: 'EOX',
+        url: tileUrl,
+        layerType: 's2cloudless_mosaic',
+        year,
+      },
+    );
+    updateLayersList();
+  }, [map, layerManager, updateLayersList]);
+
   const handleUploadFile = React.useCallback(async (file: File) => {
     if (!map || !layerManager) return;
     setUploadingFile(true);
@@ -1729,6 +1770,7 @@ export function SidebarContainer() {
       uploadingFile={uploadingFile}
       onLoadForestNaturalnessData={handleLoadForestNaturalnessData}
       onLoadForestNaturalnessDataVal={handleLoadForestNaturalnessDataVal}
+      onLoadEoxS2CloudlessMosaic={handleLoadEoxS2CloudlessMosaic}
     />
   );
 } 

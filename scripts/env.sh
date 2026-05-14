@@ -24,6 +24,10 @@ export PREDICTIONS_BASE_URL="https://465001846.lumidata.eu/"
 export PREDICTIONS_REMOTE_PATH_TEMPLATE="{zone}-{year}/{tile}/RH{rh}_Q{q}.tif"
 export VERTICAL_PROFILE_WORKERS=16
 
+# Saved-features SQLite DB lives OUTSIDE the synced repo on /projects so the
+# remote rows aren't clobbered when the working tree is rsynced. Keep it next
+# to SAVED_FEATURE_IMAGES_ROOT so a backup of one captures the other.
+export SAVED_FEATURES_DB_PATH="/projects/dereeco/data/gvs/results/app_saved_features.db"
 export SAVED_FEATURE_IMAGES_ROOT="/projects/dereeco/data/gvs/results/app_saved_images"
 export NATURALNESS_REF_DATA_PATH="/projects/dereeco/data/gvs/evaluation/downstream_tasks/naturalness/reference_data_set_updated.fgb"
 export NATURALNESS_REF_DATA_VAL_PATH="/projects/dereeco/data/gvs/evaluation/downstream_tasks/naturalness/results_from_vsm_2017/naturalness_classification_ps15/logistic_regression_predictions.fgb"

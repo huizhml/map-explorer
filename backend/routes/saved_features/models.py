@@ -115,8 +115,15 @@ class TransectFigureRequest(BaseModel):
     heatmap_colormap_max: float = 10.0
     include_map: bool = True
     include_heatmap: bool = True
-    include_enl_fhd: bool = True
-    include_cr: bool = True
+    # Per-line toggles for the merged metrics panel (FHD / 1D ENL / 2D ENL / CR).
+    # The panel is rendered iff at least one of these is True. FHD / 1D ENL /
+    # 2D ENL share the left y-axis; CR is plotted on a twin right y-axis when
+    # it's selected alongside any of the other three (0..1.1 scale), or on the
+    # primary axis when it's the only line selected.
+    show_fhd: bool = True
+    show_enl1d: bool = True
+    show_enl2d: bool = True
+    show_cr: bool = True
     # Optional: JRC TMF AnnualChanges (Dec 2020) for the same buffered bbox as
     # the satellite snapshot.  Renders as an additional sharex panel right
     # below the satellite map.  Shares `satellite_buffer_m`.
@@ -124,8 +131,10 @@ class TransectFigureRequest(BaseModel):
     figure_width_px: int = 1200
     map_height_px: int = 220
     heatmap_height_px: int = 240
+    # Height of the merged metrics panel (was previously split across
+    # `enl_fhd_height_px` + `cr_height_px`; kept the same name to minimise
+    # frontend churn — the CR-only panel is gone).
     enl_fhd_height_px: int = 300
-    cr_height_px: int = 140
     ee_annualchanges_height_px: int = 220
     font_size: int = 11
     dpi: int = 150
@@ -134,3 +143,16 @@ class TransectFigureRequest(BaseModel):
     # Higher resolution = sharper satellite imagery.  4096 px ≈ zoom level 17–18
     # for typical 200 m-buffered transects, which is near Google's max detail.
     satellite_max_width_px: int = 4096
+    # Which basemap to fetch for the "Map snapshot" panel.
+    #   - "google"        → Google Satellite HD tiles (default; pre-EOX behaviour).
+    #   - "eox_s2cloudless" → EOX `s2cloudless-<eox_year>_3857` mosaic (cloud-free Sentinel-2).
+    basemap_source: Literal["google", "eox_s2cloudless"] = "google"
+    # Year for the EOX `s2cloudless-<year>` layer; ignored unless
+    # `basemap_source == "eox_s2cloudless"`. EOX publishes 2016, 2018–2024.
+    eox_year: int = 2020
+    # Brightness factor for the EOX mosaic (gamma applied to the stitched RGB,
+    # via `out = in ** (1/eox_brightness)`). `1.0` = source pixels untouched,
+    # values > 1 lift midtones without clipping highlights, < 1 darkens.
+    # Default tuned for the typical forest-canopy under-exposure of s2cloudless.
+    # Ignored when `basemap_source != "eox_s2cloudless"`.
+    eox_brightness: float = 1.3

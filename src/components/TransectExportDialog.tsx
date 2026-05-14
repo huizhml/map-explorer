@@ -24,9 +24,18 @@ import {
   DEFAULT_HEATMAP_MAX_HEIGHT_M,
   HEATMAP_COLORMAP_MAX,
 } from '../constants/diversityMetrics';
+import { EOX_S2CLOUDLESS_YEARS } from './Sidebar';
 import { apiUrl } from '../utils/apiBase';
 
 type ExportFormat = 'pdf' | 'png' | 'jpg';
+
+/** Map-snapshot source for the transect figure export.
+ *
+ *  - `none`            — omit the map panel entirely.
+ *  - `google`          — Google Satellite HD tiles (pre-EOX behaviour).
+ *  - `eox_s2cloudless` — EOX `s2cloudless-<year>` cloud-free Sentinel-2 mosaic.
+ */
+type BasemapSource = 'none' | 'google' | 'eox_s2cloudless';
 
 type TransectExportDialogProps = {
   open: boolean;
@@ -67,15 +76,19 @@ function buildFigurePayload(args: {
   heightBinM: number;
   heatmapMaxHeight: number;
   includeMap: boolean;
+  basemapSource: 'google' | 'eox_s2cloudless';
+  eoxYear: number;
+  eoxBrightness: number;
   includeEeAnnualChanges: boolean;
   includeHeatmap: boolean;
-  includeEnlFhd: boolean;
-  includeCr: boolean;
+  showFhd: boolean;
+  showEnl1d: boolean;
+  showEnl2d: boolean;
+  showCr: boolean;
   figureWidth: number;
   mapHeight: number;
   heatmapHeight: number;
-  enlFhdHeight: number;
-  crHeight: number;
+  metricsHeight: number;
   fontSize: number;
   satelliteBufferM: number;
   fmt: ExportFormat;
@@ -104,15 +117,20 @@ function buildFigurePayload(args: {
     include_map: args.includeMap,
     include_ee_annualchanges: args.includeEeAnnualChanges,
     include_heatmap: args.includeHeatmap,
-    include_enl_fhd: args.includeEnlFhd,
-    include_cr: args.includeCr,
+    show_fhd: args.showFhd,
+    show_enl1d: args.showEnl1d,
+    show_enl2d: args.showEnl2d,
+    show_cr: args.showCr,
     figure_width_px: args.figureWidth,
     map_height_px: args.mapHeight,
     heatmap_height_px: args.heatmapHeight,
-    enl_fhd_height_px: args.enlFhdHeight,
-    cr_height_px: args.crHeight,
+    // Backend reuses `enl_fhd_height_px` as the merged-metrics-panel height.
+    enl_fhd_height_px: args.metricsHeight,
     font_size: args.fontSize,
     satellite_buffer_m: args.satelliteBufferM,
+    basemap_source: args.basemapSource,
+    eox_year: args.eoxYear,
+    eox_brightness: args.eoxBrightness,
     // Preview always renders PNG at lower DPI for snappy refresh; export honours format.
     fmt: args.preview ? 'png' : args.fmt,
     dpi: args.preview ? 90 : 150,
@@ -146,25 +164,35 @@ export function TransectExportDialog({
   const [figureWidth, setFigureWidth] = useState<number>(1200);
   const [mapPanelHeight, setMapPanelHeight] = useState<number>(220);
   const [heatmapHeight, setHeatmapHeight] = useState<number>(240);
-  const [enlFhdHeight, setEnlFhdHeight] = useState<number>(300);
-  const [crHeight, setCrHeight] = useState<number>(140);
+  /** Height of the merged metrics panel (FHD / 1D ENL / 2D ENL / CR). */
+  const [metricsHeight, setMetricsHeight] = useState<number>(300);
   /** Vertical buffer (m) above/below the transect for the satellite snapshot. */
   const [satelliteBufferM, setSatelliteBufferM] = useState<number>(200);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [includeMapPanel, setIncludeMapPanel] = useState(true);
+  /** Single-choice map-snapshot source: omit, Google Satellite HD, or EOX s2cloudless. */
+  const [basemapSource, setBasemapSource] = useState<BasemapSource>('google');
+  /** Year for EOX `s2cloudless-<year>`; ignored unless basemapSource === 'eox_s2cloudless'. */
+  const [eoxYear, setEoxYear] = useState<number>(2020);
+  /** Gamma-style brightness applied to the EOX mosaic: 1.0 = source pixels, >1 brighter. */
+  const [eoxBrightness, setEoxBrightness] = useState<number>(1.3);
+  const includeMapPanel = basemapSource !== 'none';
   const [includeEeAnnualChangesPanel, setIncludeEeAnnualChangesPanel] = useState(false);
   const [includeHeatmapPanel, setIncludeHeatmapPanel] = useState(true);
-  const [includeEnlFhdPanel, setIncludeEnlFhdPanel] = useState(true);
-  const [includeCrPanel, setIncludeCrPanel] = useState(true);
+  // Per-line toggles for the merged metrics panel.
+  const [showFhd, setShowFhd] = useState(true);
+  const [showEnl1d, setShowEnl1d] = useState(true);
+  const [showEnl2d, setShowEnl2d] = useState(true);
+  const [showCr, setShowCr] = useState(true);
 
   const safeWidth = clamp(figureWidth, 700, 3000);
   const safeMapPanelHeight = clamp(mapPanelHeight, 80, 1800);
   const safeHeatmapHeight = clamp(heatmapHeight, 100, 1800);
-  const safeEnlFhdHeight = clamp(enlFhdHeight, 120, 2200);
-  const safeCrHeight = clamp(crHeight, 90, 1400);
+  const safeMetricsHeight = clamp(metricsHeight, 120, 2200);
   const safeFontSize = clamp(fontSize, 8, 24);
   const safeSatelliteBufferM = clamp(satelliteBufferM, 10, 5000);
+  // Brightness is a float — keep two decimals' worth via *100 round-trip.
+  const safeEoxBrightness = Math.max(0.2, Math.min(3.0, Number.isFinite(eoxBrightness) ? eoxBrightness : 1.3));
 
   // Content fingerprint of the incoming `samples` prop. The parent often hands
   // us a freshly-allocated array on every render even when the underlying data
@@ -202,12 +230,12 @@ export function TransectExportDialog({
     [samplesFingerprint],
   );
   const hasEnoughSamples = usableSamples.length >= 2;
+  const anyMetricSelected = showFhd || showEnl1d || showEnl2d || showCr;
   const anyPanelSelected =
     includeMapPanel ||
     includeEeAnnualChangesPanel ||
     includeHeatmapPanel ||
-    includeEnlFhdPanel ||
-    includeCrPanel;
+    anyMetricSelected;
 
   const requestFigure = useCallback(
     async (preview: boolean): Promise<{ blob: Blob; mediaType: string } | null> => {
@@ -219,15 +247,21 @@ export function TransectExportDialog({
         heightBinM,
         heatmapMaxHeight: heatmapMaxHeight ?? DEFAULT_HEATMAP_MAX_HEIGHT_M,
         includeMap: includeMapPanel,
+        // Backend ignores basemap_source / eox_year when include_map is false,
+        // but always send a concrete value so the payload is stable.
+        basemapSource: basemapSource === 'eox_s2cloudless' ? 'eox_s2cloudless' : 'google',
+        eoxYear,
+        eoxBrightness: safeEoxBrightness,
         includeEeAnnualChanges: includeEeAnnualChangesPanel,
         includeHeatmap: includeHeatmapPanel,
-        includeEnlFhd: includeEnlFhdPanel,
-        includeCr: includeCrPanel,
+        showFhd,
+        showEnl1d,
+        showEnl2d,
+        showCr,
         figureWidth: safeWidth,
         mapHeight: safeMapPanelHeight,
         heatmapHeight: safeHeatmapHeight,
-        enlFhdHeight: safeEnlFhdHeight,
-        crHeight: safeCrHeight,
+        metricsHeight: safeMetricsHeight,
         fontSize: safeFontSize,
         satelliteBufferM: safeSatelliteBufferM,
         fmt: format,
@@ -260,15 +294,19 @@ export function TransectExportDialog({
       heightBinM,
       heatmapMaxHeight,
       includeMapPanel,
+      basemapSource,
+      eoxYear,
+      safeEoxBrightness,
       includeEeAnnualChangesPanel,
       includeHeatmapPanel,
-      includeEnlFhdPanel,
-      includeCrPanel,
+      showFhd,
+      showEnl1d,
+      showEnl2d,
+      showCr,
       safeWidth,
       safeMapPanelHeight,
       safeHeatmapHeight,
-      safeEnlFhdHeight,
-      safeCrHeight,
+      safeMetricsHeight,
       safeFontSize,
       safeSatelliteBufferM,
       format,
@@ -435,20 +473,11 @@ export function TransectExportDialog({
           <TextField
             size="small"
             type="number"
-            label="ENL/FHD height (px)"
-            value={enlFhdHeight}
-            onChange={(event) => setEnlFhdHeight(Number(event.target.value))}
+            label="Metrics height (px)"
+            value={metricsHeight}
+            onChange={(event) => setMetricsHeight(Number(event.target.value))}
             inputProps={{ min: 120, max: 2200, step: 20 }}
             sx={{ minWidth: 170 }}
-          />
-          <TextField
-            size="small"
-            type="number"
-            label="CR height (px)"
-            value={crHeight}
-            onChange={(event) => setCrHeight(Number(event.target.value))}
-            inputProps={{ min: 90, max: 1400, step: 20 }}
-            sx={{ minWidth: 150 }}
           />
           <TextField
             size="small"
@@ -472,13 +501,62 @@ export function TransectExportDialog({
           />
         </Stack>
 
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
-          <FormControlLabel
-            control={
-              <Checkbox checked={includeMapPanel} onChange={(e) => setIncludeMapPanel(e.target.checked)} />
-            }
-            label="Map snapshot"
-          />
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={1}
+          sx={{ mb: 1 }}
+          flexWrap="wrap"
+          useFlexGap
+          // Bottom-align so the actual input boxes share a baseline even when
+          // some controls have a caption above (e.g. EOX Brightness).
+          alignItems={{ md: 'flex-end' }}
+        >
+          <FormControl size="small" sx={{ minWidth: 220 }}>
+            <InputLabel id="transect-export-basemap">Map snapshot</InputLabel>
+            <Select
+              labelId="transect-export-basemap"
+              value={basemapSource}
+              label="Map snapshot"
+              onChange={(event) => setBasemapSource(event.target.value as BasemapSource)}
+            >
+              <MenuItem value="none">Off (no map panel)</MenuItem>
+              <MenuItem value="google">Google Satellite (HD)</MenuItem>
+              <MenuItem value="eox_s2cloudless">EOX Sentinel-2 cloudless mosaic</MenuItem>
+            </Select>
+          </FormControl>
+          {basemapSource === 'eox_s2cloudless' && (
+            <>
+              <FormControl size="small" sx={{ minWidth: 110 }}>
+                <InputLabel id="transect-export-eox-year">EOX year</InputLabel>
+                <Select
+                  labelId="transect-export-eox-year"
+                  value={eoxYear}
+                  label="EOX year"
+                  onChange={(event) => setEoxYear(Number(event.target.value))}
+                >
+                  {EOX_S2CLOUDLESS_YEARS.map((y) => (
+                    <MenuItem key={y} value={y}>{y}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 130 }}>
+                <Typography
+                  variant="caption"
+                  sx={{ color: 'text.secondary', lineHeight: 1.1, mb: 0.25 }}
+                >
+                  1.0 = source; &gt;1 brighter
+                </Typography>
+                <TextField
+                  size="small"
+                  type="number"
+                  label="Brightness"
+                  value={eoxBrightness}
+                  onChange={(event) => setEoxBrightness(Number(event.target.value))}
+                  inputProps={{ min: 0.2, max: 3.0, step: 0.05 }}
+                />
+              </Box>
+            </>
+          )}
           <FormControlLabel
             control={
               <Checkbox
@@ -497,25 +575,39 @@ export function TransectExportDialog({
             }
             label="Heatmap"
           />
+          {/* Per-line toggles for the merged metrics panel. Each box controls
+              whether the corresponding curve renders; the panel itself is
+              omitted when all four are unchecked. */}
           <FormControlLabel
-            control={
-              <Checkbox
-                checked={includeEnlFhdPanel}
-                onChange={(e) => setIncludeEnlFhdPanel(e.target.checked)}
-              />
-            }
-            label="ENL/FHD"
+            control={<Checkbox checked={showFhd} onChange={(e) => setShowFhd(e.target.checked)} />}
+            label="FHD"
           />
           <FormControlLabel
-            control={<Checkbox checked={includeCrPanel} onChange={(e) => setIncludeCrPanel(e.target.checked)} />}
+            control={<Checkbox checked={showEnl1d} onChange={(e) => setShowEnl1d(e.target.checked)} />}
+            label="1D ENL"
+          />
+          <FormControlLabel
+            control={<Checkbox checked={showEnl2d} onChange={(e) => setShowEnl2d(e.target.checked)} />}
+            label="2D ENL"
+          />
+          <FormControlLabel
+            control={<Checkbox checked={showCr} onChange={(e) => setShowCr(e.target.checked)} />}
             label="CR"
           />
         </Stack>
 
         <Typography variant="caption" color="text.secondary" sx={{ mb: 0.75, display: 'block' }}>
           Server-rendered with matplotlib subplots (sharex). All panels share the same{' '}
-          {xAxis === 'lon' ? 'longitude' : 'latitude'} axis so points line up exactly. Map snapshot uses
-          Google Satellite (HD/retina tiles, {safeSatelliteBufferM} m buffer around the transect line).
+          {xAxis === 'lon' ? 'longitude' : 'latitude'} axis so points line up exactly.{' '}
+          {basemapSource === 'google' && (
+            <>Map snapshot uses Google Satellite (HD/retina tiles, {safeSatelliteBufferM} m buffer around the transect line).</>
+          )}
+          {basemapSource === 'eox_s2cloudless' && (
+            <>Map snapshot uses EOX <code>s2cloudless-{eoxYear}</code> ({safeSatelliteBufferM} m buffer; cloud-free Sentinel-2 mosaic).</>
+          )}
+          {basemapSource === 'none' && (
+            <>Map snapshot panel is disabled.</>
+          )}
         </Typography>
         {exportError && (
           <Typography variant="caption" color="error.main" sx={{ mb: 0.75, display: 'block' }}>
