@@ -536,6 +536,27 @@ export function useMapInteractions(updateLayersList: () => void) {
           },
           inspectError: null,
         });
+      }).catch((err) => {
+        if (req !== inspectRequestIdRef.current) return;
+        console.error('[vertical-profile-line] fetch failed:', err);
+        useMapStore.getState().setInspectPanel({
+          lon: first[0],
+          lat: first[1],
+          layers: [],
+          loading: false,
+          kind: 'vertical_profile_line',
+          profileMeta: {
+            tileName: '',
+            year: vsmYear,
+            qIndex: 1,
+            version: undefined,
+            maxHeight: undefined,
+            heatmapMaxHeight: undefined,
+            fhdInterval: diversityHeightBinM,
+          },
+          transectProfile: undefined,
+          inspectError: `Network error: ${err instanceof Error ? err.message : String(err)}`,
+        });
       });
     });
 
@@ -742,6 +763,16 @@ export function useMapInteractions(updateLayersList: () => void) {
               },
               pendingSample: undefined, inspectError: null,
             });
+          }).catch((err) => {
+            if (req !== inspectRequestIdRef.current) return;
+            console.error('[vertical-profile] fetch failed:', err);
+            useMapStore.getState().setInspectPanel((prev) => ({
+              lon, lat, layers: [], loading: false, kind: 'vertical_profile' as const,
+              verticalProfile: prev?.verticalProfile, verticalProfileCurve: prev?.verticalProfileCurve,
+              profileMetrics: prev?.profileMetrics,
+              profileMeta: prev?.profileMeta, pendingSample: undefined,
+              inspectError: `Network error: ${err instanceof Error ? err.message : String(err)}`,
+            }));
           });
           return;
         }

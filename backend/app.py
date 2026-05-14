@@ -63,7 +63,21 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
                     "Access-Control-Max-Age": "3600",
                 },
             )
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            # Without this, Starlette's outer ServerErrorMiddleware synthesizes a
+            # 500 that lacks our CORS headers, so the browser surfaces a useless
+            # "Failed to fetch" instead of the real status. Re-raise after logging
+            # so the traceback still hits the console.
+            import traceback
+            print(f"[CORS middleware] unhandled exception on {request.method} {request.url.path}: {exc}")
+            traceback.print_exc()
+            response = Response(
+                content=f"Internal Server Error: {exc}",
+                status_code=500,
+                media_type="text/plain",
+            )
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "*"

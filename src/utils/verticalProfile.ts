@@ -76,11 +76,34 @@ export async function fetchVerticalProfile(
       fhd_interval: fhdInterval,
     }),
   });
-  const data = (await res.json()) as VerticalProfileResponse;
-  if (!res.ok && !data.error) {
-    return { success: false, error: `HTTP ${res.status}` };
+  return parseProfileResponse<VerticalProfileResponse>(res);
+}
+
+// Backend error paths sometimes return plain text (e.g. Starlette's default
+// 500 body), so we can't blindly call res.json(). Parse defensively and fall
+// back to a synthetic error object that the UI knows how to surface.
+async function parseProfileResponse<T extends { success: boolean; error?: string }>(
+  res: Response,
+): Promise<T> {
+  const text = await res.text();
+  let data: T | null = null;
+  if (text) {
+    try {
+      data = JSON.parse(text) as T;
+    } catch {
+      // non-JSON body (plain-text 500, HTML error page, etc.) — fall through
+    }
   }
-  return data;
+  if (data) {
+    if (!res.ok && !data.error) {
+      return { ...data, success: false, error: `HTTP ${res.status}` };
+    }
+    return data;
+  }
+  return {
+    success: false,
+    error: `HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ''}`,
+  } as T;
 }
 
 export async function fetchVerticalProfileLine(
@@ -108,9 +131,5 @@ export async function fetchVerticalProfileLine(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const data = (await res.json()) as VerticalProfileLineResponse;
-  if (!res.ok && !data.error) {
-    return { success: false, error: `HTTP ${res.status}` };
-  }
-  return data;
+  return parseProfileResponse<VerticalProfileLineResponse>(res);
 }

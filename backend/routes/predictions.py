@@ -16,6 +16,7 @@ from typing import Literal
 VersionLiteral = Literal["original", "blended", "masked"]
 
 import mgrs as mgrs_lib
+import numpy as np
 import rasterio
 from rasterio.warp import transform as rw_transform
 
@@ -23,6 +24,29 @@ from utils import HEATMAP_MAX_HEIGHT, MAX_HEIGHT, pixel_vertical_profile, pixel_
 import math
 
 router = APIRouter(tags=["predictions"])
+
+
+def _to_jsonable(v):
+    """Recursively convert numpy scalars/arrays + NaN/Inf to JSON-safe Python
+    primitives. FastAPI's jsonable_encoder doesn't handle numpy types and fails
+    with a useless "[TypeError(...'numpy.int64' is not iterable'...)]" 500.
+    Apply this to any dict returned from a route that touches numpy.
+    """
+    if isinstance(v, dict):
+        return {k: _to_jsonable(val) for k, val in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_to_jsonable(x) for x in v]
+    if isinstance(v, np.ndarray):
+        return _to_jsonable(v.tolist())
+    if isinstance(v, np.generic):
+        # numpy scalar — .item() returns the underlying Python primitive
+        py = v.item()
+        if isinstance(py, float) and (math.isnan(py) or math.isinf(py)):
+            return None
+        return py
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return None
+    return v
 
 # ---------------------------------------------------------------------------
 # Module-level env vars (read at import time; same as before)
@@ -293,11 +317,16 @@ def _derive_profile_and_metrics(valid_vals: List[float], height_bin_m: int = 5, 
     vertical_profile: List[Optional[float]] = [None] * n_bins
     fhd, enl1d, enl2d, cr = None, None, None, None
     if len(valid_vals) >= 3:
+        # Convert the histogram first and unconditionally — diversity-metrics
+        # failures (e.g. IndexError on sparse profiles) must not strand
+        # `vertical_profile` as a numpy array nor wipe out the profile shape.
         try:
-            vertical_profile = pixel_vertical_profile(valid_vals)
+            vp = pixel_vertical_profile(valid_vals)
+            vertical_profile = vp.tolist() if hasattr(vp, "tolist") else list(vp)
+        except Exception as e:
+            print(f"[vertical-profile] pixel_vertical_profile error: {e}")
+        try:
             raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(valid_vals, bin_width=hb, max_height=max_height)
-
-            vertical_profile = vertical_profile.tolist()
             fhd = _safe_scalar(float(raw_fhd))
             enl1d = _safe_scalar(float(raw_enl1d))
             enl2d = _safe_scalar(float(raw_enl2d))
@@ -419,7 +448,7 @@ async def predictions_load_options():
 
 @router.post("/predictions/vertical-profile")
 async def predictions_vertical_profile(request: VerticalProfileRequest):
-    return await asyncio.to_thread(
+    result = await asyncio.to_thread(
         _compute_profile_at_point,
         request.lon,
         request.lat,
@@ -430,6 +459,7 @@ async def predictions_vertical_profile(request: VerticalProfileRequest):
         VERTICAL_PROFILE_WORKERS,
         request.fhd_interval,
     )
+    return _to_jsonable(result)
 
 
 @router.options("/predictions/vertical-profile")
@@ -538,7 +568,8 @@ async def predictions_vertical_profile_line(request: VerticalProfileLineRequest)
             "fhd_interval": request.fhd_interval,
         }
 
-    return await asyncio.to_thread(compute_line_profiles)
+    result = await asyncio.to_thread(compute_line_profiles)
+    return _to_jsonable(result)
 
 
 @router.options("/predictions/vertical-profile-line")
