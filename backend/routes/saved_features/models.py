@@ -98,6 +98,26 @@ class SaveAreaImagesRequest(BaseModel):
     google_satellite_max_width_px: int = 4096  # 8192
 
 
+class RefreshAreaImagesRequest(BaseModel):
+    """Re-render every image attached to a saved area_images feature.
+
+    By default the endpoint reproduces the *original* export: it reads the
+    layer list, render format, and extent that were persisted in the feature's
+    plot_data at save time. Every field here is an optional override for that
+    stored state (rarely needed); when omitted the stored value is used.
+    """
+
+    layers: Optional[List[FigureLayerSpec]] = None
+    format: Optional[Literal["jpg", "png", "pdf"]] = None
+    include_google_satellite: Optional[bool] = None
+    google_satellite_max_width_px: Optional[int] = None
+    extent_3857: Optional[List[float]] = None
+    # When true, crop the (Web-Mercator) extent to a square on its shortest
+    # side, centred on the original extent, and rewrite the feature's polygon
+    # geometry to match before re-rendering.
+    square: Optional[bool] = None
+
+
 class TransectSatelliteRequest(BaseModel):
     min_lon: float
     max_lon: float

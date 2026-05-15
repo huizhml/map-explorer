@@ -206,6 +206,62 @@ export async function lookupSavedFeatureByGeometry(
   };
 }
 
+/** Layer descriptor used by the area-images endpoints; mirrors the backend's
+ *  `FigureLayerSpec`. Includes whatever visualization params the caller wants
+ *  to render with (colormap / rescale / per-band overrides). */
+export type AreaImageLayerSpec = {
+  layer_id: string;
+  name: string;
+  layer_type?: string;
+  layer_subtype?: string;
+  url: string;
+  rgb_bands?: number[];
+  colormap?: string;
+  rescale_min?: number;
+  rescale_max?: number;
+  year?: number;
+  bands?: Array<{
+    band_index: number;
+    band_name?: string;
+    colormap?: string;
+    rescale_min?: number;
+    rescale_max?: number;
+  }>;
+};
+
+/** Re-render every image attached to a saved area_images polygon feature.
+ *  By default the backend reproduces the original export from the layer specs
+ *  persisted at save time (same visualization parameters). All request fields
+ *  are optional overrides for that stored state. */
+export async function refreshAreaImages(
+  id: number,
+  request: {
+    layers?: AreaImageLayerSpec[];
+    format?: 'png' | 'jpg' | 'pdf';
+    include_google_satellite?: boolean;
+    google_satellite_max_width_px?: number;
+    extent_3857?: number[];
+    /** Crop the polygon to a square on its shortest side and rewrite the
+     *  saved geometry to match before re-rendering. */
+    square?: boolean;
+  } = {},
+): Promise<{ feature: SavedFeature; errors: Array<{ layer_id?: string; name?: string; error?: string }> }> {
+  const response = await fetch(apiUrl(`/saved-features/${id}/refresh-area-images`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Failed to refresh area images (${response.status})`);
+  }
+  const data = (await response.json()) as { feature?: SavedFeature; errors?: Array<{ layer_id?: string; name?: string; error?: string }> };
+  if (!data.feature) {
+    throw new Error('API did not return refreshed feature');
+  }
+  return { feature: data.feature, errors: Array.isArray(data.errors) ? data.errors : [] };
+}
+
 /** Re-render the RH98 prediction snapshot for a saved Point feature.
  *  Optional `viz` overrides the rescale/colormap (defaults to the saved
  *  visualization, then the live-map defaults 0..500/inferno).

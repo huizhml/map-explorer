@@ -15,7 +15,7 @@ from typing import Optional, Tuple
 
 import requests
 
-from .utils import nice_bar_length_m
+from .utils import nice_bar_length_m, step_up_bar_length_m
 
 
 def _stitch_bbox_satellite(
@@ -327,12 +327,14 @@ def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
     m_per_px = span_m / w
 
     # Pick a "nice" round bar length (1 / 2 / 5 × 10^k m) that fills ~12% of
-    # the image width.
+    # the image width, then bump it one cartographic step coarser so the bar
+    # reads at a glance on the exported image.
     bar_m = nice_bar_length_m(m_per_px * w * 0.12)
     if bar_m <= 0:
         return png_bytes
+    bar_m = step_up_bar_length_m(bar_m)
     bar_px = bar_m / m_per_px
-    if bar_px < 20 or bar_px > w * 0.6:
+    if bar_px < 20 or bar_px > w * 0.9:
         return png_bytes  # degenerate scale — skip rather than overlay junk
 
     # Layout: inset from lower-left corner. Geometry sized relative to image
@@ -342,10 +344,10 @@ def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
     # text shrink to nothing on landscape-thin crops.
     ref = max(w, h)
     inset_x = max(16, int(w * 0.015))
-    inset_y = max(20, int(h * 0.035))
-    line_w = max(5, int(ref * 0.005))
-    tick_h = max(16, int(ref * 0.020))
-    font_px = max(56, int(ref * 0.060))
+    inset_y = max(48, int(h * 0.06))
+    line_w = max(14, int(ref * 0.014))
+    tick_h = max(28, int(ref * 0.028))
+    font_px = max(120, int(ref * 0.10))
 
     bar_y = h - inset_y
     bar_x0 = inset_x
@@ -354,32 +356,81 @@ def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
     draw = ImageDraw.Draw(img)
 
     # Bar + end ticks. Draw white halo first (thicker), black line on top.
-    halo_w = line_w + 2
+    # Halo ≈ 2× the stroke so a crisp white casing wraps the bar and lifts it
+    # off busy/dark satellite imagery without making the bar any taller.
+    halo_w = max(line_w + 8, int(line_w * 2))
     draw.line([(bar_x0, bar_y), (bar_x1, bar_y)], fill="white", width=halo_w)
     draw.line([(bar_x0, bar_y), (bar_x1, bar_y)], fill="black", width=line_w)
     for xv in (bar_x0, bar_x1):
         draw.line([(xv, bar_y - tick_h), (xv, bar_y + tick_h)], fill="white", width=halo_w)
         draw.line([(xv, bar_y - tick_h), (xv, bar_y + tick_h)], fill="black", width=line_w)
 
-    # Label centered above the bar with a 2-px white stroke for readability.
+    # Label centered above the bar with a white stroke for readability.
     label_text = f"{int(bar_m)} m" if bar_m < 1000 else f"{bar_m / 1000:g} km"
-    font = None
-    for candidate in (
+
+    # Resolve a scalable TrueType font at `font_px`. Bare names like
+    # "Arial.ttf" only resolve on macOS; on a Linux/Docker backend every
+    # system candidate fails and the old `load_default()` (no size arg)
+    # returned a fixed ~10 px bitmap — which is why the label rendered
+    # microscopic while the line-drawn bar scaled fine. matplotlib is a hard
+    # backend dependency and bundles DejaVuSans.ttf, so it is the one path
+    # guaranteed present on every platform; try it first.
+    candidates: list[str] = []
+    try:
+        from matplotlib import font_manager as _fm
+
+        candidates.append(_fm.findfont("DejaVu Sans", fallback_to_default=True))
+    except Exception:
+        pass
+    candidates += [
         "DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
         "Arial.ttf",
         "Helvetica.ttc",
-        "/System/Library/Fonts/Helvetica.ttc",
-    ):
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    font = None
+    for candidate in candidates:
         try:
             font = ImageFont.truetype(candidate, font_px)
             break
         except (IOError, OSError):
             continue
     if font is None:
-        font = ImageFont.load_default()
+        # Pillow ≥ 10.1 lets load_default() take a size; keep the label large
+        # even in the last-resort path. Older Pillow ignores the kwarg.
+        try:
+            font = ImageFont.load_default(size=font_px)
+        except TypeError:
+            font = ImageFont.load_default()
 
     label_cx = (bar_x0 + bar_x1) // 2
     label_baseline_y = bar_y - tick_h - max(2, int(h * 0.005))
+    stroke_px = max(2, font_px // 25)
+
+    # The label is centred on the (often short) bar tucked into the left
+    # inset, so for narrow bars half of it can spill past the image edge.
+    # Measure the rendered box and nudge it back inside — only when it would
+    # actually clip, so a bar with room stays visually centred.
+    pad = max(4, inset_x // 2)
+    try:
+        lb, tb, rb, _bb = draw.textbbox(
+            (label_cx, label_baseline_y),
+            label_text,
+            font=font,
+            anchor="md",
+            stroke_width=stroke_px,
+        )
+        if lb < pad:
+            label_cx += pad - lb
+        elif rb > w - pad:
+            label_cx -= rb - (w - pad)
+        if tb < pad:
+            label_baseline_y += pad - tb
+    except (TypeError, AttributeError):
+        pass  # older Pillow without textbbox/anchor — leave centred
+
     # Pillow ≥ 8 supports stroke_width / stroke_fill for crisp haloed text.
     try:
         draw.text(
@@ -388,7 +439,7 @@ def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
             fill="black",
             font=font,
             anchor="md",  # middle / descender baseline
-            stroke_width=2,
+            stroke_width=stroke_px,
             stroke_fill="white",
         )
     except TypeError:

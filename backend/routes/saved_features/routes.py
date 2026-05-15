@@ -17,6 +17,7 @@ from .config import IMAGE_ROOT
 from .db import (
     FEATURE_COLUMNS,
     compute_feature_key,
+    compute_feature_uid,
     compute_geom_uid,
     db_connect,
     row_to_feature,
@@ -24,7 +25,9 @@ from .db import (
     validate_geometry,
 )
 from .models import (
+    FigureLayerSpec,
     GeometryLookupRequest,
+    RefreshAreaImagesRequest,
     RefreshPredictionSnapshotRequest,
     SaveAreaImagesRequest,
     SavedFeatureCreateRequest,
@@ -389,6 +392,15 @@ async def create_area_images_feature(payload: SaveAreaImagesRequest) -> Dict[str
         "extent_3857": payload.extent_3857,
         "location_tag": location_tag,
         "image_session_dir": session_dir_name,
+        # Persist the exact layer list + render options used for this export so
+        # the "Update" action can re-render with the *same* visualization
+        # parameters later, without depending on what's currently on the map.
+        "layer_specs": [layer.model_dump() for layer in payload.layers],
+        "render_options": {
+            "format": payload.format,
+            "include_google_satellite": payload.include_google_satellite,
+            "google_satellite_max_width_px": payload.google_satellite_max_width_px,
+        },
     }
     geometry_dict = {"type": "Polygon", "coordinates": [ring]}
     feature_key = compute_feature_key(geometry_dict, metadata)
@@ -495,6 +507,277 @@ async def update_saved_feature(
     if row is None:
         raise HTTPException(status_code=500, detail="Failed to load updated feature")
     return {"feature": row_to_feature(row)}
+
+
+@router.post("/saved-features/{feature_id}/refresh-area-images")
+async def refresh_saved_feature_area_images(
+    feature_id: int,
+    payload: Optional[RefreshAreaImagesRequest] = None,
+) -> Dict[str, Any]:
+    """Re-render every image attached to a saved area_images polygon feature.
+
+    Reproduces the *original* export: the layer list, format, and extent are
+    read from the feature's stored plot_data (persisted at save time by
+    `create_area_images_feature`), so the refreshed images use the same
+    visualization parameters they were originally created with — independent
+    of whatever is currently on the map. The request body is optional and only
+    used to override individual fields.
+    """
+    payload = payload or RefreshAreaImagesRequest()
+
+    with db_connect() as conn:
+        row = conn.execute(
+            f"SELECT {FEATURE_COLUMNS} FROM saved_features WHERE id = ?",
+            (feature_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Saved feature not found")
+    if row["geometry_type"] != "Polygon":
+        raise HTTPException(
+            status_code=400,
+            detail="Area-image refresh is only supported for Polygon features",
+        )
+
+    metadata_payload: Dict[str, Any] = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+    if not isinstance(metadata_payload, dict):
+        metadata_payload = {}
+    plot_data_payload: Dict[str, Any] = json.loads(row["plot_data_json"]) if row["plot_data_json"] else {}
+    if not isinstance(plot_data_payload, dict):
+        plot_data_payload = {}
+
+    # Resolve the layer list: caller override > stored layer_specs. Features
+    # saved before layer specs were persisted have neither — point the user at
+    # a re-save rather than silently rendering nothing.
+    stored_specs = plot_data_payload.get("layer_specs")
+    layer_source = payload.layers if payload.layers else stored_specs
+    if not isinstance(layer_source, list) or len(layer_source) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This feature has no stored layer parameters (it was saved "
+                "before they were persisted). Re-save the area to enable "
+                "in-place updates."
+            ),
+        )
+    try:
+        resolved_layers = [
+            spec if isinstance(spec, FigureLayerSpec) else FigureLayerSpec(**spec)
+            for spec in layer_source
+        ]
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Stored layer specs are invalid: {exc}",
+        )
+
+    # Render options: caller override > stored render_options > defaults.
+    stored_opts = plot_data_payload.get("render_options")
+    if not isinstance(stored_opts, dict):
+        stored_opts = {}
+    resolved_format = (
+        payload.format
+        or stored_opts.get("format")
+        or metadata_payload.get("format")
+        or "png"
+    )
+    resolved_include_sat = (
+        payload.include_google_satellite
+        if payload.include_google_satellite is not None
+        else bool(stored_opts.get("include_google_satellite", False))
+    )
+    resolved_sat_width = int(
+        payload.google_satellite_max_width_px
+        if payload.google_satellite_max_width_px is not None
+        else stored_opts.get("google_satellite_max_width_px", 4096)
+    )
+
+    # Prefer the caller-supplied extent (rare), then the feature's saved
+    # extent_3857 (the common case for area_images), then bail.
+    extent_source = payload.extent_3857 or plot_data_payload.get("extent_3857") or metadata_payload.get("extent_3857")
+    if not isinstance(extent_source, list) or len(extent_source) != 4:
+        raise HTTPException(
+            status_code=400,
+            detail="Saved feature has no extent_3857; cannot refresh area images.",
+        )
+    try:
+        extent_3857 = [float(v) for v in extent_source]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Saved feature has invalid extent_3857.")
+
+    # Optionally crop to a square on the shortest side, centred on the original
+    # extent. Done in EPSG:3857 (projected metres) so the square is true on the
+    # ground, not just in lon/lat degrees. The geometry is rewritten further
+    # below so the saved polygon matches the imagery.
+    geometry_changed = False
+    if payload.square:
+        x0, y0, x1, y1 = extent_3857
+        cx = (x0 + x1) / 2.0
+        cy = (y0 + y1) / 2.0
+        side = min(abs(x1 - x0), abs(y1 - y0))
+        if side <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot square a degenerate extent (zero-width or zero-height).",
+            )
+        half = side / 2.0
+        squared = [cx - half, cy - half, cx + half, cy + half]
+        if squared != extent_3857:
+            extent_3857 = squared
+            geometry_changed = True
+
+    xmin, ymin, xmax, ymax = extent_3857
+    wgs_bounds = transform_bounds("EPSG:3857", "EPSG:4326", xmin, ymin, xmax, ymax)
+    center_lon = (wgs_bounds[0] + wgs_bounds[2]) / 2
+    center_lat = (wgs_bounds[1] + wgs_bounds[3]) / 2
+    location_tag = f"{center_lat:.4f}_{center_lon:.4f}".replace("-", "m")
+
+    # Drop previously-rendered files so we don't accumulate orphans when the
+    # new layer set produces a different filename. The session dir itself is
+    # freshly allocated below for a clean slate.
+    for item in existing_image_exports(plot_data_payload):
+        unlink_export_file(item.get("relative_path"))
+    old_session = plot_data_payload.get("image_session_dir")
+    if isinstance(old_session, str):
+        try:
+            old_path = (IMAGE_ROOT / old_session).resolve()
+            if (
+                IMAGE_ROOT.resolve() in old_path.parents
+                and old_path.is_dir()
+                and not any(old_path.iterdir())
+            ):
+                old_path.rmdir()
+        except Exception:
+            pass
+
+    session_dir, session_dir_name = new_session_dir()
+    render_payload = SaveAreaImagesRequest(
+        extent_3857=extent_3857,
+        format=resolved_format,
+        layers=resolved_layers,
+        include_google_satellite=resolved_include_sat,
+        google_satellite_max_width_px=resolved_sat_width,
+    )
+    image_exports, render_errors = render_area_images(
+        render_payload, session_dir, session_dir_name, location_tag,
+    )
+
+    if resolved_include_sat:
+        try:
+            sat_bytes, sat_meta = _stitch_bbox_satellite(
+                float(wgs_bounds[0]),
+                float(wgs_bounds[2]),
+                float(wgs_bounds[1]),
+                float(wgs_bounds[3]),
+                buffer_m=0.0,
+                max_width_px=int(resolved_sat_width),
+            )
+            if sat_bytes is None:
+                render_errors.append({
+                    "layer_id": "_google_satellite",
+                    "name": "Google Satellite",
+                    "error": "Tile fetch failed (no provider returned imagery)",
+                })
+            else:
+                try:
+                    sat_bytes = _burn_scale_bar(sat_bytes, sat_meta)
+                except Exception:
+                    pass
+                sat_file = f"google_satellite_{sanitize_name(location_tag)}.png"
+                (session_dir / sat_file).write_bytes(sat_bytes)
+                relative_path = str(Path(session_dir_name) / sat_file)
+                image_exports.append({
+                    "layer_id": "_google_satellite",
+                    "layer_name": "Google Satellite",
+                    "filename": sat_file,
+                    "relative_path": relative_path,
+                    "url": image_url_for(relative_path),
+                    "format": "png",
+                    "mime_type": "image/png",
+                    "meta": sat_meta,
+                })
+        except Exception as exc:
+            render_errors.append({
+                "layer_id": "_google_satellite",
+                "name": "Google Satellite",
+                "error": str(exc),
+            })
+
+    if not image_exports:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No images were generated. Errors: {render_errors[:3]}",
+        )
+
+    plot_data_payload["image_exports"] = image_exports
+    plot_data_payload["extent_3857"] = extent_3857
+    plot_data_payload["location_tag"] = location_tag
+    plot_data_payload["image_session_dir"] = session_dir_name
+    # Keep the stored specs in sync so a later refresh reproduces *this*
+    # render (matters when the caller passed override layers/options).
+    plot_data_payload["layer_specs"] = [layer.model_dump() for layer in resolved_layers]
+    plot_data_payload["render_options"] = {
+        "format": resolved_format,
+        "include_google_satellite": resolved_include_sat,
+        "google_satellite_max_width_px": resolved_sat_width,
+    }
+    metadata_payload["source"] = metadata_payload.get("source") or "area_images"
+    metadata_payload["image_count"] = len(image_exports)
+    metadata_payload["format"] = resolved_format
+    metadata_payload["extent_3857"] = extent_3857
+    metadata_payload["image_root"] = str(IMAGE_ROOT)
+    metadata_payload["image_session_dir"] = session_dir_name
+    metadata_payload["errors"] = render_errors
+
+    with db_connect() as conn:
+        if geometry_changed:
+            # Rewrite the polygon to the squared bbox so the saved geometry
+            # matches the new imagery. Re-derive the identity hashes that are
+            # functions of geometry (geom_uid / feature_uid) — feature_key is
+            # left as-is so the row keeps its upsert identity.
+            ring = [
+                [wgs_bounds[0], wgs_bounds[1]],
+                [wgs_bounds[2], wgs_bounds[1]],
+                [wgs_bounds[2], wgs_bounds[3]],
+                [wgs_bounds[0], wgs_bounds[3]],
+                [wgs_bounds[0], wgs_bounds[1]],
+            ]
+            new_geometry = {"type": "Polygon", "coordinates": [ring]}
+            new_geom_uid = compute_geom_uid(new_geometry)
+            new_feature_uid = compute_feature_uid(
+                new_geometry, row["name"], row["category"],
+            )
+            conn.execute(
+                "UPDATE saved_features "
+                "SET metadata_json = ?, plot_data_json = ?, geometry_json = ?, "
+                "    geom_uid = ?, feature_uid = ? "
+                "WHERE id = ?",
+                (
+                    json.dumps(metadata_payload),
+                    json.dumps(plot_data_payload),
+                    json.dumps(new_geometry["coordinates"]),
+                    new_geom_uid,
+                    new_feature_uid,
+                    feature_id,
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE saved_features SET metadata_json = ?, plot_data_json = ? WHERE id = ?",
+                (
+                    json.dumps(metadata_payload),
+                    json.dumps(plot_data_payload),
+                    feature_id,
+                ),
+            )
+        conn.commit()
+        updated_row = conn.execute(
+            f"SELECT {FEATURE_COLUMNS} FROM saved_features WHERE id = ?",
+            (feature_id,),
+        ).fetchone()
+
+    if updated_row is None:
+        raise HTTPException(status_code=500, detail="Failed to load refreshed feature")
+    return {"feature": row_to_feature(updated_row), "errors": render_errors}
 
 
 @router.post("/saved-features/{feature_id}/refresh-prediction-snapshot")

@@ -82,6 +82,24 @@ def nice_bar_length_m(target_m: float) -> float:
     return 10.0 * pow10
 
 
+def step_up_bar_length_m(bar_m: float) -> float:
+    """Return the next-coarser 1 / 2 / 5 × 10ᵏ step above `bar_m`.
+
+    `nice_bar_length_m` picks the bar closest to the target fraction of the
+    image; export paths that want a deliberately larger, easier-to-read bar
+    advance it exactly one cartographic step (… 200 m → 500 m → 1 km …).
+    """
+    if bar_m <= 0:
+        return 0.0
+    pow10 = 10.0 ** math.floor(math.log10(bar_m))
+    leading = round(bar_m / pow10)
+    if leading < 2:
+        return 2.0 * pow10
+    if leading < 5:
+        return 5.0 * pow10
+    return 10.0 * pow10
+
+
 # ---------------------------------------------------------------------------
 # Plot data helpers
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ import {
   deleteSavedFeature,
   updateSavedFeature,
   refreshPredictionSnapshot,
+  refreshAreaImages,
   type SavedFeature,
 } from '../services/savedFeaturesApi';
 import type { SavedFeatureDialogPrefill } from '../components/SavedFeatureDialog';
@@ -193,6 +194,8 @@ export function SidebarContainer() {
   const [updatingSavedFeatureId, setUpdatingSavedFeatureId] = React.useState<number | null>(null);
   const [refreshingPredictionSnapshotId, setRefreshingPredictionSnapshotId] = React.useState<number | null>(null);
   const [refreshPredictionSnapshotError, setRefreshPredictionSnapshotError] = React.useState<{ id: number; message: string } | null>(null);
+  const [refreshingAreaImagesId, setRefreshingAreaImagesId] = React.useState<number | null>(null);
+  const [refreshAreaImagesError, setRefreshAreaImagesError] = React.useState<{ id: number; message: string } | null>(null);
   const [savedFeaturesLoading, setSavedFeaturesLoading] = React.useState(false);
   const [savedFeaturesError, setSavedFeaturesError] = React.useState<string | null>(null);
   const highlightLayerRef = React.useRef<VectorLayer<VectorSource> | null>(null);
@@ -1587,6 +1590,31 @@ export function SidebarContainer() {
     setDrawingActive(next);
   };
 
+  const handleRefreshAreaImages = React.useCallback(
+    async (feature: SavedFeature, options?: { square?: boolean }) => {
+      setRefreshingAreaImagesId(feature.id);
+      setRefreshAreaImagesError(null);
+      // The backend reproduces the original export from the layer specs it
+      // persisted at save time — no need to send anything from the live map.
+      // When `square` is set the backend also crops the polygon to a square
+      // and rewrites the saved geometry, so refresh the on-map highlight too.
+      try {
+        const { feature: refreshed } = await refreshAreaImages(feature.id, {
+          square: options?.square ?? false,
+        });
+        setSavedMapFeatures((prev) => prev.map((f) => (f.id === feature.id ? refreshed : f)));
+      } catch (err) {
+        setRefreshAreaImagesError({
+          id: feature.id,
+          message: err instanceof Error ? err.message : 'Failed to refresh area images',
+        });
+      } finally {
+        setRefreshingAreaImagesId(null);
+      }
+    },
+    [setSavedMapFeatures],
+  );
+
   const handleSaveFigures = React.useCallback(async () => {
     setFigureSaveError(null);
     setFigureSaveMessage(null);
@@ -1843,6 +1871,9 @@ export function SidebarContainer() {
       refreshingPredictionSnapshotId={refreshingPredictionSnapshotId}
       refreshPredictionSnapshotError={refreshPredictionSnapshotError}
       onRefreshPredictionSnapshot={handleRefreshPredictionSnapshot}
+      refreshingAreaImagesId={refreshingAreaImagesId}
+      refreshAreaImagesError={refreshAreaImagesError}
+      onRefreshAreaImages={handleRefreshAreaImages}
       onDeleteSavedFeature={handleDeleteSavedFeature}
       onUpdateSavedFeature={handleUpdateSavedFeature}
       onJumpToFeature={handleJumpToFeature}

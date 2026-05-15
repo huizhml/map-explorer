@@ -139,6 +139,14 @@ interface SidebarProps {
   refreshPredictionSnapshotError: { id: number; message: string } | null;
   /** Re-renders the saved RH98 prediction snapshot using the live map's current rescale/colormap. */
   onRefreshPredictionSnapshot: (feature: SavedFeature) => void;
+  /** Feature id currently being re-rendered via the area-images "Update" button. */
+  refreshingAreaImagesId: number | null;
+  /** Surfaces refresh failures (e.g. layer fetch errors) per area-images feature. */
+  refreshAreaImagesError: { id: number; message: string } | null;
+  /** Re-renders every image attached to a saved area_images polygon from its
+   *  stored layer specs. When `square` is set, the polygon is first cropped to
+   *  a square on its shortest side and the geometry is updated to match. */
+  onRefreshAreaImages: (feature: SavedFeature, options?: { square?: boolean }) => void;
   onDeleteSavedFeature: (id: number) => void;
   onUpdateSavedFeature: (id: number, payload: { name: string; description: string; tags: string[] }) => Promise<void>;
   onJumpToFeature: (feature: SavedFeature) => void;
@@ -472,6 +480,9 @@ export function Sidebar({
   refreshingPredictionSnapshotId,
   refreshPredictionSnapshotError,
   onRefreshPredictionSnapshot,
+  refreshingAreaImagesId,
+  refreshAreaImagesError,
+  onRefreshAreaImages,
   onDeleteSavedFeature,
   onUpdateSavedFeature,
   onJumpToFeature,
@@ -514,6 +525,9 @@ export function Sidebar({
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [savedCategoryFilter, setSavedCategoryFilter] = useState<string>('');
   const [savedTypeFilter, setSavedTypeFilter] = useState<string>('');
+  // Feature ids whose "square" checkbox is ticked — when set, the area-image
+  // Update will crop the polygon to a square on its shortest side.
+  const [squareAreaFeatureIds, setSquareAreaFeatureIds] = useState<Set<number>>(new Set());
   const [editingSavedId, setEditingSavedId] = useState<number | null>(null);
   const [editSavedName, setEditSavedName] = useState('');
   const [editSavedDescription, setEditSavedDescription] = useState('');
@@ -1611,6 +1625,39 @@ export function Sidebar({
                                 <Typography sx={{ mb: 0.5, fontSize: '0.68rem', color: ui.textMuted, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
                                   Plot View
                                 </Typography>
+                                {feature.geometry.type === 'Polygon'
+                                  && (feature.metadata?.source === 'area_images'
+                                    || (Array.isArray(feature.plot_data?.image_exports)
+                                      && (feature.plot_data?.image_exports?.length ?? 0) > 0))
+                                  && (
+                                    <Tooltip title="Crop the polygon to a square on its shortest side before re-rendering. This permanently updates the saved geometry.">
+                                      <FormControlLabel
+                                        sx={{ ml: 0, mb: 0.25 }}
+                                        control={
+                                          <Checkbox
+                                            size="small"
+                                            checked={squareAreaFeatureIds.has(feature.id)}
+                                            disabled={refreshingAreaImagesId === feature.id}
+                                            onChange={(e) => {
+                                              const checked = e.target.checked;
+                                              setSquareAreaFeatureIds((prev) => {
+                                                const next = new Set(prev);
+                                                if (checked) next.add(feature.id);
+                                                else next.delete(feature.id);
+                                                return next;
+                                              });
+                                            }}
+                                            sx={{ py: 0.25, color: ui.textMuted, '&.Mui-checked': { color: ui.accent } }}
+                                          />
+                                        }
+                                        label={
+                                          <Typography sx={{ fontSize: '0.75rem', color: ui.textSecondary }}>
+                                            Square
+                                          </Typography>
+                                        }
+                                      />
+                                    </Tooltip>
+                                  )}
                                 <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
                                   <Button
                                     size="small"
@@ -1630,6 +1677,54 @@ export function Sidebar({
                                   >
                                     View plots
                                   </Button>
+                                  {/* Area-image polygons get an "Update" action that re-renders
+                                       every saved image from the layer specs persisted at save
+                                       time — same visualization parameters as the original. */}
+                                  {feature.geometry.type === 'Polygon'
+                                    && (feature.metadata?.source === 'area_images'
+                                      || (Array.isArray(feature.plot_data?.image_exports)
+                                        && (feature.plot_data?.image_exports?.length ?? 0) > 0))
+                                    && (() => {
+                                      const isRefreshing = refreshingAreaImagesId === feature.id;
+                                      const failure = refreshAreaImagesError?.id === feature.id
+                                        ? refreshAreaImagesError.message
+                                        : null;
+                                      return (
+                                        <Tooltip
+                                          title={
+                                            failure
+                                              ? `Last refresh failed: ${failure}`
+                                              : 'Re-render every saved image for this polygon using the same visualization parameters it was originally saved with'
+                                          }
+                                        >
+                                          <span>
+                                            <Button
+                                              size="small"
+                                              variant="outlined"
+                                              disabled={isRefreshing}
+                                              startIcon={
+                                                isRefreshing
+                                                  ? <CircularProgress size={14} />
+                                                  : <RefreshIcon fontSize="small" />
+                                              }
+                                              onClick={() => onRefreshAreaImages(feature, { square: squareAreaFeatureIds.has(feature.id) })}
+                                              sx={{
+                                                textTransform: 'none',
+                                                borderColor: failure ? 'error.main' : ui.accentBorder,
+                                                color: failure ? 'error.main' : ui.accent,
+                                                backgroundColor: ui.accentSoft,
+                                                '&:hover': {
+                                                  borderColor: failure ? 'error.main' : ui.accentBorder,
+                                                  backgroundColor: ui.buttonHover,
+                                                },
+                                              }}
+                                            >
+                                              {isRefreshing ? 'Updating…' : 'Update'}
+                                            </Button>
+                                          </span>
+                                        </Tooltip>
+                                      );
+                                    })()}
                                   {/* Only Point features carry an RH98 prediction snapshot; refreshing
                                        a transect would be a different (per-sample) operation, so hide
                                        the button for non-Point geometries. */}

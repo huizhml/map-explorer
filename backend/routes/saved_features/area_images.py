@@ -187,7 +187,7 @@ def render_area_images(
         else:
             cbar.set_ticks([low, high])
             cbar.set_ticklabels([f"{low:g}", f"{high:g}"])
-        cbar.ax.tick_params(labelsize=8)
+        cbar.ax.tick_params(labelsize=20)
         buf = io.BytesIO()
         fig.savefig(buf, format=payload.format, bbox_inches="tight", pad_inches=0.05)
         plt.close(fig)
@@ -232,7 +232,7 @@ def render_area_images(
         from matplotlib.transforms import blended_transform_factory
 
         from .satellite import _stitch_bbox_eox_s2cloudless
-        from .utils import nice_bar_length_m
+        from .utils import nice_bar_length_m, step_up_bar_length_m
         from PIL import Image as _PILImage
 
         sat_bytes, sat_meta = _stitch_bbox_eox_s2cloudless(
@@ -263,39 +263,62 @@ def render_area_images(
             span_m = (max_lon - min_lon) * 111320.0 * max(1e-6, math.cos(mean_lat_rad))
             if span_m > 0:
                 bar_m = nice_bar_length_m(span_m * 0.12) or 100.0
+                bar_m = step_up_bar_length_m(bar_m)
                 img_w = arr.shape[1]
                 bar_px = bar_m / span_m * img_w
                 bar_x0 = img_w * 0.03
                 bar_x1 = bar_x0 + bar_px
                 bar_y_axes = 0.05  # 5% from the bottom of the axes
-                tick_h = 0.018
-                # Thinner halo than before — at small font sizes a 2.4 pt stroke
-                # bleeds into the glyph interiors and reads as blur.
-                line_halo = [withStroke(linewidth=2.2, foreground="white")]
-                text_halo = [withStroke(linewidth=1.2, foreground="white")]
+                tick_h = 0.05
+                # Thicker black stroke + a ~2× white casing so the bar lifts
+                # off busy/dark mosaic imagery, without making it any taller.
+                line_halo = [withStroke(linewidth=14, foreground="white")]
+                text_halo = [withStroke(linewidth=4, foreground="white")]
                 trans = blended_transform_factory(ax.transData, ax.transAxes)
 
                 ax.plot(
                     [bar_x0, bar_x1], [bar_y_axes, bar_y_axes],
-                    color="black", linewidth=1.2, solid_capstyle="butt",
+                    color="black", linewidth=7, solid_capstyle="butt",
                     transform=trans, path_effects=line_halo, zorder=5,
                 )
                 for xv in (bar_x0, bar_x1):
                     ax.plot(
                         [xv, xv], [bar_y_axes - tick_h, bar_y_axes + tick_h],
-                        color="black", linewidth=1.2, solid_capstyle="butt",
+                        color="black", linewidth=7, solid_capstyle="butt",
                         transform=trans, path_effects=line_halo, zorder=5,
                     )
                 label_text = (
                     f"{int(bar_m)} m" if bar_m < 1000 else f"{bar_m / 1000:g} km"
                 )
-                ax.text(
-                    (bar_x0 + bar_x1) / 2.0, bar_y_axes + tick_h + 0.012,
+                # Centred on the bar, but a short bar tucked into the left
+                # inset would let half the label spill past the image edge.
+                # Measure the rendered box and nudge the centre back inside —
+                # only when it would actually clip, so a bar with room stays
+                # visually centred. Mirrors the Google PNG path.
+                label_cx = (bar_x0 + bar_x1) / 2.0
+                txt = ax.text(
+                    label_cx, bar_y_axes + tick_h + 0.03,
                     label_text,
                     transform=trans, ha="center", va="bottom",
-                    fontsize=11, color="black",
+                    fontsize=55, color="black",
                     path_effects=text_halo, zorder=6,
                 )
+                try:
+                    renderer = fig.canvas.get_renderer()
+                    bbox = txt.get_window_extent(renderer=renderer)
+                    inv = ax.transData.inverted()
+                    # transData x is independent of display y on this
+                    # rectilinear axes, so the y we feed in is irrelevant.
+                    x_l = inv.transform((bbox.x0, bbox.y0))[0]
+                    x_r = inv.transform((bbox.x1, bbox.y0))[0]
+                    x_min, x_max = sorted(ax.get_xlim())
+                    pad = (x_max - x_min) * 0.01
+                    if x_l < x_min + pad:
+                        txt.set_x(label_cx + (x_min + pad - x_l))
+                    elif x_r > x_max - pad:
+                        txt.set_x(label_cx - (x_r - (x_max - pad)))
+                except Exception:
+                    pass  # renderer unavailable — leave the label centred
         except Exception:
             pass  # Scale bar is decorative; never block the export.
 
