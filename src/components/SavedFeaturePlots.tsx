@@ -1258,28 +1258,73 @@ export function SavedFeaturePlots({
     <Box sx={{ mt: 1.1 }}>
       {imageExports.length > 0 && (
         <Box sx={{ mb: 1.25 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
-            Saved images ({imageExports.length})
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+              Saved images ({imageExports.length})
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={async () => {
+                for (const img of imageExports) {
+                  const url = img.url
+                    ? apiUrl(img.url)
+                    : img.relative_path
+                      ? apiUrl(`/saved-features/image/${img.relative_path}`)
+                      : '';
+                  if (!url) continue;
+                  try {
+                    const resp = await fetch(url);
+                    if (!resp.ok) continue;
+                    const blob = await resp.blob();
+                    const objUrl = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = objUrl;
+                    a.download = img.filename || 'image';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(objUrl);
+                  } catch {
+                    // Skip failures; continue downloading the rest.
+                  }
+                }
+              }}
+              sx={{ textTransform: 'none', py: 0, minHeight: 0 }}
+            >
+              Download all
+            </Button>
+          </Box>
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1 }}>
             {imageExports.map((img, idx) => {
               const url = img.url ? apiUrl(img.url) : (img.relative_path ? apiUrl(`/saved-features/image/${img.relative_path}`) : '');
+              // PDFs can't be displayed in an <img> tag — fall back to an
+              // <embed> preview so vector exports still show inline.
+              const isPdf = img.mime_type === 'application/pdf'
+                || (img.filename || '').toLowerCase().endsWith('.pdf');
               return (
                 <Box key={`${img.filename}-${idx}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, p: 0.75 }}>
                   <Typography variant="caption" sx={{ display: 'block', mb: 0.5, color: 'text.secondary' }}>
                     {img.layer_name || img.filename}{img.band_name ? ` - ${img.band_name}` : ''}
                   </Typography>
-                  {url && (
+                  {url && (isPdf ? (
+                    <Box
+                      component="embed"
+                      src={url}
+                      type="application/pdf"
+                      sx={{ width: '100%', height: 240, borderRadius: 1, border: 1, borderColor: 'divider', mb: 0.5 }}
+                    />
+                  ) : (
                     <Box
                       component="img"
                       src={url}
                       alt={img.filename}
                       sx={{ width: '100%', borderRadius: 1, border: 1, borderColor: 'divider', mb: 0.5 }}
                     />
-                  )}
+                  ))}
                   {url && (
                     <Button size="small" component="a" href={url} target="_blank" rel="noreferrer" sx={{ px: 0.5, minWidth: 0 }}>
-                      Open image
+                      {isPdf ? 'Open PDF' : 'Open image'}
                     </Button>
                   )}
                 </Box>

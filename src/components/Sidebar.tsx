@@ -1117,6 +1117,22 @@ export function Sidebar({
                   </Box>
                 )}
 
+                <FormControlLabel
+                  sx={{ mt: 0.5, mb: -0.5 }}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={includeGoogleSatellite}
+                      onChange={(e) => onIncludeGoogleSatelliteChange(e.target.checked)}
+                    />
+                  }
+                  label={
+                    <Typography variant="body2" sx={{ color: ui.text }}>
+                      Also save HD Google Satellite snapshot
+                    </Typography>
+                  }
+                />
+
                 <Box sx={{ mt: 1.1 }}>
                   {figuresToDbError && <Alert severity="error" sx={{ mb: 0.75 }}>{figuresToDbError}</Alert>}
                   {figuresToDbMessage && <Alert severity="success" sx={{ mb: 0.75 }}>{figuresToDbMessage}</Alert>}

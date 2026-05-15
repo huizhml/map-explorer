@@ -25,7 +25,7 @@ from rasterio.windows import Window
 from rasterio.warp import transform_bounds
 
 import utils
-from utils import MAX_HEIGHT, create_vrt, vertical_profile, pixel_diversity_indices
+from utils import MAX_HEIGHT_METERS, create_vrt, vertical_profile, pixel_diversity_indices
 
 try:
     import duckdb
@@ -399,7 +399,7 @@ async def gedi_point_profile(request: GEDIPointProfileRequest):
         return {"success": False, "error": "Need at least 3 RH values."}
 
     try:
-        x_vals, y_vals = vertical_profile(rhs, min_rh=-20, max_rh=MAX_HEIGHT, step=1, window=3)
+        x_vals, y_vals = vertical_profile(rhs, min_rh=-20, max_rh=MAX_HEIGHT_METERS, step=1, window=3)
         vp = [{"z": _safe(float(z)), "value": _safe(float(v))} for z, v in zip(x_vals.tolist(), y_vals.tolist())]
     except Exception as e:
         vp = []
@@ -412,7 +412,7 @@ async def gedi_point_profile(request: GEDIPointProfileRequest):
         raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(
             rhs,
             bin_width=request.fhd_interval,
-            max_height=MAX_HEIGHT,
+            max_height=MAX_HEIGHT_METERS,
         )
         fhd = _safe_scalar(float(raw_fhd))
         enl1d = _safe_scalar(float(raw_enl1d))
@@ -724,7 +724,10 @@ async def save_figures(request: SaveFiguresRequest):
     def _save_one_figure(src, window, title: str, filename: str, cmap: Optional[str],
                          rmin: Optional[float], rmax: Optional[float], band_idx: Optional[int],
                          prefer_sentinel_rgb: bool = False, rgb_bands: Optional[List[int]] = None):
-        fig, ax = plt.subplots(figsize=(8, 8), dpi=160)
+        # Higher dpi for PDF — vector elements stay sharp regardless, but the
+        # embedded raster (the imshow of the data) inherits the figure dpi.
+        render_dpi = 300 if request.format == "pdf" else 160
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=render_dpi)
         ax.set_axis_off()
         ax.set_title(title, fontsize=11)
         if band_idx is not None:

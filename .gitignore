@@ -29,3 +29,5 @@ keys/
 # get clobbered by the empty local placeholder on every sync.
 backend/data/saved_features.db
 backend/data/saved_features.db-*  # SQLite WAL / journal sidecars
+.claude
+.vscode

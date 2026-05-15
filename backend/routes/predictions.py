@@ -20,7 +20,7 @@ import numpy as np
 import rasterio
 from rasterio.warp import transform as rw_transform
 
-from utils import HEATMAP_MAX_HEIGHT, MAX_HEIGHT, pixel_vertical_profile, pixel_diversity_indices
+from utils import HEATMAP_MAX_HEIGHT, MAX_HEIGHT_METERS, pixel_vertical_profile, pixel_diversity_indices
 import math
 
 router = APIRouter(tags=["predictions"])
@@ -275,7 +275,7 @@ def _compute_profile_at_point(
             print(f"[vertical-profile] pixel_vertical_profile error: {e}")
         try:
             raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(
-                valid_vals, bin_width=fhd_interval, max_height=MAX_HEIGHT
+                valid_vals, bin_width=fhd_interval, max_height=MAX_HEIGHT_METERS
             )
             fhd = _safe_scalar(raw_fhd)
             enl1d = _safe_scalar(raw_enl1d)
@@ -299,13 +299,13 @@ def _compute_profile_at_point(
         "enl2d": enl2d,
         "cr": cr,
         "missing_file_count": missing_files,
-        "max_height": MAX_HEIGHT,
+        "max_height": MAX_HEIGHT_METERS,
         "heatmap_max_height": HEATMAP_MAX_HEIGHT,
         "fhd_interval": fhd_interval,
     }
 
 
-def _derive_profile_and_metrics(valid_vals: List[float], height_bin_m: int = 5, max_height: int = MAX_HEIGHT):
+def _derive_profile_and_metrics(valid_vals: List[float], height_bin_m: int = 5, max_height: int = MAX_HEIGHT_METERS):
 
     def _safe_scalar(v: float):
         return None if (math.isnan(v) or math.isinf(v)) else v
@@ -563,7 +563,7 @@ async def predictions_vertical_profile_line(request: VerticalProfileLineRequest)
             "rh_profile": rh_profile,
             "vertical_profile": vertical_profile,
             "samples": out,
-            "max_height": MAX_HEIGHT,
+            "max_height": MAX_HEIGHT_METERS,
             "heatmap_max_height": HEATMAP_MAX_HEIGHT,
             "fhd_interval": request.fhd_interval,
         }

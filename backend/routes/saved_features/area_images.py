@@ -137,10 +137,13 @@ def render_area_images(
         src, window, title: str, file_name: str, cmap: Optional[str],
         rmin: Optional[float], rmax: Optional[float], band_idx: Optional[int],
         prefer_sentinel_rgb: bool = False, rgb_bands: Optional[List[int]] = None,
+        is_rh_metric: bool = False,
     ) -> bytes:
-        fig, ax = plt.subplots(figsize=(8, 8), dpi=160)
+        # Higher dpi for PDF — vector elements stay sharp regardless, but the
+        # embedded raster (the imshow of the data) inherits the figure dpi.
+        render_dpi = 300 if payload.format == "pdf" else 160
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=render_dpi)
         ax.set_axis_off()
-        ax.set_title(title, fontsize=11)
 
         if band_idx is not None:
             data = _read_as_float(src, window, indexes=band_idx)
@@ -175,6 +178,15 @@ def render_area_images(
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.15)
         cbar = fig.colorbar(im, cax=cax)
+        # RH prediction rasters store heights in decimeters; convert tick labels
+        # to meters so the colorbar reads in user-facing units.
+        if is_rh_metric:
+            cbar.set_ticks([low, high])
+            cbar.set_ticklabels([f"{low / 10:g}", f"{high / 10:g}"])
+            cbar.set_label("m", fontsize=8)
+        else:
+            cbar.set_ticks([low, high])
+            cbar.set_ticklabels([f"{low:g}", f"{high:g}"])
         cbar.ax.tick_params(labelsize=8)
         buf = io.BytesIO()
         fig.savefig(buf, format=payload.format, bbox_inches="tight", pad_inches=0.05)
@@ -183,7 +195,12 @@ def render_area_images(
 
     image_exports: List[Dict[str, Any]] = []
     render_errors: List[Dict[str, str]] = []
-    mime_type = f"image/{'jpeg' if payload.format == 'jpg' else payload.format}"
+    if payload.format == "pdf":
+        mime_type = "application/pdf"
+    elif payload.format == "jpg":
+        mime_type = "image/jpeg"
+    else:
+        mime_type = f"image/{payload.format}"
 
     def _record_export(file_name: str, layer: FigureLayerSpec, band_name: Optional[str] = None) -> None:
         relative_path = str(Path(session_dir_name) / file_name)
@@ -200,9 +217,115 @@ def render_area_images(
             entry["band_name"] = band_name
         image_exports.append(entry)
 
+    wgs_xmin, wgs_ymin, wgs_xmax, wgs_ymax = transform_bounds(
+        "EPSG:3857", "EPSG:4326", xmin, ymin, xmax, ymax,
+    )
+
+    def _render_eox_mosaic_bytes(year: int) -> bytes:
+        """Stitch the EOX s2cloudless mosaic for the selection and render via
+        matplotlib so the saved file honours `payload.format` (png/jpg/pdf).
+        A matplotlib-drawn scale bar sits in the lower-left corner — vector
+        in PDF output, with restrained line weights / font size so it doesn't
+        overpower the imagery (the burned-in PIL version was too heavy)."""
+        import math
+        from matplotlib.patheffects import withStroke
+        from matplotlib.transforms import blended_transform_factory
+
+        from .satellite import _stitch_bbox_eox_s2cloudless
+        from .utils import nice_bar_length_m
+        from PIL import Image as _PILImage
+
+        sat_bytes, sat_meta = _stitch_bbox_eox_s2cloudless(
+            float(wgs_xmin), float(wgs_xmax), float(wgs_ymin), float(wgs_ymax),
+            buffer_m=0.0, max_width_px=4096, year=int(year),
+        )
+        if sat_bytes is None:
+            raise ValueError("EOX tile fetch returned no imagery for the selection.")
+        arr = np.asarray(_PILImage.open(io.BytesIO(sat_bytes)).convert("RGB"))
+        # Render at a higher dpi for raster outputs too — the EOX stitch is up
+        # to 4096 px wide, so a 160-dpi (1280 px) canvas softens both the
+        # satellite imagery and the small scale-bar label.
+        render_dpi = 300 if payload.format == "pdf" else 240
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=render_dpi)
+        ax.set_axis_off()
+        ax.imshow(arr, interpolation="bilinear")
+
+        # ---- Scale bar (lower-left, in axes-fraction × data coords) --------
+        # Mirrors the transect figure's bar: thin black line with a white halo,
+        # short end ticks, label centred above. Sized in axes fractions so it
+        # stays restrained regardless of source-image resolution.
+        try:
+            min_lon = float(sat_meta.get("min_lon", wgs_xmin))
+            max_lon = float(sat_meta.get("max_lon", wgs_xmax))
+            min_lat = float(sat_meta.get("min_lat", wgs_ymin))
+            max_lat = float(sat_meta.get("max_lat", wgs_ymax))
+            mean_lat_rad = math.radians((min_lat + max_lat) / 2.0)
+            span_m = (max_lon - min_lon) * 111320.0 * max(1e-6, math.cos(mean_lat_rad))
+            if span_m > 0:
+                bar_m = nice_bar_length_m(span_m * 0.12) or 100.0
+                img_w = arr.shape[1]
+                bar_px = bar_m / span_m * img_w
+                bar_x0 = img_w * 0.03
+                bar_x1 = bar_x0 + bar_px
+                bar_y_axes = 0.05  # 5% from the bottom of the axes
+                tick_h = 0.018
+                # Thinner halo than before — at small font sizes a 2.4 pt stroke
+                # bleeds into the glyph interiors and reads as blur.
+                line_halo = [withStroke(linewidth=2.2, foreground="white")]
+                text_halo = [withStroke(linewidth=1.2, foreground="white")]
+                trans = blended_transform_factory(ax.transData, ax.transAxes)
+
+                ax.plot(
+                    [bar_x0, bar_x1], [bar_y_axes, bar_y_axes],
+                    color="black", linewidth=1.2, solid_capstyle="butt",
+                    transform=trans, path_effects=line_halo, zorder=5,
+                )
+                for xv in (bar_x0, bar_x1):
+                    ax.plot(
+                        [xv, xv], [bar_y_axes - tick_h, bar_y_axes + tick_h],
+                        color="black", linewidth=1.2, solid_capstyle="butt",
+                        transform=trans, path_effects=line_halo, zorder=5,
+                    )
+                label_text = (
+                    f"{int(bar_m)} m" if bar_m < 1000 else f"{bar_m / 1000:g} km"
+                )
+                ax.text(
+                    (bar_x0 + bar_x1) / 2.0, bar_y_axes + tick_h + 0.012,
+                    label_text,
+                    transform=trans, ha="center", va="bottom",
+                    fontsize=11, color="black",
+                    path_effects=text_halo, zorder=6,
+                )
+        except Exception:
+            pass  # Scale bar is decorative; never block the export.
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format=payload.format, bbox_inches="tight", pad_inches=0.05)
+        plt.close(fig)
+        return buf.getvalue()
+
     for layer in payload.layers:
         try:
             is_sentinel = layer.layer_type == "sentinel2"
+            # RH/prediction rasters (single-band, no `bands` payload) store
+            # heights in decimeters; diversity-indices layers carry `bands` and
+            # share the "prediction" layer_type but their values are unitless.
+            is_rh_layer = layer.layer_type == "prediction" and not layer.bands
+
+            # EOX s2cloudless is a WMTS tile service, not a COG — rasterio
+            # cannot open its `{z}/{x}/{y}` template URL. Route it through the
+            # tile-stitcher used by the transect figure instead.
+            if layer.layer_subtype == "s2cloudless_mosaic":
+                year = layer.year or 2020
+                file_name = (
+                    f"{sanitize_name(layer.name)}_"
+                    f"{sanitize_name(location_tag)}.{payload.format}"
+                )
+                image_bytes = _render_eox_mosaic_bytes(year)
+                (session_dir / file_name).write_bytes(image_bytes)
+                _record_export(file_name, layer)
+                continue
+
             with rasterio.open(layer.url) as src:
                 src_bounds = transform_bounds(
                     "EPSG:3857", src.crs, xmin, ymin, xmax, ymax, densify_pts=21,
@@ -226,6 +349,7 @@ def render_area_images(
                             band.rescale_min if band.rescale_min is not None else layer.rescale_min,
                             band.rescale_max if band.rescale_max is not None else layer.rescale_max,
                             band.band_index, is_sentinel, layer.rgb_bands,
+                            is_rh_metric=False,
                         )
                         (session_dir / file_name).write_bytes(image_bytes)
                         _record_export(file_name, layer, band_name=band_name)
@@ -238,6 +362,7 @@ def render_area_images(
                         src, window, layer.name, file_name,
                         layer.colormap, layer.rescale_min, layer.rescale_max,
                         None, is_sentinel, layer.rgb_bands,
+                        is_rh_metric=is_rh_layer,
                     )
                     (session_dir / file_name).write_bytes(image_bytes)
                     _record_export(file_name, layer)

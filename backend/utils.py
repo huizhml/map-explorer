@@ -25,12 +25,14 @@ import os
 import time
 import pandas as pd
 
-MAX_HEIGHT = 150 # 100.0
+MAX_HEIGHT_METERS = 150 # 100.0
+REALISTIC_MAX=150 #m
+REALISTIC_MIN=-150
 # Meters: y-axis extent for transect RH heatmap only (diversity indices use MAX_HEIGHT).
 HEATMAP_MAX_HEIGHT = 50.0
 N_BINS = 20
-BIN_WIDTH = MAX_HEIGHT / N_BINS
-NODATA_IN = 32767
+BIN_WIDTH = MAX_HEIGHT_METERS / N_BINS
+VSM_NODATA = 32767
 NODATA_OUT = -9999.0
 stac_collection_dir = '~/data/gvs/products/gvsm_stac_catalog/vsm_local'
 
@@ -59,7 +61,7 @@ def pixel_vertical_profile(rhs, interval=1, max_height=50):
     return hist
 
 
-def pixel_diversity_indices(rhs, bin_width=5, max_height=MAX_HEIGHT):
+def pixel_diversity_indices(rhs, bin_width=5, max_height=MAX_HEIGHT_METERS):
     """
     Compute per-pixel FHD using a simple histogram approach. NOTE!!!: rhs should be in meters!!!
     """
@@ -82,7 +84,78 @@ def pixel_diversity_indices(rhs, bin_width=5, max_height=MAX_HEIGHT):
     
     return fhd, enl1d, enl2d, cr
 
-def _chunk_diversity(data, bin_width=5, max_height=MAX_HEIGHT):
+def prepare_rh_profile(rh_datacube):
+    """
+    Prepare the RH datacube for binning. This includes:
+    - Converting nodata values to NaN
+    - Converting from decimeters to meters
+    - Masking out invalid profiles (all nodata, infinite, negative, or unrealistic values)
+    NOTE: rh_datacube should have 4 dimensions (n, rows, cols, bands)
+    """
+    n_batch, n_bands, n_rows, n_cols = rh_datacube.shape
+    dtype = rh_datacube.dtype
+    # reshape
+    rh_datacube = rh_datacube.transpose(0, 2, 3, 1).astype(np.float32)
+    rh_datacube[rh_datacube == VSM_NODATA] = np.nan
+    if dtype == np.int16: # rh_datacube is in decimeters, convert to meters
+        rh_datacube = rh_datacube/10
+    return rh_datacube, n_batch, n_bands, n_rows, n_cols
+
+def mask_rh_profile(rh_datacube):
+    """
+    This masking is for calculating diversity indices, which only counts enegy returned above ground, and in range (0, max_height). 
+    RH metrics that are all nodata, infinite and zeros, will be masked out as nodata
+    There shouldn't be nodata or infinite appear in one of the 101 RH metrics, but I didn't check
+    Negative values won't be counted later. 
+    Values above max_height will be clipped to max_height, which is 150m by default.
+    NOTE: rh_datacube should be in meters, nodata should be nan!!! rh_datacube should have 4 dimensions (n, rows, cols, bands)
+    """
+    valid = np.isfinite(rh_datacube) & (rh_datacube >= 0) # all 101 RH metrics <0 should be invalid
+    invalid_mask = valid.sum(axis=-1) == 0
+    realistic = (rh_datacube < REALISTIC_MIN) | (rh_datacube > REALISTIC_MAX)
+    realistic_mask = realistic.any(axis=-1) # any value smaller than -150 or larger than 150, the whole RH profile will be masked out, 
+    nodata_mask = invalid_mask | realistic_mask # (n, rows, cols) True for nodata pixels, False for valid pixels
+    n, rows, cols, bands = rh_datacube.shape
+    n_pixels = n * rows * cols
+    pixel_valid = nodata_mask.reshape(n_pixels, 1) == False
+    tile_flat = rh_datacube.reshape(n_pixels, bands) # (n_pixels, n_bands)
+    tile_clean = np.where(pixel_valid, tile_flat, -1.0)
+    band_valid_flat = valid.reshape(n_pixels, bands) & pixel_valid     # per-band AND per-pixel
+    return tile_clean, nodata_mask, band_valid_flat, n_pixels
+
+
+def batch_binning(tile, bin_width=5, max_height=MAX_HEIGHT_METERS):
+    """
+    Vectorized binning for a batch of spatial chunks using searchsorted.
+    """
+    tile, n_batch, n_bands, n_rows, n_cols = prepare_rh_profile(tile) # (n, rows, cols, bands) in meters, with nodata as nan
+    tile_flat, nodata_mask, _, n_pixels = mask_rh_profile(tile) # (n, rows, cols, 1) nodata mask should work for all bands, and apply to the original data, therefore in original shape, not flattened shape.
+    tile_clean = np.minimum(tile_flat, max_height) # clip to max height, (n_pixels, n_bands) in meters, with nodata as -1.0, which is smaller than 0 and won't be counted in the histogram later.
+    
+    # Sort along axis=1 (bands)
+    profiles = np.sort(tile_clean, axis=1)
+    profiles = np.ascontiguousarray(profiles)
+
+    lower_edges = np.arange(0, max_height, bin_width)
+    upper_edges = np.arange(bin_width, max_height + bin_width, bin_width)
+
+    idx_low = np.stack(
+        [np.searchsorted(profiles[i, :], lower_edges, side='left') for i in range(n_pixels)]
+    ) # (n_pixels, n_bins)
+    idx_high = np.stack(
+        [np.searchsorted(profiles[i, :], upper_edges, side='left') for i in range(n_pixels)]
+    )
+    idx_high[:, -1] = np.array(
+        [np.searchsorted(profiles[i, :], upper_edges[-1:], side='right')[0] for i in range(n_pixels)]
+    )
+    hist = (idx_high - idx_low).astype(np.float32) # (n_pixels, n_bins)
+    n_bins = int(max_height / bin_width)
+    hist = hist.reshape(n_batch, n_rows, n_cols, n_bins)
+
+    return hist, nodata_mask
+
+
+def _chunk_diversity(data, bin_width=5, max_height=MAX_HEIGHT_METERS):
     """
     Vectorized Shannon entropy for a single spatial chunk. data is in decimeters.
 
@@ -94,67 +167,44 @@ def _chunk_diversity(data, bin_width=5, max_height=MAX_HEIGHT):
     -------
     out : ndarray, shape (rows, cols), float32
     """
-    n_bands, n_rows, n_cols = data.shape
-    n_pixels = n_rows * n_cols
-    valid = np.isfinite(data) & (data != NODATA_IN) & (data > 0)
-    nodata_mask = valid.sum(axis=0) == 0
+    if len(data.shape) == 3:
+        data = data[None, ...]  # add band dimension for consistency
 
-    data = data / 10
-
-    data = data.reshape(n_bands, n_pixels)
-    valid = valid.reshape(n_bands, n_pixels)
-    data_clean = np.where(valid, np.minimum(data, max_height), -1.0)
-
-    # Sort along axis=0 (bands), not axis=1 (pixels)
-    profiles = np.sort(data_clean, axis=0)
-    profiles = np.ascontiguousarray(profiles)
-
-    lower_edges = np.arange(0, max_height, bin_width)
-    upper_edges = np.arange(bin_width, max_height + bin_width, bin_width)
-
-    idx_low = np.stack(
-        [np.searchsorted(profiles[:, i], lower_edges, side='left') for i in range(n_pixels)]
-    )
-    idx_high = np.stack(
-        [np.searchsorted(profiles[:, i], upper_edges, side='left') for i in range(n_pixels)]
-    )
-    idx_high[:, -1] = np.array(
-        [np.searchsorted(profiles[:, i], upper_edges[-1:], side='right')[0] for i in range(n_pixels)]
-    )
-    hist = (idx_high - idx_low).astype(np.float32)
+    n_batch, n_bands, n_rows, n_cols = data.shape
+    hist, nodata_mask = batch_binning(data, bin_width=bin_width, max_height=max_height)
 
     # Normalize
-    total = hist.sum(axis=1, keepdims=True)
+    total = hist.sum(axis=-1, keepdims=True)
     total = np.where(total > 0, total, 1.0)
     p = hist / total
 
     # FHD
     log_p = np.where(p > 0, np.log(p), 0.0)
-    fhd = -np.sum(p * log_p, axis=1).astype(np.float32)
+    fhd = -np.sum(p * log_p, axis=-1).astype(np.float32)
 
     # ENL1D
     enl1d = np.exp(fhd).astype(np.float32)
 
     # ENL2D
-    sum_p2 = np.sum(np.where(p > 0, p ** 2, 0.0), axis=1)
+    sum_p2 = np.sum(np.where(p > 0, p ** 2, 0.0), axis=-1)
     enl2d = np.where(sum_p2 > 0, 1.0 / sum_p2, np.nan).astype(np.float32)
 
     # CR
-    rh25 = np.maximum(data[25, :], 0)
-    rh98 = data[98, :]
+    # TODO: check order of RHs? at least rh25 and rh98
+    rh25 = np.maximum(data[:, 24, :], 0)
+    rh98 = data[:, 97, :]
     cr = np.where(rh98 > 0, (rh98 - rh25) / rh98, np.nan).astype(np.float32)
 
-    fhd = fhd.reshape(n_rows, n_cols)
-    enl1d = enl1d.reshape(n_rows, n_cols)
-    enl2d = enl2d.reshape(n_rows, n_cols)
-    cr = cr.reshape(n_rows, n_cols)
+    fhd = fhd.reshape(n_batch, n_rows, n_cols)
+    enl1d = enl1d.reshape(n_batch, n_rows, n_cols)
+    enl2d = enl2d.reshape(n_batch, n_rows, n_cols)
+    cr = cr.reshape(n_batch, n_rows, n_cols)
     # Apply nodata
     fhd[nodata_mask] = np.nan
     enl1d[nodata_mask] = np.nan
     enl2d[nodata_mask] = np.nan
     cr[nodata_mask] = np.nan
-
-    return fhd, enl1d, enl2d, cr
+    return fhd[0], enl1d[0], enl2d[0], cr[0]
 
 
 def _process_tile(args):
@@ -166,7 +216,7 @@ def _process_tile(args):
     vrt_path, col_off, row_off, w, h, bin_width = args
     with rasterio.open(vrt_path, "r") as src:
         window = Window(col_off, row_off, w, h)
-        tile = src.read(window=window).astype(np.float32)  # (101, h, w)
+        tile = src.read(window=window)#.astype(np.float32)  # (101, h, w)
     ent, enl1d, enl2d, cr = _chunk_diversity(tile, bin_width=bin_width)
     return ent, enl1d, enl2d, cr, col_off, row_off, w, h
 
@@ -390,10 +440,10 @@ def vertical_profile(rhs, min_rh=-200, max_rh=500, step=1, window=31):
 
 
 if __name__ == "__main__":
-    tile_id = '36NTF'
+    tile_id = '34NEJ'
     year = 2020
     vrt_path = f"~/data/gvs/products/vsm/{year}/original/vrt/{tile_id}_Q1.vrt"
-    output_path = f"~/data/gvs/products/profile_entropy/{tile_id}.tif"
+    output_path = f"~/data/gvs/products/diversity_indices/{year}/original/tiles/geotiff/{tile_id}.tif"
 
     # Create VRT if needed
     tile_dir = f"~/data/gvs/products/vsm/{year}/original/tiles/cog/{tile_id}"

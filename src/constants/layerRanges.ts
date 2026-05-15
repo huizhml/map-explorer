@@ -4,13 +4,20 @@ export const DIVERSITY_INDICES_BAND_NAMES = ['FHD', '1D ENL', '2D ENL', 'CR'] as
 
 export const DIVERSITY_INDICES_BAND_RANGES: Record<number, LayerRange> = {
   1: [0, 2],
-  2: [1, 6],
-  3: [1, 6],
-  4: [0.18, 1.3],
+  2: [1, 7],
+  3: [1, 7],
+  4: [0.48, 1],
 };
 
 export const DIVERSITY_INDICES_DEFAULT_BAND = 1;
-export const DIVERSITY_INDICES_DEFAULT_COLORMAP = 'greens';
+export const DIVERSITY_INDICES_DEFAULT_COLORMAP = 'viridis';
+
+export const DIVERSITY_INDICES_BAND_COLORMAPS: Record<number, string> = {
+  1: 'viridis',
+  2: 'viridis',
+  3: 'viridis',
+  4: 'rdbu',
+};
 
 export const CANOPY_RATIO_RANGE: LayerRange = DIVERSITY_INDICES_BAND_RANGES[4];
 export const PROFILE_ENTROPY_FHD_RANGE: LayerRange = DIVERSITY_INDICES_BAND_RANGES[1];
@@ -23,6 +30,10 @@ export function getDiversityBandRange(band: number): LayerRange {
 
 export function getDiversityRgbRanges(rgbBands: [number, number, number]): [LayerRange, LayerRange, LayerRange] {
   return rgbBands.map((band) => getDiversityBandRange(band)) as [LayerRange, LayerRange, LayerRange];
+}
+
+export function getDiversityBandColormap(band: number): string {
+  return DIVERSITY_INDICES_BAND_COLORMAPS[band] ?? DIVERSITY_INDICES_DEFAULT_COLORMAP;
 }
 
 export function getProfileEntropyRange(metric?: 'entropy' | 'enl1d' | 'enl2d'): LayerRange {

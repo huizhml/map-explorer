@@ -641,8 +641,8 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # mid-height, and top of the panel — `MaxNLocator(nbins=2)` previously
         # used here is only an *upper bound* and can still surface 4+ ticks
         # when it finds nicer round values in the data span.
-        ax.set_yticks([0.0, max_h / 2.0, max_h])
-        ax.set_yticklabels(['0m',f'{max_h / 2.0:.0f}m',f'{max_h:.0f}m'])
+        ax.set_yticks([0.0,  max_h]) # max_h / 2.0,
+        ax.set_yticklabels(['0', f'{max_h:.0f}m']) # f'{max_h / 2.0:.0f}m'
         # Hand the mesh + colour range off to the bottom legend strip; the
         # colorbar itself is built there (horizontal, beside the JRC and metric
         # legends) once every panel's final position has settled.
@@ -683,16 +683,16 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # identifies each line, so a redundant "Diversity indices" / "CR"
         # label would just steal horizontal real estate.
         if has_left or not req.show_cr:
-            # Fixed [0, 8] range for the diversity-indices view: FHD/ENL
-            # typically top out around 4–6, so 8 leaves headroom for the
+            # Fixed [0, 10] range for the diversity-indices view: FHD/ENL
+            # typically top out around 4–6, so 10 leaves headroom for the
             # top-right source badge without crowding the data.
-            ax.set_ylim(0, 8)
-            # Integer y-ticks across the [0, 8] range — sparse (≤5) so the
+            ax.set_ylim(0, 10)
+            # Integer y-ticks across the [0, 10] range — sparse (≤5) so the
             # panel reads as a strip rather than a dense ladder, and
             # `integer=True` forces whole-number values regardless of the span.
-            # `prune="upper"` drops the topmost tick (8) so the source badge
+            # `prune="upper"` drops the topmost tick (10) so the source badge
             # sitting above the data doesn't visually collide with a label.
-            ax.yaxis.set_major_locator(MaxNLocator(nbins=5, integer=True, prune="upper"))
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=3, integer=True, prune="upper"))
         else:
             # CR-only on the primary axis — keep the dedicated 0..1.1 scale
             # so the line uses the full panel height rather than the upper

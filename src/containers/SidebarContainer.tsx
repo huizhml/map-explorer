@@ -21,7 +21,7 @@ import { deserialize } from 'flatgeobuf/lib/mjs/ol';
 import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore';
 import { parseUploadedFile } from '../utils/parseUploadedFile';
 import { API_BASE_URL, apiUrl } from '../utils/apiBase';
-import { getDiversityBandRange } from '../constants/layerRanges';
+import { getDiversityBandRange, getDiversityBandColormap } from '../constants/layerRanges';
 import {
   listSavedFeatures,
   listSavedFeatureTags,
@@ -1487,6 +1487,7 @@ export function SidebarContainer() {
           bandNames,
           selectedBand,
           rgbBands,
+          year: typeof meta.year === 'number' ? meta.year : undefined,
         };
       });
   }, [layers]);
@@ -1538,8 +1539,11 @@ export function SidebarContainer() {
         const isDiversity = layer.layerSubType === 'diversity_indices';
         next[layer.id] = {
           selectedBands: defaultBands,
-          colormap: layer.colormap,
-          // Keep diversity ranges unset initially so per-band defaults (e.g. 2D ENL -> 1..6) can be applied at save time.
+          // For diversity layers, leave colormap unset initially so per-band
+          // defaults (CR → 'rdbu', others → 'viridis') can be applied at save
+          // time. Seeding it here would mask that fallback for every band.
+          colormap: isDiversity ? undefined : layer.colormap,
+          // Same rationale for the rescale range — per-band defaults (e.g. 2D ENL → 1..7).
           rescaleMin: isDiversity ? undefined : layer.rescaleMin,
           rescaleMax: isDiversity ? undefined : layer.rescaleMax,
         };
@@ -1713,7 +1717,7 @@ export function SidebarContainer() {
           category: featureInfo.category || undefined,
           tags: featureInfo.tags.length > 0 ? featureInfo.tags : undefined,
           extent_3857: figureSelectionExtent,
-          format: figureFormat === 'jpg' ? 'jpg' : 'png',
+          format: figureFormat,
           include_google_satellite: includeGoogleSatellite,
           layers: layersToUse.map((layer) => {
             const ovr = figureLayerOverrides[layer.id];
@@ -1726,6 +1730,8 @@ export function SidebarContainer() {
               layer_id: layer.id,
               name: layer.name,
               layer_type: layer.layerType,
+              layer_subtype: layer.layerSubType,
+              year: layer.year,
               url: layer.url,
               rgb_bands: layer.rgbBands,
               colormap: cmap,
@@ -1744,7 +1750,13 @@ export function SidebarContainer() {
                         }),
                     band_index: bi,
                     band_name: layer.bandNames?.[bi - 1] ?? `Band ${bi}`,
-                    colormap: cmap,
+                    // For diversity layers, fall back to the per-band default
+                    // colormap (CR → 'rdbu') unless the user has explicitly
+                    // overridden the layer colormap.
+                    colormap:
+                      isDiversity && ovr?.colormap === undefined
+                        ? getDiversityBandColormap(bi)
+                        : cmap,
                   }))
                 : undefined,
             };

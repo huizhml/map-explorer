@@ -731,7 +731,11 @@ async def get_saved_feature_image(relative_path: str):
         raise HTTPException(status_code=400, detail="Invalid image path")
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
-    media_type = (
-        "image/jpeg" if candidate.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
-    )
+    suffix = candidate.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        media_type = "image/jpeg"
+    elif suffix == ".pdf":
+        media_type = "application/pdf"
+    else:
+        media_type = "image/png"
     return FileResponse(candidate, media_type=media_type)

@@ -67,17 +67,23 @@ class FigureLayerSpec(BaseModel):
     layer_id: str
     name: str
     layer_type: Optional[str] = None
+    # Fine-grained subtype used to route non-COG layers (e.g. WMTS tile
+    # services like EOX s2cloudless) through a tile-stitcher instead of
+    # `rasterio.open(url)`. Examples: 's2cloudless_mosaic', 'diversity_indices'.
+    layer_subtype: Optional[str] = None
     url: str
     rgb_bands: Optional[List[int]] = None
     colormap: Optional[str] = None
     rescale_min: Optional[float] = None
     rescale_max: Optional[float] = None
     bands: Optional[List[FigureBandSpec]] = None
+    # Vintage of the layer when applicable (e.g. EOX `s2cloudless-<year>`).
+    year: Optional[int] = None
 
 
 class SaveAreaImagesRequest(BaseModel):
     extent_3857: List[float]
-    format: Literal["jpg", "png"] = "png"
+    format: Literal["jpg", "png", "pdf"] = "png"
     layers: List[FigureLayerSpec]
     name: Optional[str] = Field(default=None, max_length=120)
     description: Optional[str] = Field(default=None, max_length=2000)

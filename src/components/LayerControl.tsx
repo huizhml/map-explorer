@@ -48,7 +48,7 @@ import { COLORMAPS } from '../constants/colormaps';
 import { getDefaultRescaleForRh } from '../constants/predictions';
 import {
   DIVERSITY_INDICES_BAND_NAMES,
-  DIVERSITY_INDICES_DEFAULT_COLORMAP,
+  getDiversityBandColormap,
   getDiversityBandRange,
   getDiversityRgbRanges,
 } from '../constants/layerRanges';
@@ -102,7 +102,7 @@ function DiversityIndicesStylePanel({ layer, onChangeOpacity, onChangeDiversityB
   const rescaleMin: number = meta.rescaleMin ?? selectedBandDefaults[0];
   const rescaleMax: number = meta.rescaleMax ?? selectedBandDefaults[1];
   const rgbRescales: [number, number][] = meta.rgbRescales ?? getDiversityRgbRanges(rgbBands);
-  const colormap: string = meta.colormap ?? DIVERSITY_INDICES_DEFAULT_COLORMAP;
+  const colormap: string = meta.colormap ?? getDiversityBandColormap(selectedBand);
   const gamma: number = meta.gamma ?? 1.0;
 
   const fire = (cfg: Partial<DiversityBandConfig>) =>
@@ -119,7 +119,7 @@ function DiversityIndicesStylePanel({ layer, onChangeOpacity, onChangeDiversityB
 
   const handleGrayscaleBandChange = (band: number) => {
     const defaults = getDiversityBandRange(band);
-    fire({ selectedBand: band, rescaleMin: defaults[0], rescaleMax: defaults[1] });
+    fire({ selectedBand: band, rescaleMin: defaults[0], rescaleMax: defaults[1], colormap: getDiversityBandColormap(band) });
   };
 
   const handleRGBBandChange = (channel: 0 | 1 | 2, band: number) => {

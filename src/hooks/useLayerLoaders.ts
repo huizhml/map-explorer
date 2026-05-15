@@ -13,7 +13,7 @@ import {
   CANOPY_RATIO_RANGE,
   DIVERSITY_INDICES_BAND_NAMES,
   DIVERSITY_INDICES_DEFAULT_BAND,
-  DIVERSITY_INDICES_DEFAULT_COLORMAP,
+  getDiversityBandColormap,
   getDiversityBandRange,
   getDiversityRgbRanges,
   getProfileEntropyRange,
@@ -241,7 +241,7 @@ export function useLayerLoaders(updateLayersList: () => void) {
         const defaultBandMode: 'grayscale' | 'rgb' = 'grayscale';
         const defaultBand = DIVERSITY_INDICES_DEFAULT_BAND;
         const [defaultRescaleMin, defaultRescaleMax] = getDiversityBandRange(defaultBand);
-        const defaultColormap = DIVERSITY_INDICES_DEFAULT_COLORMAP;
+        const defaultColormap = getDiversityBandColormap(defaultBand);
         const defaultGamma = 1.0;
         const defaultRgbBands: [number, number, number] = [1, 2, 3];
         const defaultRgbRescales = getDiversityRgbRanges(defaultRgbBands);
