@@ -4,7 +4,8 @@ Three independent layers are rendered around a saved Point:
 
 - Google Satellite basemap (no API key needed — falls back through tile providers)
 - RH98 canopy-height prediction (local MGRS tile or remote COG)
-- The user's currently-loaded Sentinel-2 layer(s)
+- EOX s2cloudless cloud-free Sentinel-2 mosaic for the point's year (always
+  fetched, independent of any Sentinel-2 layer loaded on the map)
 
 Each extractor returns a `({export_dict | None}, error_str | None)` tuple so the
 caller can log / persist the failure without aborting the rest of the save.
@@ -494,3 +495,86 @@ def _extract_sentinel2_point_snapshots(
             })
 
     return exports, errors
+
+
+# ---------------------------------------------------------------------------
+# EOX s2cloudless point snapshot (always-on Sentinel-2 reference)
+# ---------------------------------------------------------------------------
+
+# EOX publishes the s2cloudless cloud-free mosaic for these years only
+# (tiles.maps.eox.at). Mirrors EOX_S2CLOUDLESS_YEARS in src/components/Sidebar.tsx.
+_EOX_S2CLOUDLESS_YEARS = (2016, 2018, 2019, 2020, 2021, 2022, 2023, 2024)
+
+
+def _nearest_eox_year(year: int) -> int:
+    """Snap an arbitrary year to the closest published EOX s2cloudless year.
+    Ties resolve to the more recent year (generally better imagery)."""
+    return min(_EOX_S2CLOUDLESS_YEARS, key=lambda y: (abs(y - int(year)), -y))
+
+
+def _extract_eox_s2cloudless_point_snapshot(
+    lon: float,
+    lat: float,
+    year: int,
+    buffer_m: float = 75.0,
+    brightness: float = 1.3,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Stitch the EOX ``s2cloudless-<year>`` cloud-free mosaic around a saved
+    point so every popup-saved Point gets a Sentinel-2 reference image even
+    when no Sentinel-2 layer is loaded on the map.
+
+    The requested ``year`` is snapped to the nearest year EOX actually
+    publishes. Framing/return shape mirror ``_extract_google_point_snapshot``
+    (a 2×``buffer_m`` square), so the saved tile lines up with the Google /
+    RH98 snapshots.
+    """
+    from .satellite import _stitch_bbox_eox_s2cloudless
+
+    try:
+        eox_year = _nearest_eox_year(year)
+        # Degenerate point bbox: the stitcher adds `buffer_m` on every side,
+        # yielding a 2*buffer_m square that matches the other point snapshots.
+        sat_bytes, sat_meta = _stitch_bbox_eox_s2cloudless(
+            lon, lon, lat, lat,
+            buffer_m=buffer_m, max_width_px=1024, year=eox_year,
+        )
+        if not sat_bytes:
+            return None, f"eox_s2cloudless_fetch_failed_year_{eox_year}"
+
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(sat_bytes)).convert("RGB")
+
+        # EOX s2cloudless JPEGs read dark over forest canopy; lift with the
+        # same inverse-gamma the transect / area-image exports apply.
+        if brightness and brightness > 0 and abs(brightness - 1.0) > 1e-3:
+            arr = np.asarray(img).astype(np.float32) / 255.0
+            arr = np.clip(arr ** (1.0 / float(brightness)), 0.0, 1.0)
+            img = Image.fromarray((arr * 255.0).astype(np.uint8))
+
+        session_dir, session_dir_name = new_session_dir()
+        fname = (
+            f"sentinel2_eox_s2cloudless_{eox_year}_point75m_"
+            f"{sanitize_name(f'{lat:.5f}_{lon:.5f}')}.png"
+        )
+        out_path = session_dir / fname
+        img.save(out_path, format="PNG")
+
+        relative_path = str(Path(session_dir_name) / fname)
+        return {
+            "layer_id": "sentinel2_eox_s2cloudless",
+            "layer_name": f"Sentinel-2 cloudless {eox_year} (EOX)",
+            "filename": fname,
+            "relative_path": relative_path,
+            "url": image_url_for(relative_path),
+            "format": "png",
+            "mime_type": "image/png",
+            "buffer_m": buffer_m,
+            "source": "eox_s2cloudless",
+            "requested_year": int(year),
+            "year": eox_year,
+            "zoom": sat_meta.get("zoom"),
+            "brightness": float(brightness),
+        }, None
+    except Exception as exc:
+        return None, _sanitize_error_message(f"{type(exc).__name__}:{exc}")[:300]

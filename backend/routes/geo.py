@@ -231,6 +231,26 @@ async def naturalness_val_fgb_options():
     })
 
 
+@router.get("/fgb/path")
+async def serve_fgb_by_path(request: Request, path: str):
+    return _serve_fgb_file(request, path, f"FlatGeobuf file not found at path: {path}")
+
+
+@router.head("/fgb/path")
+async def head_fgb_by_path(path: str):
+    return _head_fgb_file(path)
+
+
+@router.options("/fgb/path")
+async def fgb_by_path_options():
+    return Response(headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Range, Content-Range, Content-Length",
+        "Access-Control-Max-Age": "3600",
+    })
+
+
 # ---------------------------------------------------------------------------
 # GeoJSON proxy endpoints
 # ---------------------------------------------------------------------------

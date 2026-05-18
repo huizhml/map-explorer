@@ -17,7 +17,13 @@ import {
   FormControl,
   InputLabel,
 } from '@mui/material';
-import { Close as CloseIcon, MoreVert as MoreVertIcon, BookmarkAdd as BookmarkAddIcon } from '@mui/icons-material';
+import {
+  Close as CloseIcon,
+  MoreVert as MoreVertIcon,
+  BookmarkAdd as BookmarkAddIcon,
+  ExpandMore as ExpandMoreIcon,
+  ChevronRight as ChevronRightIcon,
+} from '@mui/icons-material';
 import { Geometry } from 'ol/geom';
 import Point from 'ol/geom/Point';
 import { transform } from 'ol/proj';
@@ -105,6 +111,9 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [gediLoading, setGediLoading] = useState(false);
   const [gediError, setGediError] = useState<string | null>(null);
   const [gediResult, setGediResult] = useState<any | null>(null);
+
+  // Per-section expand override (absent key → section default). Keyed by section id.
+  const [sectionExpandOverride, setSectionExpandOverride] = useState<Record<string, boolean>>({});
 
   // Draggable state
   const [isDragging, setIsDragging] = useState(false);
@@ -822,6 +831,71 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     (typeof properties.name === 'string' && properties.name.trim() !== '')
   );
   const featurePropertyEntries = Object.entries(properties).filter(([key]) => key !== 'geometry');
+
+  // Group properties so the panel stays readable when an FGB layer has dozens
+  // of per-class probability columns. `<model>_prob_<n>` columns collapse into
+  // one section per model; the rest group by `lr_*` / `cnn_*` prefix.
+  type PropertySection = {
+    id: string;
+    title: string;
+    defaultExpanded: boolean;
+    entries: [string, any][];
+  };
+  const buildPropertySections = (entries: [string, any][]): PropertySection[] => {
+    const probGroups = new Map<string, [string, any][]>();
+    const refEntries: [string, any][] = [];
+    const predEntries: [string, any][] = [];
+    const otherEntries: [string, any][] = [];
+
+    for (const entry of entries) {
+      const [key] = entry;
+      const probMatch = key.match(/^(.+)_prob_(\d+)$/);
+      if (probMatch) {
+        const model = probMatch[1];
+        if (!probGroups.has(model)) probGroups.set(model, []);
+        probGroups.get(model)!.push(entry);
+      } else if (key.startsWith('lr_')) {
+        refEntries.push(entry);
+      } else if (key.startsWith('cnn_')) {
+        predEntries.push(entry);
+      } else {
+        otherEntries.push(entry);
+      }
+    }
+
+    const byKey = (a: [string, any], b: [string, any]) => a[0].localeCompare(b[0]);
+    const byClassIndex = (a: [string, any], b: [string, any]) => {
+      const ai = Number(a[0].match(/_prob_(\d+)$/)?.[1] ?? 0);
+      const bi = Number(b[0].match(/_prob_(\d+)$/)?.[1] ?? 0);
+      return ai - bi;
+    };
+
+    const sections: PropertySection[] = [];
+    if (otherEntries.length > 0) {
+      sections.push({ id: 'other', title: 'Other', defaultExpanded: true, entries: otherEntries.sort(byKey) });
+    }
+    if (predEntries.length > 0) {
+      sections.push({ id: 'pred', title: 'Predicted class (cnn_*)', defaultExpanded: true, entries: predEntries.sort(byKey) });
+    }
+    if (refEntries.length > 0) {
+      sections.push({ id: 'ref', title: 'Reference (lr_*)', defaultExpanded: false, entries: refEntries.sort(byKey) });
+    }
+    for (const model of [...probGroups.keys()].sort((a, b) => a.localeCompare(b))) {
+      sections.push({
+        id: `prob:${model}`,
+        title: `Probabilities — ${model}`,
+        defaultExpanded: false,
+        entries: probGroups.get(model)!.sort(byClassIndex),
+      });
+    }
+    return sections;
+  };
+  const propertySections = buildPropertySections(featurePropertyEntries);
+  const isSectionExpanded = (s: PropertySection) =>
+    s.id in sectionExpandOverride ? sectionExpandOverride[s.id] : s.defaultExpanded;
+  const toggleSection = (s: PropertySection) =>
+    setSectionExpandOverride((prev) => ({ ...prev, [s.id]: !(s.id in prev ? prev[s.id] : s.defaultExpanded) }));
+
   const canSavePoint = Boolean(onSavePoint && coordinates);
   const handleSavePoint = () => {
     if (!onSavePoint || !coordinates) return;
@@ -854,6 +928,10 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       },
       metadata: {
         source: 'feature_popup',
+        // Forward the selected VSM version so the saved RH98 snapshot matches
+        // what the user is viewing. Without this the backend cannot derive a
+        // version (`source` is the origin discriminator, not a version).
+        version: predVersion,
         tile_name:
           (typeof properties.Name === 'string' && properties.Name) ||
           (typeof properties.name === 'string' && properties.name) ||
@@ -983,17 +1061,50 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
                 No properties available.
               </Typography>
             ) : (
-              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr', gap: 1 }}>
-                {featurePropertyEntries.map(([key, value]) => (
-                  <Box key={key} sx={{ p: 1.25, borderRadius: 1.5, bgcolor: '#f5f7fb', border: '1px solid', borderColor: 'divider' }}>
-                    <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.3 }}>
-                      {key}
-                    </Typography>
-                    <Typography variant="body2" sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-word' }}>
-                      {typeof value === 'object' ? JSON.stringify(value) : String(value)}
-                    </Typography>
-                  </Box>
-                ))}
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr', gap: 1.25 }}>
+                {propertySections.map((section) => {
+                  const expanded = isSectionExpanded(section);
+                  return (
+                    <Box key={section.id} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.5, overflow: 'hidden' }}>
+                      <Box
+                        onClick={() => toggleSection(section)}
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.5,
+                          px: 1.25,
+                          py: 0.9,
+                          cursor: 'pointer',
+                          bgcolor: '#eef1f7',
+                          userSelect: 'none',
+                          '&:hover': { bgcolor: '#e6eaf3' },
+                        }}
+                      >
+                        {expanded ? <ExpandMoreIcon fontSize="small" sx={{ color: 'text.secondary' }} /> : <ChevronRightIcon fontSize="small" sx={{ color: 'text.secondary' }} />}
+                        <Typography variant="body2" sx={{ fontWeight: 700, flex: 1 }}>
+                          {section.title}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                          {section.entries.length}
+                        </Typography>
+                      </Box>
+                      <Collapse in={expanded} unmountOnExit>
+                        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr', gap: 1, p: 1.25 }}>
+                          {section.entries.map(([key, value]) => (
+                            <Box key={key} sx={{ p: 1.25, borderRadius: 1.5, bgcolor: '#f5f7fb', border: '1px solid', borderColor: 'divider' }}>
+                              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.3 }}>
+                                {key}
+                              </Typography>
+                              <Typography variant="body2" sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-word' }}>
+                                {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                              </Typography>
+                            </Box>
+                          ))}
+                        </Box>
+                      </Collapse>
+                    </Box>
+                  );
+                })}
               </Box>
             )}
           </Box>

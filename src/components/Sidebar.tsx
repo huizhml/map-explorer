@@ -155,6 +155,9 @@ interface SidebarProps {
   uploadingFile: boolean;
   onLoadForestNaturalnessData: () => void;
   onLoadForestNaturalnessDataVal: () => void;
+  fgbPathInput: string;
+  onFgbPathInputChange: (value: string) => void;
+  onLoadFgbPath: () => void;
   onLoadEoxS2CloudlessMosaic: (year: number) => void;
 }
 
@@ -490,6 +493,9 @@ export function Sidebar({
   uploadingFile,
   onLoadForestNaturalnessData,
   onLoadForestNaturalnessDataVal,
+  fgbPathInput,
+  onFgbPathInputChange,
+  onLoadFgbPath,
   onLoadEoxS2CloudlessMosaic,
   savedFeatureTags,
   areaImagePrefill,
@@ -909,6 +915,37 @@ export function Sidebar({
                   }}
                 >
                   Load forest naturalness data (val)
+                </Button>
+
+                <TextField
+                  label="FlatGeobuf path"
+                  placeholder="/path/to/file.fgb"
+                  value={fgbPathInput}
+                  onChange={(e) => onFgbPathInputChange(e.target.value)}
+                  size="small"
+                  fullWidth
+                  sx={{
+                    mt: 1,
+                    '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
+                    '& .MuiInputLabel-root': { color: ui.fieldLabel },
+                  }}
+                />
+                <Button
+                  variant="outlined"
+                  onClick={onLoadFgbPath}
+                  fullWidth
+                  disabled={!fgbPathInput.trim()}
+                  sx={{
+                    mt: 1,
+                    borderStyle: 'dashed',
+                    borderColor: ui.borderStrong,
+                    color: ui.textSecondary,
+                    py: 1,
+                    textTransform: 'none',
+                    '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
+                  }}
+                >
+                  Load fbg layer
                 </Button>
 
                 <EarthEngineLayerSection ui={ui} />

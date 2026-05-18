@@ -36,6 +36,7 @@ from .models import (
     TransectSatelliteRequest,
 )
 from .point_snapshots import (
+    _extract_eox_s2cloudless_point_snapshot,
     _extract_google_point_snapshot,
     _extract_prediction_rh98_snapshot,
     _extract_sentinel2_point_snapshots,
@@ -214,13 +215,15 @@ def _attach_feature_popup_snapshots(
 
         # ---- RH98 prediction ----
         pred_year = int(metadata_payload.get("year") or 2020)
-        # Accept either the new "version" key or legacy "prediction_source"/
-        # "source" keys from older saved metadata; default to "original".
+        # Accept the new "version" key or the legacy "prediction_source" key.
+        # NOT "source": that field is the origin discriminator ("feature_popup"
+        # / "area_images") — falling back to it poisons the prediction path
+        # template with e.g. ".../vsm/2020/feature_popup/..." and silently
+        # drops the RH98 snapshot for every popup-saved point.
         pred_version = (
             str(
                 metadata_payload.get("version")
                 or metadata_payload.get("prediction_source")
-                or metadata_payload.get("source")
                 or "original"
             ).strip().lower()
             or "original"
@@ -265,6 +268,31 @@ def _attach_feature_popup_snapshots(
             }
 
         # ---- Sentinel-2 ----
+        # Prefer the actual Sentinel-2 layer(s) the user has loaded on the map
+        # (true acquisition for that scene). If none are loaded — or they all
+        # fail to render here — fall back to the EOX s2cloudless cloud-free
+        # mosaic for the point's year so every saved point still gets a
+        # Sentinel-2 reference image.
+        def _attach_eox_s2_fallback() -> None:
+            # gamma 1.3 lifts s2cloudless midtones (dark over forest canopy).
+            s2_snapshot, s2_error = _extract_eox_s2cloudless_point_snapshot(
+                lon, lat, year=pred_year, buffer_m=75.0, brightness=1.3,
+            )
+            if s2_snapshot:
+                upsert_image_export(plot_data_payload, s2_snapshot)
+                metadata_payload["sentinel2_snapshot_status"] = "ok"
+                metadata_payload["sentinel2_snapshot_count"] = 1
+                metadata_payload["sentinel2_snapshot"] = {
+                    "source": "eox_s2cloudless",
+                    "year": s2_snapshot.get("year"),
+                    "requested_year": s2_snapshot.get("requested_year"),
+                }
+            else:
+                metadata_payload["sentinel2_snapshot_status"] = "unavailable"
+                metadata_payload["sentinel2_snapshot_count"] = 0
+                if s2_error:
+                    metadata_payload["sentinel2_snapshot_error"] = s2_error[:300]
+
         sentinel_layers = metadata_payload.get("sentinel2_layers")
         if isinstance(sentinel_layers, list) and len(sentinel_layers) > 0:
             sentinel_exports, sentinel_errors = _extract_sentinel2_point_snapshots(
@@ -272,17 +300,22 @@ def _attach_feature_popup_snapshots(
                 [layer for layer in sentinel_layers if isinstance(layer, dict)],
                 buffer_m=75.0,
             )
-            for export in sentinel_exports:
-                upsert_image_export(plot_data_payload, export)
-            metadata_payload["sentinel2_snapshot_status"] = (
-                "ok" if sentinel_exports else "unavailable"
-            )
-            metadata_payload["sentinel2_snapshot_count"] = len(sentinel_exports)
-            if sentinel_errors:
-                metadata_payload["sentinel2_snapshot_errors"] = sentinel_errors[:5]
+            if sentinel_exports:
+                for export in sentinel_exports:
+                    upsert_image_export(plot_data_payload, export)
+                metadata_payload["sentinel2_snapshot_status"] = "ok"
+                metadata_payload["sentinel2_snapshot_count"] = len(sentinel_exports)
+                metadata_payload["sentinel2_snapshot"] = {"source": "map_layer"}
+                if sentinel_errors:
+                    metadata_payload["sentinel2_snapshot_errors"] = sentinel_errors[:5]
+            else:
+                # Loaded layer(s) yielded nothing (e.g. point outside the
+                # scene's extent) — fall back to EOX rather than save no S2.
+                if sentinel_errors:
+                    metadata_payload["sentinel2_snapshot_errors"] = sentinel_errors[:5]
+                _attach_eox_s2_fallback()
         else:
-            metadata_payload["sentinel2_snapshot_status"] = "unavailable"
-            metadata_payload["sentinel2_snapshot_count"] = 0
+            _attach_eox_s2_fallback()
     except Exception:
         metadata_payload["satellite_snapshot_status"] = "unavailable"
         metadata_payload["satellite_snapshot_error"] = "snapshot_generation_exception"
@@ -823,7 +856,8 @@ async def refresh_saved_feature_prediction_snapshot(
 
     # Resolve year / q_index / version: caller override > stored metadata > default.
     # Stored metadata may use the new "version" key or the legacy
-    # "prediction_source"/"source" keys, so we fall through them in order.
+    # "prediction_source" key. NOT "source": that is the origin discriminator
+    # ("feature_popup" / "area_images") and would poison the prediction path.
     pred_year = int(payload.year) if payload.year is not None else int(metadata_payload.get("year") or 2020)
     pred_q_index = int(payload.q_index) if payload.q_index is not None else int(metadata_payload.get("q_index") or 1)
     pred_version = (
@@ -831,7 +865,6 @@ async def refresh_saved_feature_prediction_snapshot(
             payload.version
             or metadata_payload.get("version")
             or metadata_payload.get("prediction_source")
-            or metadata_payload.get("source")
             or "original"
         )
         .strip()

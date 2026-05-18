@@ -176,6 +176,7 @@ export interface FigureLayerOverrides {
 
 export function SidebarContainer() {
   const [uploadingFile, setUploadingFile] = React.useState(false);
+  const [fgbPathInput, setFgbPathInput] = React.useState('');
   const [figureFormat, setFigureFormat] = React.useState<'jpg' | 'png' | 'pdf'>('pdf');
   const [figureOutputFolder, setFigureOutputFolder] = React.useState('/maps/projects/dereeco/data/gvs');
   const [figureFilenameStem, setFigureFilenameStem] = React.useState('');
@@ -326,7 +327,7 @@ export function SidebarContainer() {
       // Remove existing FlatGeobuf layer
       const keepExistingSentinelGrid =
         Boolean(fgbLayer) &&
-        (datasetKind === 'naturalness' || datasetKind === 'naturalness-val') &&
+        (datasetKind === 'naturalness' || datasetKind === 'naturalness-val' || datasetKind === 'other') &&
         fgbLayer?.get('datasetKind') === 'sentinel2-grid';
       if (fgbLayer && !keepExistingSentinelGrid) {
         map.removeLayer(fgbLayer);
@@ -674,9 +675,17 @@ export function SidebarContainer() {
       // Add layer to map
       map.addLayer(newVectorLayer);
       console.log(`FlatGeobuf layer added with zIndex: ${fgbStyleOptions.zIndex}`);
-      if (keepExistingSentinelGrid && layerManager && (datasetKind === 'naturalness' || datasetKind === 'naturalness-val')) {
-        const managedId = datasetKind === 'naturalness' ? 'fgb-naturalness' : 'fgb-naturalness-val';
-        const managedName = datasetKind === 'naturalness' ? 'Forest naturalness' : 'Forest naturalness (val)';
+      if (keepExistingSentinelGrid && layerManager && (datasetKind === 'naturalness' || datasetKind === 'naturalness-val' || datasetKind === 'other')) {
+        // Must match the layer id App.tsx assigns for this datasetKind, else the
+        // same OL layer gets registered under two ids → duplicate synced rows.
+        const managedId =
+          datasetKind === 'naturalness' ? 'fgb-naturalness'
+          : datasetKind === 'naturalness-val' ? 'fgb-naturalness-val'
+          : 'fgb';
+        const managedName =
+          datasetKind === 'naturalness' ? 'Forest naturalness'
+          : datasetKind === 'naturalness-val' ? 'Forest naturalness (val)'
+          : 'FlatGeobuf Layer';
         layerManager.removeLayer(managedId);
         layerManager.addLayer(managedId, managedName, 'fgb', newVectorLayer as any, {
           datasetKind,
@@ -787,6 +796,15 @@ export function SidebarContainer() {
     setHasAutoLoadedFgb(true);
     void handleLoadFGB(naturalnessValUrl);
   }, [handleLoadFGB, setFgbUrl, setHasAutoLoadedFgb]);
+
+  const handleLoadFgbPath = React.useCallback(() => {
+    const trimmed = fgbPathInput.trim();
+    if (!trimmed) return;
+    const pathUrl = apiUrl(`/fgb/path?path=${encodeURIComponent(trimmed)}`);
+    setFgbUrl(pathUrl);
+    setHasAutoLoadedFgb(true);
+    void handleLoadFGB(pathUrl);
+  }, [fgbPathInput, handleLoadFGB, setFgbUrl, setHasAutoLoadedFgb]);
 
   // Auto-load FlatGeobuf once when map is ready
   React.useEffect(() => {
@@ -1881,6 +1899,9 @@ export function SidebarContainer() {
       uploadingFile={uploadingFile}
       onLoadForestNaturalnessData={handleLoadForestNaturalnessData}
       onLoadForestNaturalnessDataVal={handleLoadForestNaturalnessDataVal}
+      fgbPathInput={fgbPathInput}
+      onFgbPathInputChange={setFgbPathInput}
+      onLoadFgbPath={handleLoadFgbPath}
       onLoadEoxS2CloudlessMosaic={handleLoadEoxS2CloudlessMosaic}
     />
   );
