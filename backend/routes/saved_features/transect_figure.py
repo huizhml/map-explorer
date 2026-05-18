@@ -197,8 +197,20 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     LAYOUT_DPI = 150
     fig_w_in = req.figure_width_px / LAYOUT_DPI
 
-    # Margins in font-size-relative inches (DPI-independent).
-    font_in = req.font_size / 72.0          # 1 em in inches
+    # Margins in font-relative inches (DPI-independent).
+    #
+    # IMPORTANT: these use a FIXED layout font size, not `req.font_size`.
+    # Text is still rendered at `req.font_size` (see rcParams below), but the
+    # figure's *geometry* (margins → inner_frac → auto panel heights →
+    # fig_h_in) is pinned to a reference em so the figure's aspect ratio does
+    # NOT change when the user picks a larger/smaller font. Otherwise a bigger
+    # font grows the margins, shrinks inner_frac, shrinks the auto-sized panel
+    # heights, and the whole figure morphs taller/shorter. Any text that
+    # overflows these reference-sized margins is absorbed by the
+    # `bbox_inches="tight"` save (it expands the canvas outward) — it never
+    # clips or distorts the plotted content.
+    LAYOUT_FONT_PT = 11.0                   # reference em for layout geometry
+    font_in = LAYOUT_FONT_PT / 72.0         # 1 em in inches (layout only)
     left_in  = font_in * 10.0              # rotated ylabel + tick nums + padding
     # Right margin is plain whitespace now — the heatmap colorbar lives in the
     # bottom legend strip rather than to the right of the panel, so no special
@@ -892,15 +904,48 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         )
 
     # Output buffer.
+    #
+    # `bbox_inches="tight"` crops the figure to the drawn content, so the saved
+    # pixel width is NOT `figure_width_px` — the axes only fill `inner_frac` of
+    # the canvas and the tight crop trims the rest, leaving the output at a
+    # variable ~0.83–0.92× of the requested width. That makes the "Figure
+    # width (px)" control feel capped/non-linear.
+    #
+    # Fix: render once to learn the tight-crop pixel width, then re-save at a
+    # DPI corrected so the final width hits the target EXACTLY. We re-rasterize
+    # (not resample) so vector text/lines stay crisp at any width.
+    #
+    # Target keeps the existing preview/export split: export (req.dpi == 150 ==
+    # LAYOUT_DPI) lands exactly on `figure_width_px`; preview (req.dpi == 90)
+    # stays proportionally lighter at the same `req.dpi / LAYOUT_DPI` ratio it
+    # has today — but now linear and predictable instead of 0.83–0.92×.
     buf = io.BytesIO()
     if req.fmt == "pdf":
+        # PDF is vector — physical size is set by figsize/tight bbox, not DPI;
+        # a pixel-exact pass is meaningless here, so save once as before.
         fig.savefig(buf, format="pdf", dpi=req.dpi, bbox_inches="tight", pad_inches=0.1)
-        media_type = "application/pdf"
-    elif req.fmt == "jpg":
-        fig.savefig(buf, format="jpg", dpi=req.dpi, bbox_inches="tight", pad_inches=0.1, facecolor="white")
-        media_type = "image/jpeg"
+        plt.close(fig)
+        return buf.getvalue(), "application/pdf"
+
+    fmt = "jpg" if req.fmt == "jpg" else "png"
+    media_type = "image/jpeg" if fmt == "jpg" else "image/png"
+    save_kw = dict(format=fmt, bbox_inches="tight", pad_inches=0.1, facecolor="white")
+
+    target_w_px = max(1, int(round(req.figure_width_px * (req.dpi / LAYOUT_DPI))))
+
+    # Pass 1: measure the tight-crop width at the requested DPI.
+    probe = io.BytesIO()
+    fig.savefig(probe, dpi=req.dpi, **save_kw)
+    probe.seek(0)
+    from PIL import Image as _PILImage
+    measured_w_px = _PILImage.open(probe).size[0]
+
+    if abs(measured_w_px - target_w_px) <= 1:
+        # Already exact (within rounding) — reuse pass 1, no second render.
+        buf = probe
     else:
-        fig.savefig(buf, format="png", dpi=req.dpi, bbox_inches="tight", pad_inches=0.1, facecolor="white")
-        media_type = "image/png"
+        corrected_dpi = req.dpi * (target_w_px / measured_w_px)
+        fig.savefig(buf, dpi=corrected_dpi, **save_kw)
+
     plt.close(fig)
     return buf.getvalue(), media_type
