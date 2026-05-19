@@ -7,6 +7,7 @@ from urllib.parse import quote
 import asyncio
 import os
 import re
+import traceback
 import requests
 from typing import Literal
 
@@ -23,10 +24,8 @@ from rasterio.warp import transform as rw_transform
 from utils import (
     HEATMAP_MAX_HEIGHT,
     MAX_HEIGHT_METERS,
-    PROFILE_MIN_HEIGHT,
-    PROFILE_MAX_HEIGHT,
-    PROFILE_SMOOTH_WINDOW,
-    vertical_profile,
+    profile_curve_points,
+    profile_y_bounds,
     pixel_vertical_profile,
     pixel_diversity_indices,
 )
@@ -262,25 +261,26 @@ def _compute_profile_at_point(
         return None if (math.isnan(fv) or math.isinf(fv)) else fv
 
     vertical_profile_curve: List[Dict[str, float]] = []
+    profile_y_min, profile_y_max = profile_y_bounds()
     fhd = enl1d = enl2d = cr = None
     if len(valid_vals) >= 3:
         try:
-            # Use the same smooth gradient-of-CDF + Savitzky-Golay profile as
-            # the GEDI popup (utils.vertical_profile) instead of a raw count
-            # histogram, so the point-click curve is smooth and consistent.
-            x_vals, y_vals = vertical_profile(
-                valid_vals,
-                min_rh=PROFILE_MIN_HEIGHT,
-                max_rh=PROFILE_MAX_HEIGHT,
-                step=1,
-                window=PROFILE_SMOOTH_WINDOW,
-            )
-            vertical_profile_curve = [
-                {"z": float(z), "value": float(v)}
-                for z, v in zip(x_vals.tolist(), y_vals.tolist())
-            ]
+            # Smoothed Savitzky-Golay envelope + raw binned energy %, already
+            # trimmed to the real data extent (utils.profile_curve_points).
+            # The client fixes the y-axis to [profile_y_min, profile_y_max]
+            # so points stay visually comparable; the curve itself only
+            # spans real data (no flat-line tail across the fixed axis).
+            vertical_profile_curve = profile_curve_points(valid_vals)
+        except (TypeError, AttributeError, NameError):
+            # Signature / programming mismatch (e.g. wrong kwargs) — fail loudly
+            # with a 500 instead of silently returning an empty curve, which
+            # only manifests as a missing plot in the UI.
+            raise
         except Exception as e:
-            print(f"[vertical-profile] pixel_vertical_profile error: {e}")
+            print(
+                f"[vertical-profile] profile_curve_points failed; curve omitted: "
+                f"{e}\n{traceback.format_exc()}"
+            )
         try:
             raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(
                 valid_vals, bin_width=fhd_interval, max_height=MAX_HEIGHT_METERS
@@ -302,6 +302,8 @@ def _compute_profile_at_point(
         "lat": lat,
         "profile": profile,
         "vertical_profile_curve": vertical_profile_curve,
+        "profile_y_min": profile_y_min,
+        "profile_y_max": profile_y_max,
         "fhd": fhd,
         "enl1d": enl1d,
         "enl2d": enl2d,

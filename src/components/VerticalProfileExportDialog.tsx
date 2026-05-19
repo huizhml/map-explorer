@@ -16,18 +16,23 @@ import {
   Typography,
 } from '@mui/material';
 import { apiUrl } from '../utils/apiBase';
+import type { VerticalProfileCurvePoint } from '../stores/mapStore';
 
 type ExportFormat = 'png' | 'jpg' | 'pdf';
 
 type VerticalProfileExportDialogProps = {
   open: boolean;
   onClose: () => void;
-  curve: Array<{ z: number; value: number }>;
+  curve: VerticalProfileCurvePoint[];
   /** Saved-feature display name; used as the default export filename stem. */
   featureName?: string;
   xLabel?: string;
   yLabel?: string;
   title?: string;
+  /** Fixed y-axis (height) bounds forwarded to the matplotlib renderer so
+   *  the exported figure matches the on-screen chart. Omit → autoscale. */
+  yMin?: number;
+  yMax?: number;
 };
 
 /** Strip a free-form name down to a safe filename stem. */
@@ -55,6 +60,8 @@ export function VerticalProfileExportDialog({
   xLabel = 'Energy (%)',
   yLabel = 'Height (m)',
   title,
+  yMin,
+  yMax,
 }: VerticalProfileExportDialogProps) {
   const previewRenderTokenRef = useRef(0);
   const previewObjectUrlRef = useRef<string | null>(null);
@@ -78,7 +85,13 @@ export function VerticalProfileExportDialog({
     () =>
       (curve ?? [])
         .filter((p) => Number.isFinite(p.z) && Number.isFinite(p.value))
-        .map((p) => ({ z: p.z, value: p.value })),
+        .map((p) => ({
+          z: p.z,
+          value: p.value,
+          // Keep the raw bin % so the renderer can draw the bars; omit when
+          // absent (legacy payload) → renderer falls back to line-only.
+          ...(Number.isFinite(p.binned) ? { binned: p.binned } : {}),
+        })),
     [curve],
   );
   const hasEnoughPoints = cleanCurve.length >= 2;
@@ -91,6 +104,8 @@ export function VerticalProfileExportDialog({
         title: title ?? null,
         x_label: xLabel,
         y_label: yLabel,
+        y_min: Number.isFinite(yMin) ? yMin : null,
+        y_max: Number.isFinite(yMax) ? yMax : null,
         figure_width_px: safeWidth,
         figure_height_px: safeHeight,
         font_size: safeFontSize,
@@ -118,7 +133,7 @@ export function VerticalProfileExportDialog({
       const blob = await resp.blob();
       return { blob, mediaType };
     },
-    [hasEnoughPoints, cleanCurve, title, xLabel, yLabel, safeWidth, safeHeight, safeFontSize, format],
+    [hasEnoughPoints, cleanCurve, title, xLabel, yLabel, yMin, yMax, safeWidth, safeHeight, safeFontSize, format],
   );
 
   // Debounced preview refresh whenever any setting changes (or dialog opens).

@@ -22,6 +22,7 @@ import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore
 import { parseUploadedFile } from '../utils/parseUploadedFile';
 import { API_BASE_URL, apiUrl } from '../utils/apiBase';
 import { getDiversityBandRange, getDiversityBandColormap } from '../constants/layerRanges';
+import { NATURALNESS_MAP_CLASSES, buildNaturalnessColormapParam } from '../constants/naturalnessMap';
 import {
   listSavedFeatures,
   listSavedFeatureTags,
@@ -1364,6 +1365,78 @@ export function SidebarContainer() {
     })));
   }, [map, layerManager, setLayers]);
 
+  const handleLoadNaturalnessMap = React.useCallback(async () => {
+    if (!map || !layerManager) return;
+    const layerId = 'naturalness-map';
+    // Toggle off if the naturalness map is already loaded.
+    if (layerManager.getLayer(layerId)) {
+      layerManager.removeLayer(layerId);
+      updateLayersList();
+      return;
+    }
+    try {
+      const pathResp = await fetch(apiUrl('/naturalness-map/path'));
+      if (!pathResp.ok) throw new Error(`HTTP ${pathResp.status}`);
+      const pathData = await pathResp.json();
+      if (pathData.error || !pathData.path) throw new Error(pathData.error || 'Naturalness map path not available');
+      const cogPath: string = pathData.path;
+
+      // Extent + CRS from TiTiler COG info.
+      const infoResp = await fetch(apiUrl(`/cog/info?url=${encodeURIComponent(cogPath)}`));
+      if (!infoResp.ok) throw new Error(`Failed to get COG info: ${await infoResp.text()}`);
+      const info = await infoResp.json();
+      const bbox = info.bounds;
+      if (!bbox || bbox.length !== 4) throw new Error('Bounds not available');
+      let sourceCRS = 'EPSG:4326';
+      if (info.crs) {
+        if (typeof info.crs === 'string') sourceCRS = info.crs;
+        else if (info.crs.properties?.name) sourceCRS = info.crs.properties.name;
+        else if (info.crs.code) sourceCRS = `EPSG:${info.crs.code}`;
+      }
+      let extent = (sourceCRS === 'EPSG:3857' || sourceCRS === 'EPSG:900913')
+        ? bbox
+        : transformExtent(bbox, sourceCRS, 'EPSG:3857');
+      if (!extent.every((v: number) => isFinite(v) && !isNaN(v))) {
+        extent = transformExtent(bbox, 'EPSG:4326', 'EPSG:3857');
+      }
+      const isGlobal = !extent.every((v: number) => isFinite(v) && !isNaN(v))
+        || (extent[2] - extent[0]) > 1_000_000;
+
+      // The naturalness map is categorical: render each class with its exact
+      // colour via a discrete TiTiler colormap (kept in sync with the legend).
+      const tileUrl = apiUrl(
+        `/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(cogPath)}`
+        + `&return_mask=true&colormap=${encodeURIComponent(buildNaturalnessColormapParam())}`,
+      );
+
+      const layerOpts: any = {
+        source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18, wrapX: true }),
+        opacity: 1,
+        zIndex: 600,
+      };
+      if (!isGlobal) layerOpts.extent = extent;
+      const newLayer = new TileLayer(layerOpts);
+
+      map.addLayer(newLayer);
+      const metadata: any = {
+        url: cogPath, layerType: 'naturalness_map',
+        naturalnessLegend: NATURALNESS_MAP_CLASSES,
+      };
+      if (!isGlobal) metadata.extent = extent;
+      layerManager.addLayer(layerId, 'Naturalness map', 'prediction', newLayer, metadata);
+      updateLayersList();
+
+      if (!isGlobal) {
+        try {
+          map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 18 });
+        } catch { /* ignore */ }
+      }
+    } catch (error) {
+      console.error('Error loading naturalness map:', error);
+      alert(`Failed to load naturalness map: ${error instanceof Error ? error.message : error}`);
+    }
+  }, [map, layerManager, updateLayersList]);
+
   const handleLoadEoxS2CloudlessMosaic = React.useCallback((year: number) => {
     if (!map || !layerManager) return;
     const layerId = `eox-s2cloudless-${year}`;
@@ -1897,6 +1970,7 @@ export function SidebarContainer() {
       onJumpToFeature={handleJumpToFeature}
       onUploadFile={handleUploadFile}
       uploadingFile={uploadingFile}
+      onLoadNaturalnessMap={handleLoadNaturalnessMap}
       onLoadForestNaturalnessData={handleLoadForestNaturalnessData}
       onLoadForestNaturalnessDataVal={handleLoadForestNaturalnessDataVal}
       fgbPathInput={fgbPathInput}

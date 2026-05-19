@@ -1,4 +1,5 @@
 import { apiUrl } from '../utils/apiBase';
+import type { VerticalProfileCurvePoint } from '../stores/mapStore';
 
 export type SavedFeatureGeometryType = 'Point' | 'LineString' | 'Polygon';
 
@@ -56,7 +57,10 @@ export type SavedFeaturePlotData = {
     error?: string;
   }>;
   vertical_profile?: Array<{ rh: number; value: number | null; missing?: boolean }>;
-  vertical_profile_curve?: Array<{ z: number; value: number }>;
+  vertical_profile_curve?: VerticalProfileCurvePoint[];
+  /** Fixed vertical-profile-curve y-axis bounds (m); curve is trimmed to data extent. */
+  profile_y_min?: number;
+  profile_y_max?: number;
   profile_metrics?: {
     fhd?: number | null;
     enl1d?: number | null;
@@ -75,7 +79,7 @@ export type SavedFeaturePlotData = {
       lon: number;
       lat: number;
       profile: Array<{ rh: number; value: number | null; missing?: boolean }>;
-      vertical_profile_curve?: Array<{ z: number; value: number }>;
+      vertical_profile_curve?: VerticalProfileCurvePoint[];
       fhd?: number | null;
       enl1d?: number | null;
       enl2d?: number | null;

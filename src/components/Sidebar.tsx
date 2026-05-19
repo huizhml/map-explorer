@@ -153,6 +153,7 @@ interface SidebarProps {
   // File upload
   onUploadFile: (file: File) => Promise<void>;
   uploadingFile: boolean;
+  onLoadNaturalnessMap: () => void;
   onLoadForestNaturalnessData: () => void;
   onLoadForestNaturalnessDataVal: () => void;
   fgbPathInput: string;
@@ -491,6 +492,7 @@ export function Sidebar({
   onJumpToFeature,
   onUploadFile,
   uploadingFile,
+  onLoadNaturalnessMap,
   onLoadForestNaturalnessData,
   onLoadForestNaturalnessDataVal,
   fgbPathInput,
@@ -884,6 +886,22 @@ export function Sidebar({
                   </Button>
                 </Box>
 
+                <Button
+                  variant="outlined"
+                  onClick={onLoadNaturalnessMap}
+                  fullWidth
+                  sx={{
+                    mt: 1,
+                    borderStyle: 'dashed',
+                    borderColor: ui.borderStrong,
+                    color: ui.textSecondary,
+                    py: 1,
+                    textTransform: 'none',
+                    '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
+                  }}
+                >
+                  Load naturalness map
+                </Button>
                 <Button
                   variant="outlined"
                   onClick={onLoadForestNaturalnessData}

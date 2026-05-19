@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import tempfile
+import traceback
 import numpy as np
 import math
 import re
@@ -25,7 +26,13 @@ from rasterio.windows import Window
 from rasterio.warp import transform_bounds
 
 import utils
-from utils import MAX_HEIGHT_METERS, create_vrt, vertical_profile, pixel_diversity_indices
+from utils import (
+    MAX_HEIGHT_METERS,
+    create_vrt,
+    profile_curve_points,
+    profile_y_bounds,
+    pixel_diversity_indices,
+)
 
 try:
     import duckdb
@@ -398,12 +405,22 @@ async def gedi_point_profile(request: GEDIPointProfileRequest):
     if not rhs or len(rhs) < 3:
         return {"success": False, "error": "Need at least 3 RH values."}
 
+    profile_y_min, profile_y_max = profile_y_bounds()
     try:
-        x_vals, y_vals = vertical_profile(rhs, min_rh=-20, max_rh=MAX_HEIGHT_METERS, step=1, window=3)
-        vp = [{"z": _safe(float(z)), "value": _safe(float(v))} for z, v in zip(x_vals.tolist(), y_vals.tolist())]
+        # Smoothed envelope + raw binned energy %, trimmed to the real data
+        # extent. The y-axis is fixed to [profile_y_min, profile_y_max]
+        # client-side; the curve only spans real data.
+        vp = profile_curve_points(rhs)
+    except (TypeError, AttributeError, NameError):
+        # Signature / programming mismatch (e.g. wrong kwargs) — fail loudly
+        # instead of silently returning an empty profile.
+        raise
     except Exception as e:
         vp = []
-        print(f"[gedi/point-profile] vertical_profile error: {e}")
+        print(
+            f"[gedi/point-profile] profile_curve_points failed; profile omitted: "
+            f"{e}\n{traceback.format_exc()}"
+        )
 
     def _safe_scalar(v: float):
         return None if (math.isnan(v) or math.isinf(v)) else v
@@ -426,6 +443,8 @@ async def gedi_point_profile(request: GEDIPointProfileRequest):
         "success": True,
         "rh_curve": [{"rh": i, "value": _safe(float(v))} for i, v in enumerate(rhs)],
         "vertical_profile": vp,
+        "profile_y_min": profile_y_min,
+        "profile_y_max": profile_y_max,
         "fhd": fhd,
         "enl1d": enl1d,
         "enl2d": enl2d,

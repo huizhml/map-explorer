@@ -15,6 +15,7 @@ router = APIRouter(tags=["geo"])
 S2_GRID_LOCAL_PATH = os.environ.get("S2_GRID_LOCAL_PATH", "")
 NATURALNESS_REF_DATA_PATH = os.environ.get("NATURALNESS_REF_DATA_PATH", "")
 NATURALNESS_REF_DATA_VAL_PATH = os.environ.get("NATURALNESS_REF_DATA_VAL_PATH", "")
+NATURALNESS_MAP_PATH = os.environ.get("NATURALNESS_MAP_PATH", "")
 
 # ---------------------------------------------------------------------------
 # GeoParquet
@@ -229,6 +230,17 @@ async def naturalness_val_fgb_options():
         "Access-Control-Allow-Headers": "Range, Content-Range, Content-Length",
         "Access-Control-Max-Age": "3600",
     })
+
+
+@router.get("/naturalness-map/path")
+async def get_naturalness_map_path():
+    """Return the configured naturalness map COG path so the frontend can
+    load it through the TiTiler /cog endpoints."""
+    if not NATURALNESS_MAP_PATH:
+        return {"error": "NATURALNESS_MAP_PATH not set"}
+    if not os.path.exists(NATURALNESS_MAP_PATH):
+        return {"error": f"Naturalness map file not found at path: {NATURALNESS_MAP_PATH}"}
+    return {"path": NATURALNESS_MAP_PATH}
 
 
 @router.get("/fgb/path")

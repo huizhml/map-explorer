@@ -384,6 +384,8 @@ def _attach_vertical_profile(
         if result.get("success"):
             plot_data_payload["vertical_profile"] = result.get("profile")
             plot_data_payload["vertical_profile_curve"] = result.get("vertical_profile_curve")
+            plot_data_payload["profile_y_min"] = result.get("profile_y_min")
+            plot_data_payload["profile_y_max"] = result.get("profile_y_max")
             plot_data_payload["profile_metrics"] = {
                 "fhd": result.get("fhd"),
                 "enl1d": result.get("enl1d"),

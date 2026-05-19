@@ -33,13 +33,23 @@ export type VerticalProfilePoint = {
   missing?: boolean;
 };
 
+/** One point of the derived vertical-profile curve. `value` is the
+ *  Savitzky-Golay smoothed energy %; `binned` the raw per-bin energy %
+ *  (absent on legacy payloads → line-only render). The curve is already
+ *  trimmed server-side to the real data extent. */
+export type VerticalProfileCurvePoint = {
+  z: number;
+  value: number;
+  binned?: number;
+};
+
 export type VerticalProfileLineSample = {
   index: number;
   distance_m: number;
   lon: number;
   lat: number;
   profile: VerticalProfilePoint[];
-  vertical_profile_curve?: Array<{ z: number; value: number }>;
+  vertical_profile_curve?: VerticalProfileCurvePoint[];
   fhd?: number | null;
   enl1d?: number | null;
   enl2d?: number | null;
@@ -69,7 +79,7 @@ export type InspectPanelState = {
   pendingSample?: { lon: number; lat: number };
   kind: 'layers' | 'vertical_profile' | 'vertical_profile_line';
   verticalProfile?: VerticalProfilePoint[];
-  verticalProfileCurve?: Array<{ z: number; value: number }>;
+  verticalProfileCurve?: VerticalProfileCurvePoint[];
   profileMetrics?: {
     fhd?: number | null;
     enl1d?: number | null;
@@ -85,6 +95,11 @@ export type InspectPanelState = {
     maxHeight?: number;
     /** Transect heatmap y-axis top (m); from API `heatmap_max_height`. */
     heatmapMaxHeight?: number;
+    /** Fixed vertical-profile-curve y-axis bounds (m). The curve is trimmed
+     *  to the real data extent; these add head/foot room so points stay
+     *  visually comparable. From API `profile_y_min` / `profile_y_max`. */
+    profileYMin?: number;
+    profileYMax?: number;
     fhdInterval?: number;
   };
   transectProfile?: {

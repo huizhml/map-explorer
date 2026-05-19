@@ -203,6 +203,10 @@ class TransectFigureRequest(BaseModel):
 class VerticalProfileCurvePoint(BaseModel):
     z: float
     value: float
+    # Raw per-bin energy %. Optional for backward compatibility with older
+    # callers that only sent the smoothed `value`; when absent the renderer
+    # draws the line only (no bars).
+    binned: Optional[float] = None
 
 
 class VerticalProfileFigureRequest(BaseModel):
@@ -215,7 +219,15 @@ class VerticalProfileFigureRequest(BaseModel):
     title: Optional[str] = None
     x_label: str = "Energy (%)"
     y_label: str = "Height (m)"
-    line_color: str = "#2e7d32"
+    # Green binned bars + orange smoothed envelope (matches the on-screen
+    # chart). `line_color` kept as the smoothed-line colour for back-compat.
+    bar_color: str = "#6b8e5a"
+    line_color: str = "#e8632a"
+    # Fixed y-axis (height) bounds. The curve is pre-trimmed to the real data
+    # extent server-side; these add the head/foot room so different points
+    # are visually comparable. None → autoscale to the data.
+    y_min: Optional[float] = None
+    y_max: Optional[float] = None
     figure_width_px: int = 900
     figure_height_px: int = 700
     font_size: int = 12

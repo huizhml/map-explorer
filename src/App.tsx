@@ -9,6 +9,7 @@ import { TileSearch } from './components/TileSearch';
 import { BaseMapSelector } from './components/BaseMapSelector';
 import { MapColorbarOverlay } from './components/MapColorbarOverlay';
 import { EarthEngineLegendOverlay } from './components/EarthEngineLegendOverlay';
+import { NaturalnessLegendOverlay } from './components/NaturalnessLegendOverlay';
 import { GediPointPopup } from './components/GediPointPopup';
 import { LayerManager } from './utils/LayerManager';
 import { useMapStore } from './stores/mapStore';
@@ -252,6 +253,7 @@ function App() {
         <TileSearch map={map} />
         <MapColorbarOverlay layers={layers} />
         <EarthEngineLegendOverlay layers={layers} />
+        <NaturalnessLegendOverlay layers={layers} />
 
         {gediPointPopup && (
           <GediPointPopup data={gediPointPopup} onClose={closeGediPopup} />

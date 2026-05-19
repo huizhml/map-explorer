@@ -1,6 +1,7 @@
 import { apiUrl } from './apiBase';
 import { DEFAULT_DIVERSITY_HEIGHT_BIN_M } from '../constants/diversityMetrics';
 import { DEFAULT_VSM_VERSION, type VsmVersion } from '../constants/predictions';
+import type { VerticalProfileCurvePoint } from '../stores/mapStore';
 
 export type VerticalProfileResponse = {
   success: boolean;
@@ -11,12 +12,15 @@ export type VerticalProfileResponse = {
   lon?: number;
   lat?: number;
   profile?: Array<{ rh: number; value: number | null; missing?: boolean }>;
-  vertical_profile_curve?: Array<{ z: number; value: number }>;
+  vertical_profile_curve?: VerticalProfileCurvePoint[];
   version?: VsmVersion;
   fhd?: number | null;
   enl1d?: number | null;
   enl2d?: number | null;
   cr?: number | null;
+  /** Fixed vertical-profile y-axis bounds (m); curve itself is trimmed to data extent. */
+  profile_y_min?: number;
+  profile_y_max?: number;
   max_height?: number;
   /** Y-axis top (m) for transect RH heatmap; diversity uses `max_height`. */
   heatmap_max_height?: number;
@@ -28,7 +32,7 @@ export type VerticalProfileLineSample = {
   distance_m: number;
   lon: number;
   lat: number;
-  vertical_profile_curve?: Array<{ z: number; value: number }>;
+  vertical_profile_curve?: VerticalProfileCurvePoint[];
   fhd?: number | null;
   enl1d?: number | null;
   enl2d?: number | null;

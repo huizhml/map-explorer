@@ -467,7 +467,12 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
                     <VerticalProfileChart profile={verticalData!} dimmed={hasStaleVertical} />
                   </Box>
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <VerticalProfileCurveChart curve={verticalCurveData!} dimmed={hasStaleVertical} />
+                    <VerticalProfileCurveChart
+                      curve={verticalCurveData!}
+                      dimmed={hasStaleVertical}
+                      yMin={profileMeta?.profileYMin}
+                      yMax={profileMeta?.profileYMax}
+                    />
                   </Box>
                 </Box>
               </>

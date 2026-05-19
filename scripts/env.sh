@@ -31,6 +31,7 @@ export SAVED_FEATURES_DB_PATH="/projects/dereeco/data/gvs/results/app_saved_feat
 export SAVED_FEATURE_IMAGES_ROOT="/projects/dereeco/data/gvs/results/app_saved_images"
 export NATURALNESS_REF_DATA_PATH="/projects/dereeco/data/gvs/evaluation/downstream_tasks/naturalness/reference_data_set_updated.fgb"
 export NATURALNESS_REF_DATA_VAL_PATH="/projects/dereeco/data/gvs/evaluation/downstream_tasks/naturalness/results_from_vsm_2017/naturalness_classification_ps15/logistic_regression_predictions.fgb"
+export NATURALNESS_MAP_PATH='/projects/dereeco/data/gvs/evaluation/downstream_tasks/naturalness/FML_v3.2.cog.tif'
 # Optional: enable Google Satellite static snapshots for saved points (75m buffer)
 export GOOGLE_STATIC_MAPS_API_KEY="AIzaSyAavNP19BB1UjqX1OYaXRRxcbdfaMZC9UE"
 

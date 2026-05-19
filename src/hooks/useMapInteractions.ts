@@ -759,6 +759,8 @@ export function useMapInteractions(updateLayersList: () => void) {
                 version: data.version,
                 maxHeight: data.max_height,
                 heatmapMaxHeight: data.heatmap_max_height,
+                profileYMin: data.profile_y_min,
+                profileYMax: data.profile_y_max,
                 fhdInterval: data.fhd_interval ?? diversityHeightBinM,
               },
               pendingSample: undefined, inspectError: null,

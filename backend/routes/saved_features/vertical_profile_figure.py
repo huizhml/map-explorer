@@ -28,17 +28,28 @@ def _render_vertical_profile_figure(req: VerticalProfileFigureRequest) -> Tuple[
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
 
-    # Match the on-screen chart: x = curve value (energy), y = z (height).
-    # Plot in height order so the polyline is monotonic in y (the backend
-    # already returns z-sorted points; sort defensively).
+    # Match the on-screen chart: x = energy %, y = z (height). Per point:
+    # `value` = smoothed envelope, `binned` = raw per-bin energy %. Plot in
+    # height order so the polyline is monotonic in y (backend already returns
+    # z-sorted points; sort defensively).
     pts = [
-        (float(p.value), float(p.z))
+        (float(p.z), float(p.value), None if p.binned is None else float(p.binned))
         for p in req.curve
         if p.value is not None and p.z is not None
     ]
-    pts.sort(key=lambda t: t[1])
-    xs = [t[0] for t in pts]
-    ys = [t[1] for t in pts]
+    pts.sort(key=lambda t: t[0])
+    zs = [t[0] for t in pts]
+    smoothed = [t[1] for t in pts]
+    binned = [t[2] for t in pts]
+    has_bars = bool(pts) and all(b is not None for b in binned)
+
+    # Bar thickness = the bin spacing (median Δz), so contiguous bars read
+    # as a filled silhouette like the on-screen chart.
+    if len(zs) >= 2:
+        diffs = sorted(zs[i + 1] - zs[i] for i in range(len(zs) - 1))
+        bar_h = diffs[len(diffs) // 2] or 0.4
+    else:
+        bar_h = 0.4
 
     fs = max(6, int(req.font_size))
     plt.rcParams["font.size"] = fs
@@ -51,13 +62,45 @@ def _render_vertical_profile_figure(req: VerticalProfileFigureRequest) -> Tuple[
     fig_h_in = max(1.0, req.figure_height_px / LAYOUT_DPI)
     fig, ax = plt.subplots(figsize=(fig_w_in, fig_h_in))
 
-    if xs:
-        ax.plot(xs, ys, color=req.line_color, linewidth=1.6)
+    if has_bars:
+        ax.barh(
+            zs,
+            binned,
+            height=bar_h,
+            align="center",
+            color=req.bar_color,
+            edgecolor="none",
+            label="Binned",
+            zorder=1,
+        )
+    if smoothed:
+        ax.plot(
+            smoothed,
+            zs,
+            color=req.line_color,
+            linewidth=1.8,
+            label="Smoothed",
+            zorder=3,
+        )
+    # Ground reference (z = 0). Only draw if within the visible y-range.
+    lo = req.y_min if req.y_min is not None else (min(zs) if zs else 0.0)
+    hi = req.y_max if req.y_max is not None else (max(zs) if zs else 1.0)
+    if lo <= 0.0 <= hi:
+        ax.axhline(
+            0.0, linestyle="--", color="#8a6d4b", linewidth=1.2, zorder=2
+        )
+
     ax.set_xlabel(req.x_label)
     ax.set_ylabel(req.y_label)
     if req.title:
         ax.set_title(req.title)
+    # Fixed y-axis (head/foot room); energy starts at 0.
+    if req.y_min is not None and req.y_max is not None:
+        ax.set_ylim(req.y_min, req.y_max)
+    ax.set_xlim(left=0.0)
     ax.grid(True, linewidth=0.5, alpha=0.4)
+    if has_bars or smoothed:
+        ax.legend(loc="lower right", frameon=True, fontsize=max(5, fs - 2))
 
     buf = io.BytesIO()
     if req.fmt == "pdf":

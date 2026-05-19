@@ -10,6 +10,7 @@ import { transform } from 'ol/proj';
 import { fetchVerticalProfile } from '../utils/verticalProfile';
 import { apiUrl } from '../utils/apiBase';
 import { useMapStore } from '../stores/mapStore';
+import type { VerticalProfileCurvePoint } from '../stores/mapStore';
 
 export interface GediPointData {
   coordinate: number[];
@@ -19,7 +20,7 @@ export interface GediPointData {
 interface ProfileResponse {
   success: boolean;
   rh_curve: { rh: number; value: number }[];
-  vertical_profile: { z: number; value: number }[];
+  vertical_profile: VerticalProfileCurvePoint[];
   fhd: number | null;
   enl1d: number | null;
   enl2d: number | null;
@@ -29,7 +30,7 @@ interface ProfileResponse {
 
 interface CogProfile {
   rhCurve: { rh: number; value: number }[];
-  verticalCurve: { z: number; value: number }[];
+  verticalCurve: VerticalProfileCurvePoint[];
   fhd: number | null;
   enl1d: number | null;
   enl2d: number | null;

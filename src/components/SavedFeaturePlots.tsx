@@ -16,7 +16,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckIcon from '@mui/icons-material/Check';
 import SaveAltIcon from '@mui/icons-material/SaveAlt';
 import type { SavedFeaturePlotData } from '../services/savedFeaturesApi';
-import type { VerticalProfilePoint } from '../stores/mapStore';
+import type { VerticalProfilePoint, VerticalProfileCurvePoint } from '../stores/mapStore';
 import { apiUrl } from '../utils/apiBase';
 import { TransectExportDialog } from './TransectExportDialog';
 import { VerticalProfileExportDialog } from './VerticalProfileExportDialog';
@@ -337,26 +337,102 @@ export function VerticalProfileChart({
   );
 }
 
+// On-screen colours kept in sync with the matplotlib export defaults
+// (VerticalProfileFigureRequest.bar_color / line_color) so the figure the
+// user exports matches what they see.
+const VP_BAR_COLOR = '#6b8e5a';
+const VP_LINE_COLOR = '#e8632a';
+const VP_GROUND_COLOR = '#8a6d4b';
+
+/** ~`count` evenly spaced tick values across [min, max]. */
+function linearTicks(min: number, max: number, count: number): number[] {
+  if (!(max > min) || count < 2) return [min];
+  const step = (max - min) / (count - 1);
+  return Array.from({ length: count }, (_, i) => min + i * step);
+}
+
 export function VerticalProfileCurveChart({
   curve,
   dimmed,
   featureName,
+  yMin,
+  yMax,
 }: {
-  curve: Array<{ z: number; value: number }>;
+  curve: VerticalProfileCurvePoint[];
   dimmed?: boolean;
   /** Saved-feature display name; used as the export filename stem. */
   featureName?: string;
+  /** Fixed y-axis (height) bounds. The curve is pre-trimmed to the data
+   *  extent; these add head/foot room. Falls back to the data extent. */
+  yMin?: number;
+  yMax?: number;
 }) {
   const theme = useTheme();
   const [exportOpen, setExportOpen] = useState(false);
-  const validPoints = curve.filter((p) => Number.isFinite(p.z) && Number.isFinite(p.value));
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(420);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const w = el.getBoundingClientRect().width;
+      if (w > 0) setContainerWidth(Math.round(w));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const validPoints = curve
+    .filter((p) => Number.isFinite(p.z) && Number.isFinite(p.value))
+    .slice()
+    .sort((a, b) => a.z - b.z);
   if (validPoints.length < 2) return null;
 
-  const xExtent = getNumericExtent(validPoints.map((p) => p.value), 0.06, 0.5);
+  const hasBars = validPoints.every((p) => Number.isFinite(p.binned));
+
+  // Y-axis: fixed bounds when supplied, else pad the data extent. The curve
+  // is already trimmed to real data, so a fixed axis leaves visible headroom.
   const yExtent = getNumericExtent(validPoints.map((p) => p.z), 0.03, 1);
+  const y0 = Number.isFinite(yMin) ? (yMin as number) : yExtent.min;
+  const y1 = Number.isFinite(yMax) ? (yMax as number) : yExtent.max;
+  // X-axis: energy %, anchored at 0, headroom over the larger of bar/line.
+  const xMaxRaw = Math.max(
+    ...validPoints.map((p) => Math.max(p.value, hasBars ? (p.binned as number) : 0)),
+  );
+  const xMax = xMaxRaw > 0 ? xMaxRaw * 1.06 : 1;
+
+  const W = containerWidth;
+  const H = CHART_H;
+  const M = { top: 16, right: 16, bottom: 42, left: 52 };
+  const pw = Math.max(1, W - M.left - M.right);
+  const ph = Math.max(1, H - M.top - M.bottom);
+  const span = y1 - y0 || 1;
+  const xPx = (e: number) => M.left + (e / xMax) * pw;
+  const yPx = (z: number) => M.top + ((y1 - z) / span) * ph;
+
+  // Bar thickness = median Δz between consecutive bins → contiguous bars.
+  const dzs = validPoints
+    .slice(1)
+    .map((p, i) => p.z - validPoints[i].z)
+    .filter((d) => d > 0)
+    .sort((a, b) => a - b);
+  const binDz = dzs.length ? dzs[Math.floor(dzs.length / 2)] : 0.4;
+  const barPxH = Math.max(1, (binDz / span) * ph);
+
+  const linePath = validPoints
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${xPx(p.value).toFixed(1)},${yPx(p.z).toFixed(1)}`)
+    .join(' ');
+
+  const yTicks = linearTicks(y0, y1, 6);
+  const xTicks = linearTicks(0, xMax, 5);
+  const axisColor = theme.palette.text.secondary;
+  const gridColor = theme.palette.divider;
+  const showGround = y0 <= 0 && y1 >= 0;
 
   return (
-    <Box sx={{ width: '100%', opacity: dimmed ? 0.65 : 1, position: 'relative' }}>
+    <Box sx={{ width: '100%', opacity: dimmed ? 0.65 : 1, position: 'relative' }} ref={containerRef}>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
         Derived vertical profile curve
       </Typography>
@@ -378,40 +454,111 @@ export function VerticalProfileCurveChart({
         xLabel="Energy (%)"
         yLabel="Height (m)"
         title="Derived vertical profile curve"
+        yMin={Number.isFinite(yMin) ? yMin : undefined}
+        yMax={Number.isFinite(yMax) ? yMax : undefined}
       />
-      <LineChart
-        height={CHART_H}
-        margin={{ top: 16, right: 20, bottom: 42, left: 56 }}
-        grid={{ vertical: true, horizontal: true }}
-        xAxis={[{
-          data: validPoints.map((p) => p.value),
-          scaleType: 'linear',
-          min: xExtent.min,
-          max: xExtent.max,
-          tickNumber: 5,
-          label: 'Energy (%)',
-          valueFormatter: (value: number) => value.toFixed(1),
-        }]}
-        yAxis={[{
-          min: yExtent.min,
-          max: yExtent.max,
-          tickNumber: 5,
-          label: 'Height (m)',
-          valueFormatter: (value: number) => `${Math.round(value)}`,
-        }]}
-        series={[{
-          id: 'vertical-curve',
-          data: validPoints.map((p) => p.z),
-          color: theme.palette.success.main,
-          label: 'Curve',
-          showMark: false,
-          curve: 'linear',
-        }]}
-        hideLegend
-        disableLineItemHighlight
-        skipAnimation
-        sx={chartTextStyles(theme)}
-      />
+      <svg
+        width="100%"
+        height={H}
+        viewBox={`0 0 ${W} ${H}`}
+        role="img"
+        aria-label="Derived vertical profile curve"
+        style={{ display: 'block', overflow: 'visible' }}
+      >
+        {/* grid + y ticks */}
+        {yTicks.map((zt, i) => {
+          const y = yPx(zt);
+          return (
+            <g key={`y${i}`}>
+              <line x1={M.left} y1={y} x2={M.left + pw} y2={y} stroke={gridColor} strokeWidth={0.5} opacity={0.5} />
+              <text x={M.left - 6} y={y + 3} textAnchor="end" fontSize={10} fill={axisColor}>
+                {Math.round(zt)}
+              </text>
+            </g>
+          );
+        })}
+        {/* x ticks */}
+        {xTicks.map((xt, i) => {
+          const x = xPx(xt);
+          return (
+            <g key={`x${i}`}>
+              <line x1={x} y1={M.top} x2={x} y2={M.top + ph} stroke={gridColor} strokeWidth={0.5} opacity={0.35} />
+              <text x={x} y={M.top + ph + 14} textAnchor="middle" fontSize={10} fill={axisColor}>
+                {xt.toFixed(1)}
+              </text>
+            </g>
+          );
+        })}
+        {/* binned bars */}
+        {hasBars &&
+          validPoints.map((p, i) => {
+            const bw = (Math.max(0, p.binned as number) / xMax) * pw;
+            if (bw <= 0) return null;
+            return (
+              <rect
+                key={`b${i}`}
+                x={M.left}
+                y={yPx(p.z) - barPxH / 2}
+                width={bw}
+                height={barPxH}
+                fill={VP_BAR_COLOR}
+                fillOpacity={0.85}
+              />
+            );
+          })}
+        {/* ground reference (z = 0) */}
+        {showGround && (
+          <line
+            x1={M.left}
+            y1={yPx(0)}
+            x2={M.left + pw}
+            y2={yPx(0)}
+            stroke={VP_GROUND_COLOR}
+            strokeWidth={1.4}
+            strokeDasharray="5 4"
+          />
+        )}
+        {/* smoothed line */}
+        <path d={linePath} fill="none" stroke={VP_LINE_COLOR} strokeWidth={1.8} />
+        {/* axis frame */}
+        <line x1={M.left} y1={M.top} x2={M.left} y2={M.top + ph} stroke={axisColor} strokeWidth={1} />
+        <line x1={M.left} y1={M.top + ph} x2={M.left + pw} y2={M.top + ph} stroke={axisColor} strokeWidth={1} />
+        {/* axis labels */}
+        <text
+          x={M.left + pw / 2}
+          y={H - 4}
+          textAnchor="middle"
+          fontSize={11}
+          fill={axisColor}
+        >
+          Energy (%)
+        </text>
+        <text
+          x={12}
+          y={M.top + ph / 2}
+          textAnchor="middle"
+          fontSize={11}
+          fill={axisColor}
+          transform={`rotate(-90 12 ${M.top + ph / 2})`}
+        >
+          Height (m)
+        </text>
+        {/* legend */}
+        <g transform={`translate(${M.left + pw - 96}, ${M.top + 4})`}>
+          {hasBars && (
+            <>
+              <rect x={0} y={0} width={12} height={9} fill={VP_BAR_COLOR} fillOpacity={0.85} />
+              <text x={16} y={8} fontSize={10} fill={axisColor}>
+                Binned
+              </text>
+            </>
+          )}
+          <line x1={0} y1={hasBars ? 20 : 4} x2={12} y2={hasBars ? 20 : 4} stroke={VP_LINE_COLOR} strokeWidth={2} />
+          <text x={16} y={hasBars ? 24 : 8} fontSize={10} fill={axisColor}>
+            Smoothed
+          </text>
+        </g>
+      </svg>
     </Box>
   );
 }
@@ -1411,7 +1558,12 @@ export function SavedFeaturePlots({
             <VerticalProfileChart profile={verticalData} />
           </Box>
           <Box sx={{ flex: 1, minWidth: 0 }}>
-            <VerticalProfileCurveChart curve={verticalCurveData} featureName={featureName} />
+            <VerticalProfileCurveChart
+              curve={verticalCurveData}
+              featureName={featureName}
+              yMin={plotData.profile_y_min}
+              yMax={plotData.profile_y_max}
+            />
           </Box>
         </Box>
       )}

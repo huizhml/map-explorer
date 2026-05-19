@@ -18,6 +18,7 @@ import numpy as np
 from pathlib import Path
 from scipy.interpolate import interp1d
 from scipy.signal import savgol_filter
+from scipy.ndimage import uniform_filter1d
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import threading
 import psutil
@@ -33,11 +34,13 @@ HEATMAP_MAX_HEIGHT = 50.0
 # Meters: bounds for the point vertical-profile curve so it also shows the
 # below-0 (ground / near-ground return) tail. Diversity indices still ignore
 # RH <= 0 — these constants only affect the displayed profile curve.
-PROFILE_MIN_HEIGHT = -50.0
+PROFILE_MIN_HEIGHT = -10.0
 PROFILE_MAX_HEIGHT = 50.0
-# Savitzky-Golay window (odd, in metres) for smoothing the point-click curve;
-# larger = smoother. vertical_profile() clamps it to the sample count.
-PROFILE_SMOOTH_WINDOW = 3
+# Meters: height-bin spacing for the profile curve (vertical_profile bin_size).
+PROFILE_BIN_SIZE = 0.4
+# Savitzky-Golay window (odd sample count) for smoothing the point-click curve;
+# larger = smoother.
+PROFILE_SMOOTH_WINDOW = 5
 N_BINS = 20
 BIN_WIDTH = MAX_HEIGHT_METERS / N_BINS
 VSM_NODATA = 32767
@@ -428,62 +431,133 @@ def create_vrt(tile_dir, vrt_path, q_idx="1"):
     return vrt_path
 
 
-def vertical_profile(rhs, min_rh=-20, max_rh=50, step=1, window=3):
-    """Convert RH values → vertical energy density profile.
+# def vertical_profile(rhs, min_rh=-20, max_rh=50, step=1, window=3):
+#     """Convert RH values → vertical energy density profile.
 
-    Parameters
-    ----------
-    rhs : array-like
-        RH height values (RH0–RH100), length typically 101.
-    min_rh, max_rh : float
-        Height range for output grid.
-    step : float
-        Height bin spacing (metres).
-    window : int
-        Savitzky-Golay smoothing window (odd integer).
+#     Parameters
+#     ----------
+#     rhs : array-like
+#         RH height values (RH0–RH100), length typically 101.
+#     min_rh, max_rh : float
+#         Height range for output grid.
+#     step : float
+#         Height bin spacing (metres).
+#     window : int
+#         Savitzky-Golay smoothing window (odd integer).
 
-    Returns
-    -------
-    x : ndarray
-        Height grid.
-    smoothed_grad : ndarray
-        Smoothed energy density at each height.
+#     Returns
+#     -------
+#     x : ndarray
+#         Height grid.
+#     smoothed_grad : ndarray
+#         Smoothed energy density at each height.
+#     """
+#     rhs_arr = np.asarray(rhs, dtype=np.float32)
+#     rhs_arr = rhs_arr[np.isfinite(rhs_arr)]
+#     x = np.arange(min_rh, max_rh + step, step, dtype=np.float32)
+
+#     if rhs_arr.size < 3:
+#         return x, np.zeros_like(x, dtype=np.float32)
+
+#     # Unique heights with counts to preserve energy from duplicate RH values
+#     rhs_unique, counts = np.unique(np.sort(rhs_arr), return_counts=True)
+#     if rhs_unique.size < 3:
+#         return x, np.zeros_like(x, dtype=np.float32)
+
+#     # Cumulative percentile (accounts for duplicates correctly)
+#     cumulative = np.cumsum(counts).astype(np.float32)
+
+#     # Energy density = d(cumulative) / d(height)
+#     grad = np.gradient(cumulative, rhs_unique)
+#     grad = np.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+
+#     # Resample onto uniform height grid
+#     grad_inter = interp1d(rhs_unique, grad, kind='linear',
+#                           fill_value=0, bounds_error=False)
+#     grad_resampled = grad_inter(x)
+
+#     # Savitzky-Golay smoothing with safe window size
+#     max_window = (int(grad_resampled.size)
+#                   if grad_resampled.size % 2 == 1
+#                   else int(grad_resampled.size) - 1)
+#     safe_window = min(window if window % 2 == 1 else window + 1, max_window)
+#     if safe_window < 3:
+#         smoothed_grad = grad_resampled
+#     else:
+#         smoothed_grad = savgol_filter(grad_resampled, safe_window, 1)
+
+#     return x, smoothed_grad.astype(np.float32)
+
+def vertical_profile(rh, bin_size=0.4, min_rh=-8, max_rh=32,
+                            savgol_window=5, savgol_poly=1):
+    """Convert RH percentiles → binned energy density + smoothed envelope.
+
+    Returns bin_centers, bin_amp_pct, smoothed_pct.
     """
-    rhs_arr = np.asarray(rhs, dtype=np.float32)
-    rhs_arr = rhs_arr[np.isfinite(rhs_arr)]
-    x = np.arange(min_rh, max_rh + step, step, dtype=np.float32)
+    bin_centers = np.arange(min_rh + bin_size / 2, max_rh, bin_size)
+    bin_amp = np.zeros(len(bin_centers))
 
-    if rhs_arr.size < 3:
-        return x, np.zeros_like(x, dtype=np.float32)
+    for b, hc in enumerate(bin_centers):
+        for i in range(len(rh) - 1):
+            if hc >= rh[i] and hc < rh[i + 1]:
+                dh = rh[i + 1] - rh[i]
+                bin_amp[b] = 1.0 / dh if dh > 0.01 else 0
+                break
 
-    # Unique heights with counts to preserve energy from duplicate RH values
-    rhs_unique, counts = np.unique(np.sort(rhs_arr), return_counts=True)
-    if rhs_unique.size < 3:
-        return x, np.zeros_like(x, dtype=np.float32)
+    bin_amp_pct = bin_amp / bin_amp.sum() * 100
+    smoothed_pct = savgol_filter(bin_amp_pct, window_length=savgol_window,
+                                 polyorder=savgol_poly)
+    return bin_centers, bin_amp_pct, smoothed_pct
 
-    # Cumulative percentile (accounts for duplicates correctly)
-    cumulative = np.cumsum(counts).astype(np.float32)
 
-    # Energy density = d(cumulative) / d(height)
-    grad = np.gradient(cumulative, rhs_unique)
-    grad = np.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+def profile_curve_points(rhs):
+    """Build the displayed vertical-profile curve for a single RH profile.
 
-    # Resample onto uniform height grid
-    grad_inter = interp1d(rhs_unique, grad, kind='linear',
-                          fill_value=0, bounds_error=False)
-    grad_resampled = grad_inter(x)
+    Returns a list of ``{"z", "value", "binned"}`` dicts where ``value`` is
+    the Savitzky-Golay smoothed energy %, ``binned`` the raw per-bin energy %.
 
-    # Savitzky-Golay smoothing with safe window size
-    max_window = (int(grad_resampled.size)
-                  if grad_resampled.size % 2 == 1
-                  else int(grad_resampled.size) - 1)
-    safe_window = min(window if window % 2 == 1 else window + 1, max_window)
-    if safe_window < 3:
-        smoothed_grad = grad_resampled
-    else:
-        smoothed_grad = savgol_filter(grad_resampled, safe_window, 1)
+    The y-axis is fixed to [PROFILE_MIN_HEIGHT, PROFILE_MAX_HEIGHT] by the
+    caller, but points outside the actual data extent ([min, max] of the RH
+    values) carry no real signal — `vertical_profile` leaves those bins at 0
+    and the smoothing makes them flat-line — so they're dropped here. The
+    curve therefore spans only the real data; the fixed axis just adds
+    head/foot room (see profile_y_bounds()).
 
-    return x, smoothed_grad.astype(np.float32)
+    NaN/Inf from the bin-sum normalisation (degenerate / unfilled profile)
+    are scrubbed to 0.0. Returns [] if there are < 3 finite RH samples.
+    """
+    rh = np.asarray(
+        [v for v in rhs if v is not None and np.isfinite(v)],
+        dtype=np.float64,
+    )
+    if rh.size < 3:
+        return []
+    bin_centers, bin_amp_pct, smoothed_pct = vertical_profile(
+        rh,
+        bin_size=PROFILE_BIN_SIZE,
+        min_rh=PROFILE_MIN_HEIGHT,
+        max_rh=PROFILE_MAX_HEIGHT,
+        savgol_window=PROFILE_SMOOTH_WINDOW,
+    )
+    bin_amp_pct = np.nan_to_num(bin_amp_pct, nan=0.0, posinf=0.0, neginf=0.0)
+    smoothed_pct = np.nan_to_num(smoothed_pct, nan=0.0, posinf=0.0, neginf=0.0)
+    z_lo, z_hi = float(rh.min()), float(rh.max())
+    out = []
+    for z, sm, bn in zip(
+        bin_centers.tolist(), smoothed_pct.tolist(), bin_amp_pct.tolist()
+    ):
+        if z < z_lo or z > z_hi:
+            continue
+        out.append({"z": float(z), "value": float(sm), "binned": float(bn)})
+    return out
+
+
+def profile_y_bounds():
+    """Fixed (min, max) height bounds for the vertical-profile y-axis.
+
+    The plotted curve is trimmed to the data extent, but the axis stays
+    fixed to these so different points are visually comparable."""
+    return float(PROFILE_MIN_HEIGHT), float(PROFILE_MAX_HEIGHT)
 
 
 if __name__ == "__main__":
