@@ -20,7 +20,16 @@ import numpy as np
 import rasterio
 from rasterio.warp import transform as rw_transform
 
-from utils import HEATMAP_MAX_HEIGHT, MAX_HEIGHT_METERS, pixel_vertical_profile, pixel_diversity_indices
+from utils import (
+    HEATMAP_MAX_HEIGHT,
+    MAX_HEIGHT_METERS,
+    PROFILE_MIN_HEIGHT,
+    PROFILE_MAX_HEIGHT,
+    PROFILE_SMOOTH_WINDOW,
+    vertical_profile,
+    pixel_vertical_profile,
+    pixel_diversity_indices,
+)
 import math
 
 router = APIRouter(tags=["predictions"])
@@ -85,34 +94,25 @@ def _sample_rh_geotiff(path_or_url: str, lon: float, lat: float) -> Optional[flo
 
 
 def _sample_rh_geotiff_many(path_or_url: str, lon_lat_points: List[Tuple[float, float]]) -> List[Optional[float]]:
+    if not lon_lat_points:
+        return []
     try:
-        if not lon_lat_points:
-            return []
         with rasterio.open(path_or_url) as src:
             lons = [float(p[0]) for p in lon_lat_points]
             lats = [float(p[1]) for p in lon_lat_points]
             xs, ys = rw_transform("EPSG:4326", src.crs, lons, lats)
-            xy_points = list(zip(xs, ys))
-            samples = src.sample(xy_points)
-            out: List[Optional[float]] = []
-            for arr in samples:
-                v = arr[0] if len(arr) else None
-                if v is None:
-                    out.append(None)
-                    continue
-                if src.nodata is not None and v == src.nodata:
-                    out.append(None)
-                    continue
-                try:
-                    fv = float(v)
-                except (TypeError, ValueError):
-                    out.append(None)
-                    continue
-                if fv in (32767.0, 32768.0, -9999.0):
-                    out.append(None)
-                    continue
-                out.append(fv)
-            return out
+            nodata = src.nodata
+            # VSM RH tiles are always single-band int16, one sample per point.
+            arr = np.fromiter(
+                (s[0] if len(s) else np.nan for s in src.sample(list(zip(xs, ys)))),
+                dtype=np.float64,
+                count=len(lon_lat_points),
+            )
+        bad = ~np.isfinite(arr)
+        if nodata is not None:
+            bad |= arr == nodata
+        bad |= np.isin(arr, (32767.0, 32768.0, -9999.0))
+        return [None if b else float(v) for b, v in zip(bad.tolist(), arr.tolist())]
     except Exception as ex:
         print(f"[vertical-profile] sample error for {path_or_url[:80]}…: {ex}")
         return [None for _ in lon_lat_points]
@@ -265,11 +265,19 @@ def _compute_profile_at_point(
     fhd = enl1d = enl2d = cr = None
     if len(valid_vals) >= 3:
         try:
-            vp = pixel_vertical_profile(valid_vals)
-            # vp is a numpy int64 array — cast each element to Python int for JSON.
-            vp_list = vp.tolist() if hasattr(vp, "tolist") else list(vp)
+            # Use the same smooth gradient-of-CDF + Savitzky-Golay profile as
+            # the GEDI popup (utils.vertical_profile) instead of a raw count
+            # histogram, so the point-click curve is smooth and consistent.
+            x_vals, y_vals = vertical_profile(
+                valid_vals,
+                min_rh=PROFILE_MIN_HEIGHT,
+                max_rh=PROFILE_MAX_HEIGHT,
+                step=1,
+                window=PROFILE_SMOOTH_WINDOW,
+            )
             vertical_profile_curve = [
-                {"z": int(z), "value": int(v)} for z, v in enumerate(vp_list)
+                {"z": float(z), "value": float(v)}
+                for z, v in zip(x_vals.tolist(), y_vals.tolist())
             ]
         except Exception as e:
             print(f"[vertical-profile] pixel_vertical_profile error: {e}")

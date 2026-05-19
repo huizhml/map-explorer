@@ -198,3 +198,26 @@ class TransectFigureRequest(BaseModel):
     # Default tuned for the typical forest-canopy under-exposure of s2cloudless.
     # Ignored when `basemap_source != "eox_s2cloudless"`.
     eox_brightness: float = 1.3
+
+
+class VerticalProfileCurvePoint(BaseModel):
+    z: float
+    value: float
+
+
+class VerticalProfileFigureRequest(BaseModel):
+    """Single-panel matplotlib export of the derived vertical-profile curve.
+
+    Mirrors the TransectFigureRequest size/font/format/dpi knobs so the
+    frontend dialog can reuse the same preview(dpi=90) / export(dpi=150) split.
+    """
+    curve: List[VerticalProfileCurvePoint]
+    title: Optional[str] = None
+    x_label: str = "Energy (%)"
+    y_label: str = "Height (m)"
+    line_color: str = "#2e7d32"
+    figure_width_px: int = 900
+    figure_height_px: int = 700
+    font_size: int = 12
+    dpi: int = 150
+    fmt: Literal["png", "jpg", "pdf"] = "png"

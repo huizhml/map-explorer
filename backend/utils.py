@@ -30,34 +30,50 @@ REALISTIC_MAX=150 #m
 REALISTIC_MIN=-150
 # Meters: y-axis extent for transect RH heatmap only (diversity indices use MAX_HEIGHT).
 HEATMAP_MAX_HEIGHT = 50.0
+# Meters: bounds for the point vertical-profile curve so it also shows the
+# below-0 (ground / near-ground return) tail. Diversity indices still ignore
+# RH <= 0 — these constants only affect the displayed profile curve.
+PROFILE_MIN_HEIGHT = -50.0
+PROFILE_MAX_HEIGHT = 50.0
+# Savitzky-Golay window (odd, in metres) for smoothing the point-click curve;
+# larger = smoother. vertical_profile() clamps it to the sample count.
+PROFILE_SMOOTH_WINDOW = 3
 N_BINS = 20
 BIN_WIDTH = MAX_HEIGHT_METERS / N_BINS
 VSM_NODATA = 32767
 NODATA_OUT = -9999.0
 stac_collection_dir = '~/data/gvs/products/gvsm_stac_catalog/vsm_local'
 
-def pixel_hist(rhs: np.ndarray, interval: int = 5, max_height: float = None):
+def pixel_hist(rhs: np.ndarray, interval: int = 5, max_height: float = None, min_height: float = 0.0):
     """
-    Compute per-pixel histogram of RH values.
+    Compute per-pixel histogram of RH values over [min_height, max_height].
+
+    min_height defaults to 0 so diversity-index callers keep ignoring ground
+    return (RH <= 0, which would dominate the histogram). Only the vertical-
+    profile curve passes a negative min_height to also show the below-0 tail.
     """
-    n_bins = int(max_height / interval)
+    n_bins = int((max_height - min_height) / interval)
     rhs_arr = np.asarray(rhs, dtype=np.float32)
-    valid = np.isfinite(rhs_arr) & (rhs_arr > 0) # # NOTE: Ignore NaN and Inf, negative values (mostly ground return, may dominate the histogram)
-    rhs_valid = rhs_arr[valid] 
+    valid = np.isfinite(rhs_arr) & (rhs_arr > min_height) # NOTE: Ignore NaN/Inf and values at/below min_height
+    rhs_valid = rhs_arr[valid]
     if rhs_valid.size == 0:
         return np.nan, np.nan, np.nan, np.nan
-    rhs_valid = np.clip(rhs_valid, None, max_height) # NOTE: count very tall trees
-    hist, bins = np.histogram(rhs_valid, bins=n_bins, range=(0, max_height)) # negative values are ignored
+    rhs_valid = np.clip(rhs_valid, min_height, max_height) # NOTE: count very tall trees
+    hist, bins = np.histogram(rhs_valid, bins=n_bins, range=(min_height, max_height))
     return hist, bins
 
 
-def pixel_vertical_profile(rhs, interval=1, max_height=50):
+def pixel_vertical_profile(rhs, interval=1, max_height=50, min_height=0.0):
     """
-    Compute per-pixel vertical profile.
+    Compute per-pixel vertical profile over [min_height, max_height].
+
+    min_height defaults to 0 to preserve the transect-heatmap shape; the
+    point-click curve passes PROFILE_MIN_HEIGHT to include the below-0 tail.
+    Bin i spans [min_height + i*interval, ...]; callers map index -> height.
     """
     if isinstance(rhs, pd.Series):
         rhs = rhs.values
-    hist, bins = pixel_hist(rhs, interval, max_height)
+    hist, bins = pixel_hist(rhs, interval, max_height, min_height=min_height)
     return hist
 
 
@@ -412,7 +428,27 @@ def create_vrt(tile_dir, vrt_path, q_idx="1"):
     return vrt_path
 
 
-def vertical_profile(rhs, min_rh=-200, max_rh=500, step=1, window=31):
+def vertical_profile(rhs, min_rh=-20, max_rh=50, step=1, window=3):
+    """Convert RH values → vertical energy density profile.
+
+    Parameters
+    ----------
+    rhs : array-like
+        RH height values (RH0–RH100), length typically 101.
+    min_rh, max_rh : float
+        Height range for output grid.
+    step : float
+        Height bin spacing (metres).
+    window : int
+        Savitzky-Golay smoothing window (odd integer).
+
+    Returns
+    -------
+    x : ndarray
+        Height grid.
+    smoothed_grad : ndarray
+        Smoothed energy density at each height.
+    """
     rhs_arr = np.asarray(rhs, dtype=np.float32)
     rhs_arr = rhs_arr[np.isfinite(rhs_arr)]
     x = np.arange(min_rh, max_rh + step, step, dtype=np.float32)
@@ -420,22 +456,33 @@ def vertical_profile(rhs, min_rh=-200, max_rh=500, step=1, window=31):
     if rhs_arr.size < 3:
         return x, np.zeros_like(x, dtype=np.float32)
 
-    rhs_unique = np.unique(np.sort(rhs_arr))
+    # Unique heights with counts to preserve energy from duplicate RH values
+    rhs_unique, counts = np.unique(np.sort(rhs_arr), return_counts=True)
     if rhs_unique.size < 3:
         return x, np.zeros_like(x, dtype=np.float32)
 
-    ones = np.arange(rhs_unique.size, dtype=np.float32)
-    grad = np.gradient(ones, rhs_unique)
+    # Cumulative percentile (accounts for duplicates correctly)
+    cumulative = np.cumsum(counts).astype(np.float32)
+
+    # Energy density = d(cumulative) / d(height)
+    grad = np.gradient(cumulative, rhs_unique)
     grad = np.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
-    grad_inter = interp1d(rhs_unique, grad, kind='linear', fill_value=0, bounds_error=False)
+
+    # Resample onto uniform height grid
+    grad_inter = interp1d(rhs_unique, grad, kind='linear',
+                          fill_value=0, bounds_error=False)
     grad_resampled = grad_inter(x)
 
-    max_window = int(grad_resampled.size) if grad_resampled.size % 2 == 1 else int(grad_resampled.size) - 1
+    # Savitzky-Golay smoothing with safe window size
+    max_window = (int(grad_resampled.size)
+                  if grad_resampled.size % 2 == 1
+                  else int(grad_resampled.size) - 1)
     safe_window = min(window if window % 2 == 1 else window + 1, max_window)
     if safe_window < 3:
         smoothed_grad = grad_resampled
     else:
         smoothed_grad = savgol_filter(grad_resampled, safe_window, 1)
+
     return x, smoothed_grad.astype(np.float32)
 
 

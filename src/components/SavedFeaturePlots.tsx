@@ -14,10 +14,12 @@ import { LineChart } from '@mui/x-charts';
 import { ChartsReferenceLine } from '@mui/x-charts/ChartsReferenceLine';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckIcon from '@mui/icons-material/Check';
+import SaveAltIcon from '@mui/icons-material/SaveAlt';
 import type { SavedFeaturePlotData } from '../services/savedFeaturesApi';
 import type { VerticalProfilePoint } from '../stores/mapStore';
 import { apiUrl } from '../utils/apiBase';
 import { TransectExportDialog } from './TransectExportDialog';
+import { VerticalProfileExportDialog } from './VerticalProfileExportDialog';
 import { useMapStore } from '../stores/mapStore';
 import {
   DEFAULT_DIVERSITY_HEIGHT_BIN_M,
@@ -338,11 +340,15 @@ export function VerticalProfileChart({
 export function VerticalProfileCurveChart({
   curve,
   dimmed,
+  featureName,
 }: {
   curve: Array<{ z: number; value: number }>;
   dimmed?: boolean;
+  /** Saved-feature display name; used as the export filename stem. */
+  featureName?: string;
 }) {
   const theme = useTheme();
+  const [exportOpen, setExportOpen] = useState(false);
   const validPoints = curve.filter((p) => Number.isFinite(p.z) && Number.isFinite(p.value));
   if (validPoints.length < 2) return null;
 
@@ -350,10 +356,29 @@ export function VerticalProfileCurveChart({
   const yExtent = getNumericExtent(validPoints.map((p) => p.z), 0.03, 1);
 
   return (
-    <Box sx={{ width: '100%', opacity: dimmed ? 0.65 : 1 }}>
+    <Box sx={{ width: '100%', opacity: dimmed ? 0.65 : 1, position: 'relative' }}>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
         Derived vertical profile curve
       </Typography>
+      <Tooltip title="Export figure (PNG / PDF / JPG)" placement="left">
+        <IconButton
+          size="small"
+          onClick={() => setExportOpen(true)}
+          aria-label="Export vertical profile curve"
+          sx={{ position: 'absolute', top: 0, right: 0, p: 0.25, color: 'action.active', zIndex: 1 }}
+        >
+          <SaveAltIcon sx={{ fontSize: 16 }} />
+        </IconButton>
+      </Tooltip>
+      <VerticalProfileExportDialog
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        curve={validPoints}
+        featureName={featureName}
+        xLabel="Energy (%)"
+        yLabel="Height (m)"
+        title="Derived vertical profile curve"
+      />
       <LineChart
         height={CHART_H}
         margin={{ top: 16, right: 20, bottom: 42, left: 56 }}
@@ -364,7 +389,7 @@ export function VerticalProfileCurveChart({
           min: xExtent.min,
           max: xExtent.max,
           tickNumber: 5,
-          label: 'Profile value',
+          label: 'Energy (%)',
           valueFormatter: (value: number) => value.toFixed(1),
         }]}
         yAxis={[{
@@ -1386,7 +1411,7 @@ export function SavedFeaturePlots({
             <VerticalProfileChart profile={verticalData} />
           </Box>
           <Box sx={{ flex: 1, minWidth: 0 }}>
-            <VerticalProfileCurveChart curve={verticalCurveData} />
+            <VerticalProfileCurveChart curve={verticalCurveData} featureName={featureName} />
           </Box>
         </Box>
       )}

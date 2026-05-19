@@ -34,6 +34,7 @@ from .models import (
     SavedFeatureUpdateRequest,
     TransectFigureRequest,
     TransectSatelliteRequest,
+    VerticalProfileFigureRequest,
 )
 from .point_snapshots import (
     _extract_eox_s2cloudless_point_snapshot,
@@ -44,6 +45,7 @@ from .point_snapshots import (
 )
 from .satellite import _burn_scale_bar, _stitch_bbox_satellite
 from .transect_figure import _render_transect_figure
+from .vertical_profile_figure import _render_vertical_profile_figure
 from .utils import (
     existing_image_exports,
     image_url_for,
@@ -154,9 +156,11 @@ async def create_saved_feature(payload: SavedFeatureCreateRequest) -> Dict[str, 
     elif "tags" in metadata_payload:
         metadata_payload["tags"] = normalize_tags(metadata_payload.get("tags"))
 
-    # For saved popup points, attempt 75 m exports (satellite + RH98 + Sentinel-2).
+    # For saved popup points, attempt 75 m exports (satellite + RH98 + Sentinel-2)
+    # and capture the VSM vertical profile so the saved point renders it offline.
     if geometry_dict["type"] == "Point" and metadata_payload.get("source") == "feature_popup":
         _attach_feature_popup_snapshots(geometry_dict, metadata_payload, plot_data_payload)
+        _attach_vertical_profile(geometry_dict, metadata_payload, plot_data_payload)
 
     feature_key = compute_feature_key(geometry_dict, metadata_payload)
     metadata_json = json.dumps(metadata_payload) if metadata_payload else None
@@ -321,6 +325,79 @@ def _attach_feature_popup_snapshots(
         metadata_payload["satellite_snapshot_error"] = "snapshot_generation_exception"
         metadata_payload["prediction_snapshot_status"] = "unavailable"
         metadata_payload["prediction_snapshot_error"] = "prediction_snapshot_generation_exception"
+
+
+def _attach_vertical_profile(
+    geometry_dict: Dict[str, Any],
+    metadata_payload: Dict[str, Any],
+    plot_data_payload: Dict[str, Any],
+) -> None:
+    """Compute and attach the VSM vertical profile for a feature_popup point.
+
+    Stores the same shape the live ``/predictions/vertical-profile`` endpoint
+    returns (``vertical_profile`` + ``vertical_profile_curve`` +
+    ``profile_metrics``) so SavedFeaturePlots renders it from the stored blob
+    without re-fetching. Independent of the snapshot attach — a snapshot
+    failure must not drop the profile, and vice versa. All failures are
+    swallowed and recorded as ``vertical_profile_status`` / ``_error``.
+    """
+    # Respect a client-supplied profile (e.g. saved from the InspectPanel).
+    if plot_data_payload.get("vertical_profile_curve"):
+        return
+    try:
+        lon, lat = geometry_dict["coordinates"]
+        lon = float(lon)
+        lat = float(lat)
+    except Exception:
+        metadata_payload["vertical_profile_status"] = "unavailable"
+        metadata_payload["vertical_profile_error"] = "invalid_point_coordinates"
+        return
+
+    try:
+        # Lazy import: predictions.py only depends on utils, so there is no
+        # import cycle, but deferring keeps it off the module-load path.
+        from routes.predictions import _compute_profile_at_point, _to_jsonable
+
+        pred_year = int(metadata_payload.get("year") or 2020)
+        # Same version resolution as the snapshot path: accept "version" or the
+        # legacy "prediction_source", never the "source" origin discriminator.
+        pred_version = (
+            str(
+                metadata_payload.get("version")
+                or metadata_payload.get("prediction_source")
+                or "original"
+            ).strip().lower()
+            or "original"
+        )
+        pred_q_index = int(metadata_payload.get("q_index") or 1)
+        tile_name = _resolve_prediction_tile_name(metadata_payload, lat, lon)
+
+        result = _to_jsonable(
+            _compute_profile_at_point(
+                lon, lat,
+                year=pred_year,
+                version=pred_version,
+                q_index=pred_q_index,
+                tile_name=str(tile_name) if tile_name else None,
+            )
+        )
+        if result.get("success"):
+            plot_data_payload["vertical_profile"] = result.get("profile")
+            plot_data_payload["vertical_profile_curve"] = result.get("vertical_profile_curve")
+            plot_data_payload["profile_metrics"] = {
+                "fhd": result.get("fhd"),
+                "enl1d": result.get("enl1d"),
+                "enl2d": result.get("enl2d"),
+                "cr": result.get("cr"),
+            }
+            metadata_payload["vertical_profile_status"] = "ok"
+        else:
+            metadata_payload["vertical_profile_status"] = "unavailable"
+            if result.get("error"):
+                metadata_payload["vertical_profile_error"] = str(result["error"])[:300]
+    except Exception as exc:
+        metadata_payload["vertical_profile_status"] = "unavailable"
+        metadata_payload["vertical_profile_error"] = f"vertical_profile_exception: {exc}"[:300]
 
 
 @router.post("/saved-features/area-images")
@@ -1030,6 +1107,25 @@ async def transect_figure(req: TransectFigureRequest):
         content=payload,
         media_type=media_type,
         headers={"Content-Disposition": f'inline; filename="transect-figure.{suffix}"'},
+    )
+
+
+@router.post("/vertical-profile/figure")
+async def vertical_profile_figure(req: VerticalProfileFigureRequest):
+    """Render the derived vertical-profile curve as a single matplotlib image.
+
+    Same preview(dpi=90) / export(dpi=150) split as `/transect/figure`; width
+    is pixel-exact via the two-pass savefig in `_render_vertical_profile_figure`.
+    """
+    loop = asyncio.get_event_loop()
+    payload, media_type = await loop.run_in_executor(
+        None, lambda: _render_vertical_profile_figure(req),
+    )
+    suffix = {"image/png": "png", "image/jpeg": "jpg", "application/pdf": "pdf"}.get(media_type, "bin")
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="vertical-profile.{suffix}"'},
     )
 
 
