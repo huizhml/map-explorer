@@ -40,7 +40,6 @@ from .point_snapshots import (
     _extract_eox_s2cloudless_point_snapshot,
     _extract_google_point_snapshot,
     _extract_prediction_rh98_snapshot,
-    _extract_sentinel2_point_snapshots,
     _resolve_prediction_tile_name,
 )
 from .satellite import _burn_scale_bar, _stitch_bbox_satellite
@@ -189,6 +188,11 @@ def _attach_feature_popup_snapshots(
     """Render Google / RH98 / Sentinel-2 75 m snapshots for a feature_popup
     point and merge them into the metadata + plot_data payloads in-place.
 
+    The Sentinel-2 snapshot is always sourced from the EOX `s2cloudless-<year>`
+    cloud-free mosaic (snapped to the nearest year EOX publishes), so every
+    saved point gets a Sentinel-2 reference image regardless of which layers
+    were loaded on the map at save time.
+
     All failures are swallowed and recorded as `*_status` / `*_error` fields
     so the save itself still succeeds.
     """
@@ -271,55 +275,29 @@ def _attach_feature_popup_snapshots(
                 "version": pred_version,
             }
 
-        # ---- Sentinel-2 ----
-        # Prefer the actual Sentinel-2 layer(s) the user has loaded on the map
-        # (true acquisition for that scene). If none are loaded — or they all
-        # fail to render here — fall back to the EOX s2cloudless cloud-free
-        # mosaic for the point's year so every saved point still gets a
-        # Sentinel-2 reference image.
-        def _attach_eox_s2_fallback() -> None:
-            # gamma 1.3 lifts s2cloudless midtones (dark over forest canopy).
-            s2_snapshot, s2_error = _extract_eox_s2cloudless_point_snapshot(
-                lon, lat, year=pred_year, buffer_m=75.0, brightness=1.3,
-            )
-            if s2_snapshot:
-                upsert_image_export(plot_data_payload, s2_snapshot)
-                metadata_payload["sentinel2_snapshot_status"] = "ok"
-                metadata_payload["sentinel2_snapshot_count"] = 1
-                metadata_payload["sentinel2_snapshot"] = {
-                    "source": "eox_s2cloudless",
-                    "year": s2_snapshot.get("year"),
-                    "requested_year": s2_snapshot.get("requested_year"),
-                }
-            else:
-                metadata_payload["sentinel2_snapshot_status"] = "unavailable"
-                metadata_payload["sentinel2_snapshot_count"] = 0
-                if s2_error:
-                    metadata_payload["sentinel2_snapshot_error"] = s2_error[:300]
-
-        sentinel_layers = metadata_payload.get("sentinel2_layers")
-        if isinstance(sentinel_layers, list) and len(sentinel_layers) > 0:
-            sentinel_exports, sentinel_errors = _extract_sentinel2_point_snapshots(
-                lon, lat,
-                [layer for layer in sentinel_layers if isinstance(layer, dict)],
-                buffer_m=75.0,
-            )
-            if sentinel_exports:
-                for export in sentinel_exports:
-                    upsert_image_export(plot_data_payload, export)
-                metadata_payload["sentinel2_snapshot_status"] = "ok"
-                metadata_payload["sentinel2_snapshot_count"] = len(sentinel_exports)
-                metadata_payload["sentinel2_snapshot"] = {"source": "map_layer"}
-                if sentinel_errors:
-                    metadata_payload["sentinel2_snapshot_errors"] = sentinel_errors[:5]
-            else:
-                # Loaded layer(s) yielded nothing (e.g. point outside the
-                # scene's extent) — fall back to EOX rather than save no S2.
-                if sentinel_errors:
-                    metadata_payload["sentinel2_snapshot_errors"] = sentinel_errors[:5]
-                _attach_eox_s2_fallback()
+        # ---- Sentinel-2 (always EOX s2cloudless) ----
+        # The Sentinel-2 reference image is always the EOX `s2cloudless-<year>`
+        # cloud-free mosaic for the point's year, regardless of which (if any)
+        # Sentinel-2 layers the user has loaded on the map. The requested year
+        # is snapped to the nearest year EOX publishes.
+        # gamma 1.3 lifts s2cloudless midtones (dark over forest canopy).
+        s2_snapshot, s2_error = _extract_eox_s2cloudless_point_snapshot(
+            lon, lat, year=pred_year, buffer_m=75.0, brightness=1.3,
+        )
+        if s2_snapshot:
+            upsert_image_export(plot_data_payload, s2_snapshot)
+            metadata_payload["sentinel2_snapshot_status"] = "ok"
+            metadata_payload["sentinel2_snapshot_count"] = 1
+            metadata_payload["sentinel2_snapshot"] = {
+                "source": "eox_s2cloudless",
+                "year": s2_snapshot.get("year"),
+                "requested_year": s2_snapshot.get("requested_year"),
+            }
         else:
-            _attach_eox_s2_fallback()
+            metadata_payload["sentinel2_snapshot_status"] = "unavailable"
+            metadata_payload["sentinel2_snapshot_count"] = 0
+            if s2_error:
+                metadata_payload["sentinel2_snapshot_error"] = s2_error[:300]
     except Exception:
         metadata_payload["satellite_snapshot_status"] = "unavailable"
         metadata_payload["satellite_snapshot_error"] = "snapshot_generation_exception"
@@ -441,11 +419,13 @@ async def create_area_images_feature(payload: SaveAreaImagesRequest) -> Dict[str
                 })
             else:
                 # Burn a metric scale bar into the lower-left corner so the
-                # exported HD satellite image is self-describing.
-                try:
-                    sat_bytes = _burn_scale_bar(sat_bytes, sat_meta)
-                except Exception:
-                    pass  # Scale bar is decorative; never block the export.
+                # exported HD satellite image is self-describing. Caller can
+                # turn it off when the bar would duplicate another decoration.
+                if payload.include_google_satellite_scale_bar:
+                    try:
+                        sat_bytes = _burn_scale_bar(sat_bytes, sat_meta)
+                    except Exception:
+                        pass  # Scale bar is decorative; never block the export.
                 sat_file = f"google_satellite_{sanitize_name(location_tag)}.png"
                 (session_dir / sat_file).write_bytes(sat_bytes)
                 relative_path = str(Path(session_dir_name) / sat_file)
@@ -512,6 +492,7 @@ async def create_area_images_feature(payload: SaveAreaImagesRequest) -> Dict[str
             "format": payload.format,
             "include_google_satellite": payload.include_google_satellite,
             "google_satellite_max_width_px": payload.google_satellite_max_width_px,
+            "include_google_satellite_scale_bar": payload.include_google_satellite_scale_bar,
         },
     }
     geometry_dict = {"type": "Polygon", "coordinates": [ring]}
@@ -682,6 +663,17 @@ async def refresh_saved_feature_area_images(
             detail=f"Stored layer specs are invalid: {exc}",
         )
 
+    print(
+        f"[refresh-area-images] feature_id={feature_id} source="
+        f"{'caller-override' if payload.layers else 'stored'} "
+        f"count={len(resolved_layers)}; "
+        + ", ".join(
+            f"{l.layer_id}(subtype={l.layer_subtype!r},type={l.layer_type!r},year={l.year},scale_bar={l.include_scale_bar})"
+            for l in resolved_layers
+        ),
+        flush=True,
+    )
+
     # Render options: caller override > stored render_options > defaults.
     stored_opts = plot_data_payload.get("render_options")
     if not isinstance(stored_opts, dict):
@@ -701,6 +693,13 @@ async def refresh_saved_feature_area_images(
         payload.google_satellite_max_width_px
         if payload.google_satellite_max_width_px is not None
         else stored_opts.get("google_satellite_max_width_px", 4096)
+    )
+    # Default True so features saved before this field existed still get a
+    # scale bar on re-render (matches the old unconditional burn).
+    resolved_sat_scale_bar = (
+        payload.include_google_satellite_scale_bar
+        if payload.include_google_satellite_scale_bar is not None
+        else bool(stored_opts.get("include_google_satellite_scale_bar", True))
     )
 
     # Prefer the caller-supplied extent (rare), then the feature's saved
@@ -768,6 +767,7 @@ async def refresh_saved_feature_area_images(
         layers=resolved_layers,
         include_google_satellite=resolved_include_sat,
         google_satellite_max_width_px=resolved_sat_width,
+        include_google_satellite_scale_bar=resolved_sat_scale_bar,
     )
     image_exports, render_errors = render_area_images(
         render_payload, session_dir, session_dir_name, location_tag,
@@ -790,10 +790,11 @@ async def refresh_saved_feature_area_images(
                     "error": "Tile fetch failed (no provider returned imagery)",
                 })
             else:
-                try:
-                    sat_bytes = _burn_scale_bar(sat_bytes, sat_meta)
-                except Exception:
-                    pass
+                if resolved_sat_scale_bar:
+                    try:
+                        sat_bytes = _burn_scale_bar(sat_bytes, sat_meta)
+                    except Exception:
+                        pass
                 sat_file = f"google_satellite_{sanitize_name(location_tag)}.png"
                 (session_dir / sat_file).write_bytes(sat_bytes)
                 relative_path = str(Path(session_dir_name) / sat_file)
@@ -831,6 +832,7 @@ async def refresh_saved_feature_area_images(
         "format": resolved_format,
         "include_google_satellite": resolved_include_sat,
         "google_satellite_max_width_px": resolved_sat_width,
+        "include_google_satellite_scale_bar": resolved_sat_scale_bar,
     }
     metadata_payload["source"] = metadata_payload.get("source") or "area_images"
     metadata_payload["image_count"] = len(image_exports)

@@ -8,6 +8,7 @@ feature's session directory.
 from __future__ import annotations
 
 import io
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -142,12 +143,13 @@ def render_area_images(
         # Higher dpi for PDF — vector elements stay sharp regardless, but the
         # embedded raster (the imshow of the data) inherits the figure dpi.
         render_dpi = 300 if payload.format == "pdf" else 160
-        fig, ax = plt.subplots(figsize=(8, 8), dpi=render_dpi)
-        ax.set_axis_off()
 
         if band_idx is not None:
             data = _read_as_float(src, window, indexes=band_idx)
         elif src.count >= 3 and cmap is None:
+            # RGB / Sentinel-2 path: render edge-to-edge with no margin so the
+            # output matches the Google PNG (no white border). Aspect-match the
+            # figure to the data so imshow doesn't leave blank axes area.
             rgb_indexes = _resolve_rgb_indexes(src, rgb_bands, prefer_sentinel_rgb)
             rgb = _read_as_float(src, window, indexes=rgb_indexes)
             if prefer_sentinel_rgb:
@@ -163,16 +165,26 @@ def render_area_images(
                     rendered = _normalize_rgb_with_range(
                         rgb, 0.0, auto_high, gamma=1.25, brightness=1.15,
                     )
-                ax.imshow(rendered)
             else:
-                ax.imshow(_normalize_rgb_percentile(rgb))
+                rendered = _normalize_rgb_percentile(rgb)
+            h_px, w_px = rendered.shape[:2]
+            fig_w_in = 10.0
+            fig_h_in = max(0.5, fig_w_in * (h_px / max(1, w_px)))
+            fig = plt.figure(figsize=(fig_w_in, fig_h_in), dpi=render_dpi)
+            ax = fig.add_axes([0, 0, 1, 1])  # axes fills figure → no margins
+            ax.set_axis_off()
+            ax.imshow(rendered, aspect="auto")
             buf = io.BytesIO()
-            fig.savefig(buf, format=payload.format, bbox_inches="tight", pad_inches=0.05)
+            fig.savefig(buf, format=payload.format, pad_inches=0)
             plt.close(fig)
             return buf.getvalue()
         else:
             data = _read_as_float(src, window, indexes=1)
 
+        # Single-band path keeps the original layout because the colorbar
+        # needs the right-hand margin matplotlib reserves by default.
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=render_dpi)
+        ax.set_axis_off()
         low, high = _resolve_single_band_range(data, rmin, rmax)
         im = ax.imshow(data, cmap=_resolve_cmap(cmap), vmin=low, vmax=high)
         divider = make_axes_locatable(ax)
@@ -221,7 +233,7 @@ def render_area_images(
         "EPSG:3857", "EPSG:4326", xmin, ymin, xmax, ymax,
     )
 
-    def _render_eox_mosaic_bytes(year: int) -> bytes:
+    def _render_eox_mosaic_bytes(year: int, draw_scale_bar: bool = True) -> bytes:
         """Stitch the EOX s2cloudless mosaic for the selection and render via
         matplotlib so the saved file honours `payload.format` (png/jpg/pdf).
         A matplotlib-drawn scale bar sits in the lower-left corner — vector
@@ -233,7 +245,7 @@ def render_area_images(
 
         from .satellite import _stitch_bbox_eox_s2cloudless
         from .utils import nice_bar_length_m, step_up_bar_length_m
-        from PIL import Image as _PILImage
+        from PIL import Image
 
         sat_bytes, sat_meta = _stitch_bbox_eox_s2cloudless(
             float(wgs_xmin), float(wgs_xmax), float(wgs_ymin), float(wgs_ymax),
@@ -241,19 +253,36 @@ def render_area_images(
         )
         if sat_bytes is None:
             raise ValueError("EOX tile fetch returned no imagery for the selection.")
-        arr = np.asarray(_PILImage.open(io.BytesIO(sat_bytes)).convert("RGB"))
+        arr = np.asarray(Image.open(io.BytesIO(sat_bytes)).convert("RGB"))
         # Render at a higher dpi for raster outputs too — the EOX stitch is up
         # to 4096 px wide, so a 160-dpi (1280 px) canvas softens both the
         # satellite imagery and the small scale-bar label.
         render_dpi = 300 if payload.format == "pdf" else 240
-        fig, ax = plt.subplots(figsize=(8, 8), dpi=render_dpi)
+        # Match the figure aspect ratio to the EOX stitch and have the axes
+        # cover the entire figure — otherwise the default subplot margins
+        # (≈12 % per side) plus aspect-mismatched imshow leave white pixels
+        # around the image, which the Google PNG path doesn't have because it
+        # bypasses matplotlib entirely.
+        h_px, w_px = arr.shape[:2]
+        fig_w_in = 10.0
+        fig_h_in = max(0.5, fig_w_in * (h_px / max(1, w_px)))
+        fig = plt.figure(figsize=(fig_w_in, fig_h_in), dpi=render_dpi)
+        ax = fig.add_axes([0, 0, 1, 1])  # axes fills the figure → no margins
         ax.set_axis_off()
-        ax.imshow(arr, interpolation="bilinear")
+        # `aspect="auto"` lets imshow stretch to fill the axes; combined with
+        # the aspect-matched figsize above, the result is pixel-accurate and
+        # leaves no whitespace.
+        ax.imshow(arr, interpolation="bilinear", aspect="auto")
 
         # ---- Scale bar (lower-left, in axes-fraction × data coords) --------
         # Mirrors the transect figure's bar: thin black line with a white halo,
         # short end ticks, label centred above. Sized in axes fractions so it
         # stays restrained regardless of source-image resolution.
+        if not draw_scale_bar:
+            buf = io.BytesIO()
+            fig.savefig(buf, format=payload.format, pad_inches=0)
+            plt.close(fig)
+            return buf.getvalue()
         try:
             min_lon = float(sat_meta.get("min_lon", wgs_xmin))
             max_lon = float(sat_meta.get("max_lon", wgs_xmax))
@@ -272,8 +301,10 @@ def render_area_images(
                 tick_h = 0.05
                 # Thicker black stroke + a ~2× white casing so the bar lifts
                 # off busy/dark mosaic imagery, without making it any taller.
+                # Label is white (with a thin black halo for legibility over
+                # bright patches), so its halo is the opposite colour.
                 line_halo = [withStroke(linewidth=14, foreground="white")]
-                text_halo = [withStroke(linewidth=4, foreground="white")]
+                text_halo = [withStroke(linewidth=4, foreground="black")]
                 trans = blended_transform_factory(ax.transData, ax.transAxes)
 
                 ax.plot(
@@ -300,7 +331,7 @@ def render_area_images(
                     label_cx, bar_y_axes + tick_h + 0.03,
                     label_text,
                     transform=trans, ha="center", va="bottom",
-                    fontsize=55, color="black",
+                    fontsize=22, color="white",
                     path_effects=text_halo, zorder=6,
                 )
                 try:
@@ -323,9 +354,22 @@ def render_area_images(
             pass  # Scale bar is decorative; never block the export.
 
         buf = io.BytesIO()
-        fig.savefig(buf, format=payload.format, bbox_inches="tight", pad_inches=0.05)
+        # `bbox_inches="tight"` would re-introduce the white margin we just
+        # eliminated by aspect-matching the figure to the EOX stitch — use
+        # the figure's actual extent and zero padding instead.
+        fig.savefig(buf, format=payload.format, pad_inches=0)
         plt.close(fig)
         return buf.getvalue()
+
+    _EOX_URL_RE = re.compile(r"tiles\.maps\.eox\.at/.+/s2cloudless-(\d{4})_3857/")
+
+    print(
+        f"[area_images] rendering {len(payload.layers)} layer(s) into {session_dir_name} "
+        f"(format={payload.format}); ids=" + ", ".join(
+            f"{l.layer_id}({l.layer_subtype or l.layer_type or '?'})" for l in payload.layers
+        ),
+        flush=True,
+    )
 
     for layer in payload.layers:
         try:
@@ -337,16 +381,43 @@ def render_area_images(
 
             # EOX s2cloudless is a WMTS tile service, not a COG — rasterio
             # cannot open its `{z}/{x}/{y}` template URL. Route it through the
-            # tile-stitcher used by the transect figure instead.
-            if layer.layer_subtype == "s2cloudless_mosaic":
-                year = layer.year or 2020
+            # tile-stitcher used by the transect figure instead. Subtype is the
+            # primary signal; URL pattern is a fallback for older saved features
+            # whose `layer_specs` predate the `layer_subtype` field (without it,
+            # refresh would route the WMTS URL through `rasterio.open` and the
+            # EOX image would silently fall out of `image_exports`).
+            url_match = _EOX_URL_RE.search(layer.url or "")
+            is_eox = (
+                layer.layer_subtype == "s2cloudless_mosaic"
+                or url_match is not None
+            )
+            if is_eox:
+                year = layer.year or (
+                    int(url_match.group(1)) if url_match else 2020
+                )
                 file_name = (
                     f"{sanitize_name(layer.name)}_"
                     f"{sanitize_name(location_tag)}.{payload.format}"
                 )
-                image_bytes = _render_eox_mosaic_bytes(year)
+                # `getattr` with default so a backend that's loaded an older
+                # `FigureLayerSpec` (missing this field — e.g. mid-deploy)
+                # doesn't crash the entire EOX render with AttributeError.
+                _isb = getattr(layer, "include_scale_bar", None)
+                draw_bar = True if _isb is None else bool(_isb)
+                print(
+                    f"[area_images] EOX layer detected: id={layer.layer_id} "
+                    f"subtype={layer.layer_subtype} year={year} url_match={bool(url_match)} "
+                    f"draw_bar={draw_bar} -> {file_name}",
+                    flush=True,
+                )
+                image_bytes = _render_eox_mosaic_bytes(year, draw_scale_bar=draw_bar)
                 (session_dir / file_name).write_bytes(image_bytes)
                 _record_export(file_name, layer)
+                print(
+                    f"[area_images] EOX layer rendered: {len(image_bytes)} bytes "
+                    f"-> image_exports now {len(image_exports)} entries",
+                    flush=True,
+                )
                 continue
 
             with rasterio.open(layer.url) as src:
@@ -390,6 +461,18 @@ def render_area_images(
                     (session_dir / file_name).write_bytes(image_bytes)
                     _record_export(file_name, layer)
         except Exception as exc:
+            import traceback as _tb
+            print(
+                f"[area_images] FAILED layer id={layer.layer_id} name={layer.name} "
+                f"subtype={layer.layer_subtype} type={layer.layer_type}: {exc}\n"
+                + _tb.format_exc(),
+                flush=True,
+            )
             render_errors.append({"layer_id": layer.layer_id, "name": layer.name, "error": str(exc)})
 
+    print(
+        f"[area_images] DONE: image_exports={len(image_exports)} errors={len(render_errors)}; "
+        f"files=" + ", ".join(e.get('filename', '?') for e in image_exports),
+        flush=True,
+    )
     return image_exports, render_errors

@@ -347,7 +347,11 @@ def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
     inset_y = max(48, int(h * 0.06))
     line_w = max(14, int(ref * 0.014))
     tick_h = max(28, int(ref * 0.028))
-    font_px = max(120, int(ref * 0.10))
+    # Was 10% of ref (≥120 px) — towered over the bar at every resolution. The
+    # bar itself is ~1.4% / tick ~2.8% of ref; sit the label just above tick
+    # height so the whole composition reads as a unit instead of "huge text
+    # with a tiny bar under it".
+    font_px = max(80, int(ref * 0.08))
 
     bar_y = h - inset_y
     bar_x0 = inset_x
@@ -377,9 +381,9 @@ def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
     # guaranteed present on every platform; try it first.
     candidates: list[str] = []
     try:
-        from matplotlib import font_manager as _fm
+        from matplotlib import font_manager
 
-        candidates.append(_fm.findfont("DejaVu Sans", fallback_to_default=True))
+        candidates.append(font_manager.findfont("DejaVu Sans", fallback_to_default=True))
     except Exception:
         pass
     candidates += [
@@ -432,15 +436,17 @@ def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
         pass  # older Pillow without textbbox/anchor — leave centred
 
     # Pillow ≥ 8 supports stroke_width / stroke_fill for crisp haloed text.
+    # White label with a thin black halo so it stays readable over bright
+    # patches (snow, rooftops, beaches) without losing the "white text" look.
     try:
         draw.text(
             (label_cx, label_baseline_y),
             label_text,
-            fill="black",
+            fill="white",
             font=font,
             anchor="md",  # middle / descender baseline
             stroke_width=stroke_px,
-            stroke_fill="white",
+            stroke_fill="black",
         )
     except TypeError:
         # Older Pillow without stroke / anchor — fall back to manual halo.
@@ -451,10 +457,10 @@ def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:
                 draw.text(
                     (label_cx + dx, label_baseline_y + dy),
                     label_text,
-                    fill="white",
+                    fill="black",
                     font=font,
                 )
-        draw.text((label_cx, label_baseline_y), label_text, fill="black", font=font)
+        draw.text((label_cx, label_baseline_y), label_text, fill="white", font=font)
 
     out = io.BytesIO()
     img.save(out, format="PNG")

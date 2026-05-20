@@ -85,10 +85,10 @@ def _fetch_ee_annualchanges_array(
         })
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
-        from PIL import Image as _PILImage
+        from PIL import Image
         # Use RGBA so the masked (transparent) pixels stay transparent on the
         # final imshow, letting matplotlib's white axes background show through.
-        arr = np.asarray(_PILImage.open(io.BytesIO(resp.content)).convert("RGBA"))
+        arr = np.asarray(Image.open(io.BytesIO(resp.content)).convert("RGBA"))
     except Exception:
         return None, {}
 
@@ -278,8 +278,8 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             )
             sat_source_label = "Google Satellite (HD)"
         if _sat_bytes is not None:
-            from PIL import Image as _PILImage
-            sat_arr = np.asarray(_PILImage.open(io.BytesIO(_sat_bytes)).convert("RGB"))
+            from PIL import Image
+            sat_arr = np.asarray(Image.open(io.BytesIO(_sat_bytes)).convert("RGB"))
             # EOX s2cloudless JPEGs read dark over forest canopy; brighten via a
             # gamma curve so midtones lift without clipping the (rare) highlights
             # like clouds/snow. Skip when factor is ~1.0 to avoid pointless work.
@@ -657,11 +657,11 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # relative to the parent's current bounds, so the bar tracks the
         # heatmap through the strip-glue / x-extent pinning steps later
         # in this function.
-        from matplotlib.patches import Rectangle as _Rect  # local — only used here
+        from matplotlib.patches import Rectangle
         _cbar_label_fs = max(7, req.font_size - 2)
         # Background pad in heatmap-axes-fraction. Sized to comfortably
         # contain the bar plus tick numerals and "Energy (%)" label below.
-        ax.add_patch(_Rect(
+        ax.add_patch(Rectangle(
             (0.012, 0.07), 0.30, 0.36,
             transform=ax.transAxes,
             facecolor="white", alpha=0.7,
@@ -939,8 +939,8 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     probe = io.BytesIO()
     fig.savefig(probe, dpi=req.dpi, **save_kw)
     probe.seek(0)
-    from PIL import Image as _PILImage
-    measured_w_px = _PILImage.open(probe).size[0]
+    from PIL import Image
+    measured_w_px = Image.open(probe).size[0]
 
     if abs(measured_w_px - target_w_px) <= 1:
         # Already exact (within rounding) — reuse pass 1, no second render.

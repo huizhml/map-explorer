@@ -388,7 +388,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
         }}
       >
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1, flexShrink: 0 }}>
-          <strong>Lon</strong> {(activeTransectSample?.lon ?? lon).toFixed(6)}, <strong>Lat</strong> {(activeTransectSample?.lat ?? lat).toFixed(6)}
+          <strong>lat, lon:</strong> {(activeTransectSample?.lat ?? lat).toFixed(6)}, {(activeTransectSample?.lon ?? lon).toFixed(6)}
         </Typography>
 
         {(isVertical || isVerticalLine) && profileMetaData?.tileName && (

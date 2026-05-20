@@ -343,6 +343,9 @@ class SaveFiguresRequest(BaseModel):
     # full resolution.
     include_google_satellite: bool = False
     google_satellite_max_width_px: int =4096 # 8192
+    # Burn a metric scale bar into the HD Google Satellite snapshot. Default
+    # True keeps the existing self-describing PNG; UI lets users disable it.
+    include_google_satellite_scale_bar: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -863,11 +866,14 @@ async def save_figures(request: SaveFiguresRequest):
                 })
             else:
                 # Burn a metric scale bar into the lower-left corner so the
-                # exported HD satellite image is self-describing.
-                try:
-                    sat_bytes = _burn_scale_bar(sat_bytes, sat_meta)
-                except Exception:
-                    pass  # Scale bar is decorative; never block the export.
+                # exported HD satellite image is self-describing. Caller can
+                # opt out via the UI checkbox when the bar would duplicate
+                # another decoration.
+                if request.include_google_satellite_scale_bar:
+                    try:
+                        sat_bytes = _burn_scale_bar(sat_bytes, sat_meta)
+                    except Exception:
+                        pass  # Scale bar is decorative; never block the export.
                 stem = (request.filename_stem or "").strip()
                 sat_name = (
                     f"{_sanitize_name(stem)}_google_satellite.png"

@@ -104,6 +104,9 @@ interface SidebarProps {
   /** Also save a high-resolution Google Satellite snapshot of the drawn area. */
   includeGoogleSatellite: boolean;
   onIncludeGoogleSatelliteChange: (next: boolean) => void;
+  /** Burn a metric scale bar into the HD Google Satellite snapshot. */
+  includeGoogleSatelliteScaleBar: boolean;
+  onIncludeGoogleSatelliteScaleBarChange: (next: boolean) => void;
   availableFigureLayers: Array<{
     id: string;
     name: string;
@@ -112,6 +115,8 @@ interface SidebarProps {
     defaultRescaleMin?: number;
     defaultRescaleMax?: number;
     defaultSelectedBand?: number;
+    /** Used to surface a scale-bar toggle on EOX s2cloudless mosaic rows. */
+    layerSubType?: string;
   }>;
   selectedFigureLayerIds: string[];
   onToggleFigureLayer: (layerId: string) => void;
@@ -146,7 +151,11 @@ interface SidebarProps {
   /** Re-renders every image attached to a saved area_images polygon from its
    *  stored layer specs. When `square` is set, the polygon is first cropped to
    *  a square on its shortest side and the geometry is updated to match. */
-  onRefreshAreaImages: (feature: SavedFeature, options?: { square?: boolean }) => void;
+  onRefreshAreaImages: (feature: SavedFeature, options?: {
+    square?: boolean;
+    includeGoogleSatelliteScaleBar?: boolean;
+    includeEoxScaleBar?: boolean;
+  }) => void;
   onDeleteSavedFeature: (id: number) => void;
   onUpdateSavedFeature: (id: number, payload: { name: string; description: string; tags: string[] }) => Promise<void>;
   onJumpToFeature: (feature: SavedFeature) => void;
@@ -461,6 +470,8 @@ export function Sidebar({
   suggestedFigureFilenameStem,
   includeGoogleSatellite,
   onIncludeGoogleSatelliteChange,
+  includeGoogleSatelliteScaleBar,
+  onIncludeGoogleSatelliteScaleBarChange,
   availableFigureLayers,
   selectedFigureLayerIds,
   onToggleFigureLayer,
@@ -536,6 +547,12 @@ export function Sidebar({
   // Feature ids whose "square" checkbox is ticked — when set, the area-image
   // Update will crop the polygon to a square on its shortest side.
   const [squareAreaFeatureIds, setSquareAreaFeatureIds] = useState<Set<number>>(new Set());
+  // Feature ids whose HD Google Satellite scale-bar checkbox has been *explicitly
+  // turned off* for the next Update. Stored as opt-OUT so the default (on)
+  // matches the save-time behaviour without us having to seed every row.
+  const [refreshSuppressSatBarIds, setRefreshSuppressSatBarIds] = useState<Set<number>>(new Set());
+  // Same pattern for the EOX s2cloudless mosaic scale bar on Update.
+  const [refreshSuppressEoxBarIds, setRefreshSuppressEoxBarIds] = useState<Set<number>>(new Set());
   const [editingSavedId, setEditingSavedId] = useState<number | null>(null);
   const [editSavedName, setEditSavedName] = useState('');
   const [editSavedDescription, setEditSavedDescription] = useState('');
@@ -1176,6 +1193,20 @@ export function Sidebar({
                                       </Box>
                                     </>
                                   )}
+                                  {layer.layerSubType === 's2cloudless_mosaic' && (
+                                    <FormControlLabel
+                                      sx={{ m: 0 }}
+                                      control={
+                                        <Checkbox
+                                          size="small"
+                                          checked={ovr?.includeScaleBar !== false}
+                                          onChange={(e) => onUpdateFigureLayerOverride(layer.id, { includeScaleBar: e.target.checked })}
+                                          sx={{ color: ui.textMuted }}
+                                        />
+                                      }
+                                      label={<Typography variant="caption" sx={{ color: ui.textPrimary }}>Include scale bar</Typography>}
+                                    />
+                                  )}
                                 </Box>
                               </Collapse>
                             </Box>
@@ -1198,6 +1229,22 @@ export function Sidebar({
                   label={
                     <Typography variant="body2" sx={{ color: ui.text }}>
                       Also save HD Google Satellite snapshot
+                    </Typography>
+                  }
+                />
+                <FormControlLabel
+                  sx={{ ml: 2.5, mt: -0.25, mb: -0.5 }}
+                  disabled={!includeGoogleSatellite}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={includeGoogleSatelliteScaleBar}
+                      onChange={(e) => onIncludeGoogleSatelliteScaleBarChange(e.target.checked)}
+                    />
+                  }
+                  label={
+                    <Typography variant="caption" sx={{ color: includeGoogleSatellite ? ui.text : ui.textMuted }}>
+                      Include scale bar on satellite snapshot
                     </Typography>
                   }
                 />
@@ -1684,35 +1731,102 @@ export function Sidebar({
                                   && (feature.metadata?.source === 'area_images'
                                     || (Array.isArray(feature.plot_data?.image_exports)
                                       && (feature.plot_data?.image_exports?.length ?? 0) > 0))
-                                  && (
-                                    <Tooltip title="Crop the polygon to a square on its shortest side before re-rendering. This permanently updates the saved geometry.">
-                                      <FormControlLabel
-                                        sx={{ ml: 0, mb: 0.25 }}
-                                        control={
-                                          <Checkbox
-                                            size="small"
-                                            checked={squareAreaFeatureIds.has(feature.id)}
-                                            disabled={refreshingAreaImagesId === feature.id}
-                                            onChange={(e) => {
-                                              const checked = e.target.checked;
-                                              setSquareAreaFeatureIds((prev) => {
-                                                const next = new Set(prev);
-                                                if (checked) next.add(feature.id);
-                                                else next.delete(feature.id);
-                                                return next;
-                                              });
-                                            }}
-                                            sx={{ py: 0.25, color: ui.textMuted, '&.Mui-checked': { color: ui.accent } }}
+                                  && (() => {
+                                    const exports = Array.isArray(feature.plot_data?.image_exports) ? feature.plot_data!.image_exports! : [];
+                                    const hasGoogleSat = exports.some((e: any) => e?.layer_id === '_google_satellite');
+                                    const hasEoxLayer = Array.isArray(feature.plot_data?.layer_specs)
+                                      && feature.plot_data!.layer_specs!.some((s: any) => s?.layer_subtype === 's2cloudless_mosaic');
+                                    const refreshing = refreshingAreaImagesId === feature.id;
+                                    return (
+                                      <Box sx={{ display: 'flex', flexWrap: 'wrap', columnGap: 1, rowGap: 0 }}>
+                                        <Tooltip title="Crop the polygon to a square on its shortest side before re-rendering. This permanently updates the saved geometry.">
+                                          <FormControlLabel
+                                            sx={{ ml: 0, mb: 0.25 }}
+                                            control={
+                                              <Checkbox
+                                                size="small"
+                                                checked={squareAreaFeatureIds.has(feature.id)}
+                                                disabled={refreshing}
+                                                onChange={(e) => {
+                                                  const checked = e.target.checked;
+                                                  setSquareAreaFeatureIds((prev) => {
+                                                    const next = new Set(prev);
+                                                    if (checked) next.add(feature.id);
+                                                    else next.delete(feature.id);
+                                                    return next;
+                                                  });
+                                                }}
+                                                sx={{ py: 0.25, color: ui.textMuted, '&.Mui-checked': { color: ui.accent } }}
+                                              />
+                                            }
+                                            label={
+                                              <Typography sx={{ fontSize: '0.75rem', color: ui.textSecondary }}>
+                                                Square
+                                              </Typography>
+                                            }
                                           />
-                                        }
-                                        label={
-                                          <Typography sx={{ fontSize: '0.75rem', color: ui.textSecondary }}>
-                                            Square
-                                          </Typography>
-                                        }
-                                      />
-                                    </Tooltip>
-                                  )}
+                                        </Tooltip>
+                                        {hasGoogleSat && (
+                                          <Tooltip title="Burn a metric scale bar into the HD Google Satellite snapshot on re-render. Uncheck to render the snapshot bare.">
+                                            <FormControlLabel
+                                              sx={{ ml: 0, mb: 0.25 }}
+                                              control={
+                                                <Checkbox
+                                                  size="small"
+                                                  checked={!refreshSuppressSatBarIds.has(feature.id)}
+                                                  disabled={refreshing}
+                                                  onChange={(e) => {
+                                                    const off = !e.target.checked;
+                                                    setRefreshSuppressSatBarIds((prev) => {
+                                                      const next = new Set(prev);
+                                                      if (off) next.add(feature.id);
+                                                      else next.delete(feature.id);
+                                                      return next;
+                                                    });
+                                                  }}
+                                                  sx={{ py: 0.25, color: ui.textMuted, '&.Mui-checked': { color: ui.accent } }}
+                                                />
+                                              }
+                                              label={
+                                                <Typography sx={{ fontSize: '0.75rem', color: ui.textSecondary }}>
+                                                  Sat scale bar
+                                                </Typography>
+                                              }
+                                            />
+                                          </Tooltip>
+                                        )}
+                                        {hasEoxLayer && (
+                                          <Tooltip title="Draw a metric scale bar on the EOX s2cloudless mosaic on re-render. Uncheck to render bare.">
+                                            <FormControlLabel
+                                              sx={{ ml: 0, mb: 0.25 }}
+                                              control={
+                                                <Checkbox
+                                                  size="small"
+                                                  checked={!refreshSuppressEoxBarIds.has(feature.id)}
+                                                  disabled={refreshing}
+                                                  onChange={(e) => {
+                                                    const off = !e.target.checked;
+                                                    setRefreshSuppressEoxBarIds((prev) => {
+                                                      const next = new Set(prev);
+                                                      if (off) next.add(feature.id);
+                                                      else next.delete(feature.id);
+                                                      return next;
+                                                    });
+                                                  }}
+                                                  sx={{ py: 0.25, color: ui.textMuted, '&.Mui-checked': { color: ui.accent } }}
+                                                />
+                                              }
+                                              label={
+                                                <Typography sx={{ fontSize: '0.75rem', color: ui.textSecondary }}>
+                                                  EOX scale bar
+                                                </Typography>
+                                              }
+                                            />
+                                          </Tooltip>
+                                        )}
+                                      </Box>
+                                    );
+                                  })()}
                                 <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
                                   <Button
                                     size="small"
@@ -1762,7 +1876,11 @@ export function Sidebar({
                                                   ? <CircularProgress size={14} />
                                                   : <RefreshIcon fontSize="small" />
                                               }
-                                              onClick={() => onRefreshAreaImages(feature, { square: squareAreaFeatureIds.has(feature.id) })}
+                                              onClick={() => onRefreshAreaImages(feature, {
+                                                square: squareAreaFeatureIds.has(feature.id),
+                                                includeGoogleSatelliteScaleBar: !refreshSuppressSatBarIds.has(feature.id),
+                                                includeEoxScaleBar: !refreshSuppressEoxBarIds.has(feature.id),
+                                              })}
                                               sx={{
                                                 textTransform: 'none',
                                                 borderColor: failure ? 'error.main' : ui.accentBorder,
@@ -2097,6 +2215,20 @@ export function Sidebar({
                                     inputProps={{ step: 'any' }}
                                   />
                                 </Box>
+                                {layer.layerSubType === 's2cloudless_mosaic' && (
+                                  <FormControlLabel
+                                    sx={{ m: 0 }}
+                                    control={
+                                      <Checkbox
+                                        size="small"
+                                        checked={ovr?.includeScaleBar !== false}
+                                        onChange={(e) => onUpdateFigureLayerOverride(layer.id, { includeScaleBar: e.target.checked })}
+                                        sx={{ color: ui.textMuted }}
+                                      />
+                                    }
+                                    label={<Typography variant="caption" sx={{ color: ui.textPrimary }}>Include scale bar</Typography>}
+                                  />
+                                )}
                               </Box>
                             </Collapse>
                           </Box>
@@ -2118,6 +2250,22 @@ export function Sidebar({
                   label={
                     <Typography variant="body2" sx={{ color: ui.text }}>
                       Also save HD Google Satellite snapshot
+                    </Typography>
+                  }
+                />
+                <FormControlLabel
+                  sx={{ ml: 2.5, mt: -0.25, mb: -0.5 }}
+                  disabled={!includeGoogleSatellite}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={includeGoogleSatelliteScaleBar}
+                      onChange={(e) => onIncludeGoogleSatelliteScaleBarChange(e.target.checked)}
+                    />
+                  }
+                  label={
+                    <Typography variant="caption" sx={{ color: includeGoogleSatellite ? ui.text : ui.textMuted }}>
+                      Include scale bar on satellite snapshot
                     </Typography>
                   }
                 />

@@ -119,9 +119,9 @@ def _render_vertical_profile_figure(req: VerticalProfileFigureRequest) -> Tuple[
     probe = io.BytesIO()
     fig.savefig(probe, dpi=req.dpi, **save_kw)
     probe.seek(0)
-    from PIL import Image as _PILImage
+    from PIL import Image
 
-    measured_w_px = _PILImage.open(probe).size[0]
+    measured_w_px = Image.open(probe).size[0]
 
     if abs(measured_w_px - target_w_px) <= 1:
         # Already exact (within rounding) — reuse pass 1, no second render.

@@ -173,6 +173,11 @@ export interface FigureLayerOverrides {
   colormap?: string;
   rescaleMin?: number;
   rescaleMax?: number;
+  /** Burn a metric scale bar into the rendered image. Only meaningful for
+   *  layer types that draw imagery a scale bar makes sense on (EOX
+   *  s2cloudless mosaics today); other layers ignore the flag. Undefined
+   *  means "use the backend default" (currently true). */
+  includeScaleBar?: boolean;
 }
 
 export function SidebarContainer() {
@@ -183,6 +188,8 @@ export function SidebarContainer() {
   const [figureFilenameStem, setFigureFilenameStem] = React.useState('');
   /** Also save a high-resolution Google Satellite snapshot of the drawn area. */
   const [includeGoogleSatellite, setIncludeGoogleSatellite] = React.useState(false);
+  /** Burn a metric scale bar into the HD Google Satellite snapshot. */
+  const [includeGoogleSatelliteScaleBar, setIncludeGoogleSatelliteScaleBar] = React.useState(true);
   const lastExtentForStemRef = React.useRef<string | null>(null);
   const [selectedFigureLayerIds, setSelectedFigureLayerIds] = React.useState<string[]>([]);
   const [figureLayerOverrides, setFigureLayerOverrides] = React.useState<Record<string, FigureLayerOverrides>>({});
@@ -1682,7 +1689,14 @@ export function SidebarContainer() {
   };
 
   const handleRefreshAreaImages = React.useCallback(
-    async (feature: SavedFeature, options?: { square?: boolean }) => {
+    async (
+      feature: SavedFeature,
+      options?: {
+        square?: boolean;
+        includeGoogleSatelliteScaleBar?: boolean;
+        includeEoxScaleBar?: boolean;
+      },
+    ) => {
       setRefreshingAreaImagesId(feature.id);
       setRefreshAreaImagesError(null);
       // The backend reproduces the original export from the layer specs it
@@ -1690,8 +1704,23 @@ export function SidebarContainer() {
       // When `square` is set the backend also crops the polygon to a square
       // and rewrites the saved geometry, so refresh the on-map highlight too.
       try {
+        // EOX scale bar is a per-layer flag on each stored s2cloudless layer.
+        // The refresh endpoint reads stored layer_specs when `layers` is
+        // omitted, so to override the per-layer flag we resend the stored
+        // specs with include_scale_bar patched.
+        const eoxBar = options?.includeEoxScaleBar;
+        const storedSpecs = (feature.plot_data as any)?.layer_specs;
+        const layersOverride = (eoxBar !== undefined && Array.isArray(storedSpecs))
+          ? storedSpecs.map((s: any) => (
+              s?.layer_subtype === 's2cloudless_mosaic'
+                ? { ...s, include_scale_bar: eoxBar }
+                : s
+            ))
+          : undefined;
         const { feature: refreshed } = await refreshAreaImages(feature.id, {
           square: options?.square ?? false,
+          include_google_satellite_scale_bar: options?.includeGoogleSatelliteScaleBar,
+          layers: layersOverride,
         });
         setSavedMapFeatures((prev) => prev.map((f) => (f.id === feature.id ? refreshed : f)));
       } catch (err) {
@@ -1734,6 +1763,7 @@ export function SidebarContainer() {
           format: figureFormat,
           ...(figureFilenameStem.trim() ? { filename_stem: figureFilenameStem.trim() } : {}),
           include_google_satellite: includeGoogleSatellite,
+          include_google_satellite_scale_bar: includeGoogleSatelliteScaleBar,
           layers: selectedLayers.map((layer) => {
             const ovr = figureLayerOverrides[layer.id];
             const isDiversity = layer.layerSubType === 'diversity_indices';
@@ -1750,6 +1780,7 @@ export function SidebarContainer() {
               colormap: cmap,
               rescale_min: rmin,
               rescale_max: rmax,
+              include_scale_bar: ovr?.includeScaleBar,
               bands: hasBands
                 ? ovr!.selectedBands.map((bi) => ({
                     ...(isDiversity && ovr?.rescaleMin === undefined && ovr?.rescaleMax === undefined
@@ -1809,6 +1840,7 @@ export function SidebarContainer() {
     figureOutputFolder,
     figureSelectionExtent,
     includeGoogleSatellite,
+    includeGoogleSatelliteScaleBar,
     selectedFigureLayerIds,
   ]);
 
@@ -1838,6 +1870,7 @@ export function SidebarContainer() {
           extent_3857: figureSelectionExtent,
           format: figureFormat,
           include_google_satellite: includeGoogleSatellite,
+          include_google_satellite_scale_bar: includeGoogleSatelliteScaleBar,
           layers: layersToUse.map((layer) => {
             const ovr = figureLayerOverrides[layer.id];
             const isDiversity = layer.layerSubType === 'diversity_indices';
@@ -1856,6 +1889,7 @@ export function SidebarContainer() {
               colormap: cmap,
               rescale_min: rmin,
               rescale_max: rmax,
+              include_scale_bar: ovr?.includeScaleBar,
               bands: hasBands
                 ? ovr!.selectedBands.map((bi) => ({
                     ...(isDiversity && ovr?.rescaleMin === undefined && ovr?.rescaleMax === undefined
@@ -1903,6 +1937,7 @@ export function SidebarContainer() {
     figureLayerOverrides,
     figureSelectionExtent,
     includeGoogleSatellite,
+    includeGoogleSatelliteScaleBar,
     selectedFigureLayerIds,
   ]);
 
@@ -1939,7 +1974,9 @@ export function SidebarContainer() {
       suggestedFigureFilenameStem={suggestedFigureFilenameStem}
       includeGoogleSatellite={includeGoogleSatellite}
       onIncludeGoogleSatelliteChange={setIncludeGoogleSatellite}
-      availableFigureLayers={exportableFigureLayers.map(({ id, name, bandNames, colormap, rescaleMin, rescaleMax, selectedBand }) => ({ id, name, bandNames, defaultColormap: colormap, defaultRescaleMin: rescaleMin, defaultRescaleMax: rescaleMax, defaultSelectedBand: selectedBand }))}
+      includeGoogleSatelliteScaleBar={includeGoogleSatelliteScaleBar}
+      onIncludeGoogleSatelliteScaleBarChange={setIncludeGoogleSatelliteScaleBar}
+      availableFigureLayers={exportableFigureLayers.map(({ id, name, bandNames, colormap, rescaleMin, rescaleMax, selectedBand, layerSubType }) => ({ id, name, bandNames, defaultColormap: colormap, defaultRescaleMin: rescaleMin, defaultRescaleMax: rescaleMax, defaultSelectedBand: selectedBand, layerSubType }))}
       selectedFigureLayerIds={selectedFigureLayerIds}
       onToggleFigureLayer={handleToggleFigureLayer}
       figureLayerOverrides={figureLayerOverrides}

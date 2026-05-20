@@ -224,6 +224,9 @@ export type AreaImageLayerSpec = {
   rescale_min?: number;
   rescale_max?: number;
   year?: number;
+  /** Burn a metric scale bar into the rendered image. Currently honoured only
+   *  by EOX s2cloudless mosaic layers; other layer types ignore it. */
+  include_scale_bar?: boolean;
   bands?: Array<{
     band_index: number;
     band_name?: string;
@@ -244,6 +247,7 @@ export async function refreshAreaImages(
     format?: 'png' | 'jpg' | 'pdf';
     include_google_satellite?: boolean;
     google_satellite_max_width_px?: number;
+    include_google_satellite_scale_bar?: boolean;
     extent_3857?: number[];
     /** Crop the polygon to a square on its shortest side and rewrite the
      *  saved geometry to match before re-rendering. */

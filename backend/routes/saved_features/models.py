@@ -79,6 +79,11 @@ class FigureLayerSpec(BaseModel):
     bands: Optional[List[FigureBandSpec]] = None
     # Vintage of the layer when applicable (e.g. EOX `s2cloudless-<year>`).
     year: Optional[int] = None
+    # Burn a metric scale bar into the rendered image. Only honoured by layer
+    # types that draw imagery a scale bar makes sense on (currently EOX
+    # s2cloudless mosaics — every other path ignores it). Default True so old
+    # saved features without the field keep their existing appearance.
+    include_scale_bar: Optional[bool] = True
 
 
 class SaveAreaImagesRequest(BaseModel):
@@ -96,6 +101,11 @@ class SaveAreaImagesRequest(BaseModel):
     # used at full resolution, so we trade some bandwidth for sharper detail.
     include_google_satellite: bool = False
     google_satellite_max_width_px: int = 4096  # 8192
+    # Burn a metric scale bar into the HD Google Satellite snapshot. Default
+    # True so existing callers keep their current behaviour; the UI exposes a
+    # checkbox to turn it off when the bar would be redundant with another
+    # decoration (e.g. an external scale on the same figure).
+    include_google_satellite_scale_bar: bool = True
 
 
 class RefreshAreaImagesRequest(BaseModel):
@@ -111,6 +121,7 @@ class RefreshAreaImagesRequest(BaseModel):
     format: Optional[Literal["jpg", "png", "pdf"]] = None
     include_google_satellite: Optional[bool] = None
     google_satellite_max_width_px: Optional[int] = None
+    include_google_satellite_scale_bar: Optional[bool] = None
     extent_3857: Optional[List[float]] = None
     # When true, crop the (Web-Mercator) extent to a square on its shortest
     # side, centred on the original extent, and rewrite the feature's polygon
