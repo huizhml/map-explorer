@@ -169,10 +169,12 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         panels.append("ee_annualchanges")
         height_ratios.append(req.ee_annualchanges_height_px)
     if req.include_heatmap:
-        # Strip is tentative — removed below if EE fetch fails. Sits immediately
-        # above the heatmap so the two share visual gridlines.
-        panels.append("ee_strip")
-        height_ratios.append(EE_STRIP_HEIGHT_PX)
+        # JRC TMF class strip sits immediately above the heatmap so the two
+        # share visual gridlines. Only shown when the JRC TMF map is selected;
+        # also tentative — removed below if the EE fetch fails.
+        if req.include_ee_annualchanges:
+            panels.append("ee_strip")
+            height_ratios.append(EE_STRIP_HEIGHT_PX)
         panels.append("heatmap")
         height_ratios.append(req.heatmap_height_px)
     # Merged metrics panel — FHD / 1D ENL / 2D ENL / CR.  By default all four
@@ -212,9 +214,9 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     LAYOUT_FONT_PT = 11.0                   # reference em for layout geometry
     font_in = LAYOUT_FONT_PT / 72.0         # 1 em in inches (layout only)
     left_in  = font_in * 10.0              # rotated ylabel + tick nums + padding
-    # Right margin is plain whitespace now — the heatmap colorbar lives in the
-    # bottom legend strip rather than to the right of the panel, so no special
-    # reservation is needed here.
+    # Right margin is plain whitespace — the heatmap colorbar is drawn as an
+    # inset inside the heatmap panel (lower-left, see the heatmap block below),
+    # so no gutter reservation is needed here.
     right_in = font_in * 1.0
     top_in   = font_in * 1.0
     bot_in   = font_in * 0.5
@@ -296,7 +298,7 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             height_ratios[panels.index("map")] = _auto_panel_height_px(sat_aspect, "map")
 
     # JRC TMF AnnualChanges fetch — shared by the optional 2D panel (buffered
-    # bbox, full image) and the always-on 1D strip above the heatmap (which
+    # bbox, full image) and the optional 1D strip above the heatmap (which
     # samples this same array at each transect (lon, lat)).  Doing one fetch
     # rather than two halves the Earth Engine round-trip when both are on.
     ee_arr = None
@@ -360,10 +362,9 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         hspace = max(0.03, min(0.40, hsp_in / avg_panel_h_in)),
     )
 
-    # Colorbar gutter is reserved in the figure's right margin (above), so
-    # every panel's plot rectangle ends at the same x — no per-panel divider
-    # needed. The heatmap's colorbar is placed manually via `fig.add_axes`
-    # after layout (see the heatmap panel below).
+    # No per-panel colorbar gutter — the heatmap's colorbar is an inset inside
+    # the heatmap axes (lower-left), so every panel's plot rectangle ends at
+    # the same x and no AxesDivider locator is in play.
 
     # Colormap matching the frontend hsl-based ramp (blue → orange).
     n_steps = 256
@@ -597,12 +598,6 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # No ylabel — the strip reads as the heatmap's header band; the JRC
         # palette is documented in the surrounding figure caption / legend.
 
-    # Hoisted from the heatmap panel so the bottom legend strip (below) can
-    # build the now-horizontal colorbar after every panel position has settled.
-    heatmap_mesh = None
-    heatmap_z_min = 0.0
-    heatmap_z_max = 1.0
-
     # ---- heatmap panel --------------------------------------------------
     if "heatmap" in panels:
         ax = axes[panels.index("heatmap")]
@@ -655,12 +650,34 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # when it finds nicer round values in the data span.
         ax.set_yticks([0.0,  max_h]) # max_h / 2.0,
         ax.set_yticklabels(['0', f'{max_h:.0f}m']) # f'{max_h / 2.0:.0f}m'
-        # Hand the mesh + colour range off to the bottom legend strip; the
-        # colorbar itself is built there (horizontal, beside the JRC and metric
-        # legends) once every panel's final position has settled.
-        heatmap_mesh = mesh
-        heatmap_z_min = z_min
-        heatmap_z_max = z_max
+        # Inset colorbar — lives inside the heatmap (lower-left) on a
+        # semi-transparent white pad so it stays legible against any cell
+        # colour and doesn't steal width from the panel. `ax.inset_axes`
+        # installs a locator that re-positions the inset on every draw
+        # relative to the parent's current bounds, so the bar tracks the
+        # heatmap through the strip-glue / x-extent pinning steps later
+        # in this function.
+        from matplotlib.patches import Rectangle as _Rect  # local — only used here
+        _cbar_label_fs = max(7, req.font_size - 2)
+        # Background pad in heatmap-axes-fraction. Sized to comfortably
+        # contain the bar plus tick numerals and "Energy (%)" label below.
+        ax.add_patch(_Rect(
+            (0.012, 0.07), 0.30, 0.36,
+            transform=ax.transAxes,
+            facecolor="white", alpha=0.7,
+            edgecolor="#888", linewidth=0.6,
+            zorder=5,
+        ))
+        # The bar itself — short horizontal strip near the top of the pad;
+        # tick numerals and label flow downward onto the pad.
+        cax = ax.inset_axes([0.045, 0.36, 0.24, 0.045])
+        cax.set_zorder(6)
+        cbar = fig.colorbar(mesh, cax=cax, orientation="horizontal")
+        cbar.set_label("Energy (%)", fontsize=_cbar_label_fs, labelpad=2)
+        cbar.set_ticks([z_min, z_max])
+        cbar.ax.tick_params(labelsize=_tick_fs, length=2, pad=1)
+        cbar.outline.set_linewidth(0.5)
+        cbar.outline.set_edgecolor("#666")
         # Top-right source label — pinned where the data is sparsest (canopy
         # top is mostly low-energy blue, so a white-backed badge sits
         # comfortably without obscuring meaningful cells).
@@ -775,9 +792,10 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
                 legend_handles.append(hi)
                 legend_labels.append(li)
 
-    # The metric legend is now rendered as column 3 of the bottom legend strip
-    # (alongside the JRC TMF class legend and horizontal heatmap colorbar) —
-    # see the post-layout block at the end of this function.
+    # The metric legend is rendered as the right column of the bottom legend
+    # strip (alongside the JRC TMF class legend) — see the post-layout block
+    # at the end of this function. The heatmap colorbar is no longer part of
+    # this strip; it lives as an inset inside the heatmap panel.
     for ax_obj in axes[:-1]:
         ax_obj.tick_params(axis='x', labelbottom=False, length=0)
 
@@ -827,13 +845,14 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         twin_pos = metrics_twin_ax.get_position()
         metrics_twin_ax.set_position([ref_pos.x0, twin_pos.y0, ref_pos.width, twin_pos.height])
 
-    # ---- Bottom legend strip (3 columns) -------------------------------
-    # Column 1: JRC TMF class swatches  ·  Column 2: horizontal heatmap
-    # colorbar  ·  Column 3: stacked metric line legend. All three are
-    # anchored relative to the now-finalised bottom-most panel position so
-    # the row stays horizontally aligned even after the strip-glue and
-    # draw-pin steps above. `bbox_inches="tight"` on save will extend the
-    # canvas downward to include whatever this strip emits.
+    # ---- Bottom legend strip (2 columns) -------------------------------
+    # Left column: JRC TMF class swatches  ·  Right column: stacked metric
+    # line legend. Both are anchored relative to the now-finalised bottom-most
+    # panel position so the row stays horizontally aligned even after the
+    # strip-glue and draw-pin steps above. `bbox_inches="tight"` on save will
+    # extend the canvas downward to include whatever this strip emits. The
+    # heatmap colorbar previously lived between these columns; it now sits as
+    # an inset inside the heatmap panel itself.
     from matplotlib.patches import Patch  # local import — only used here
 
     bp = axes[-1].get_position()
@@ -870,24 +889,7 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             borderaxespad=0.0,
         )
 
-    # Column 2 — horizontal heatmap colorbar.
-    if heatmap_mesh is not None:
-        cbar_w_fig = bp.width * 0.20
-        cbar_h_fig = 0.012
-        # Sit the bar just below `strip_top_y` so its visual top aligns with
-        # the legends' title rows; tick labels + axis label flow downward.
-        cax = fig.add_axes([
-            col_centers[1] - cbar_w_fig / 2.0,
-            strip_top_y - 0.025,
-            cbar_w_fig,
-            cbar_h_fig,
-        ])
-        cbar = fig.colorbar(heatmap_mesh, cax=cax, orientation="horizontal")
-        cbar.set_label("Energy (%)", fontsize=_strip_fs)
-        cbar.set_ticks([heatmap_z_min, heatmap_z_max])
-        cbar.ax.tick_params(labelsize=_tick_fs)
-
-    # Column 3 — stacked metric legend (FHD / 1D ENL / 2D ENL / CR).
+    # Right column — stacked metric legend (FHD / 1D ENL / 2D ENL / CR).
     if legend_handles:
         fig.legend(
             legend_handles,
