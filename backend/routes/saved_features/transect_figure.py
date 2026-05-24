@@ -14,6 +14,7 @@ import numpy as np
 import requests
 from fastapi import HTTPException
 
+from .colormap import build_energy_cmap
 from .config import JRC_TMF_CLASSES
 from .models import TransectFigureRequest
 from .satellite import _stitch_bbox_eox_s2cloudless, _stitch_bbox_satellite
@@ -109,7 +110,6 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
 
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap
     from matplotlib.ticker import FuncFormatter, MaxNLocator
 
     samples = req.samples
@@ -367,35 +367,7 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     # the same x and no AxesDivider locator is in play.
 
     # Colormap matching the frontend hsl-based ramp (blue → orange).
-    n_steps = 256
-
-    def _hsl_to_rgb(h_deg: float, s: float, l: float) -> Tuple[float, float, float]:
-        h = (h_deg % 360) / 360.0
-        if s == 0:
-            return l, l, l
-        q = l * (1 + s) if l < 0.5 else l + s - l * s
-        p = 2 * l - q
-
-        def _h2c(t: float) -> float:
-            if t < 0:
-                t += 1
-            if t > 1:
-                t -= 1
-            if t < 1 / 6:
-                return p + (q - p) * 6 * t
-            if t < 1 / 2:
-                return q
-            if t < 2 / 3:
-                return p + (q - p) * (2 / 3 - t) * 6
-            return p
-
-        return _h2c(h + 1 / 3), _h2c(h), _h2c(h - 1 / 3)
-
-    ramp_rgb = np.array([
-        _hsl_to_rgb(235 - 175 * (i / (n_steps - 1)), 0.86, 0.28 + 0.34 * (i / (n_steps - 1)))
-        for i in range(n_steps)
-    ])
-    energy_cmap = LinearSegmentedColormap.from_list("transect_energy", ramp_rgb, N=n_steps)
+    energy_cmap = build_energy_cmap()
 
     x_min = float(np.min(x_vals))
     x_max = float(np.max(x_vals))
@@ -505,7 +477,7 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
 
             # Source label (lower-right corner) — uses the shared badge style
             # so EOX vs. Google snapshots are self-identifying in exports.
-            if sat_source_label:
+            if sat_source_label and req.show_panel_labels:
                 _source_badge(ax, sat_source_label)
         else:
             unavailable_label = (
@@ -523,7 +495,8 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             _draw_imshow_panel(ax, ee_arr, ee_meta, "nearest")  # preserve sharp class boundaries
             # Footer annotation so the reader knows what they're looking at
             # (an axis title would crowd into the panel above).
-            _source_badge(ax, "JRC TMF AnnualChanges · Dec 2020")
+            if req.show_panel_labels:
+                _source_badge(ax, "JRC TMF AnnualChanges · Dec 2020")
         else:
             ax.text(
                 0.5, 0.5,
@@ -659,20 +632,23 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # in this function.
         from matplotlib.patches import Rectangle
         _cbar_label_fs = max(7, req.font_size - 2)
-        # Background pad in heatmap-axes-fraction. Sized to comfortably
-        # contain the bar plus tick numerals and "Energy (%)" label below.
+        # Background pad in heatmap-axes-fraction. Narrow + tall to comfortably
+        # contain the vertical bar plus the tick numerals and rotated
+        # "Energy (%)" label that flow to its right. (The panel is wide and
+        # short, so a fraction of x is far more pixels than the same fraction of
+        # y — hence the bar is thin in x and long in y.)
         ax.add_patch(Rectangle(
-            (0.012, 0.07), 0.30, 0.36,
+            (0.012, 0.10), 0.11, 0.66,
             transform=ax.transAxes,
             facecolor="white", alpha=0.7,
             edgecolor="#888", linewidth=0.6,
             zorder=5,
         ))
-        # The bar itself — short horizontal strip near the top of the pad;
-        # tick numerals and label flow downward onto the pad.
-        cax = ax.inset_axes([0.045, 0.36, 0.24, 0.045])
+        # The bar itself — thin vertical strip near the pad's left; tick
+        # numerals sit on its right and the rotated label flows further right.
+        cax = ax.inset_axes([0.035, 0.18, 0.02, 0.48])
         cax.set_zorder(6)
-        cbar = fig.colorbar(mesh, cax=cax, orientation="horizontal")
+        cbar = fig.colorbar(mesh, cax=cax, orientation="vertical")
         cbar.set_label("Energy (%)", fontsize=_cbar_label_fs, labelpad=2)
         cbar.set_ticks([z_min, z_max])
         cbar.ax.tick_params(labelsize=_tick_fs, length=2, pad=1)
@@ -681,7 +657,8 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # Top-right source label — pinned where the data is sparsest (canopy
         # top is mostly low-energy blue, so a white-backed badge sits
         # comfortably without obscuring meaningful cells).
-        _source_badge(ax, "VSM Vertical Profile")
+        if req.show_panel_labels:
+            _source_badge(ax, "VSM Vertical Profile")
 
     # ---- Merged metrics panel (FHD / 1D ENL / 2D ENL / CR) --------------
     # By default all four metrics share the left y-axis with integer ticks.
@@ -748,10 +725,11 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # Top-right source label — drawn on the twin axis (when CR sits there)
         # so it renders above the primary grid; the panel's data fits below
         # `y=8` (or `y=1.0` for CR-only) so the badge has clear space above.
-        _source_badge(
-            metrics_twin_ax if metrics_twin_ax is not None else ax,
-            "VSM Diversity indices",
-        )
+        if req.show_panel_labels:
+            _source_badge(
+                metrics_twin_ax if metrics_twin_ax is not None else ax,
+                "VSM Diversity indices",
+            )
 
     # No x-axis label — cardinal-suffixed tick values are self-identifying.
     # Pin xlim on every axis (and the metrics twinx, when present) rather than

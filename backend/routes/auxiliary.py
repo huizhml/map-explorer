@@ -326,6 +326,10 @@ class FigureLayerSpec(BaseModel):
     rescale_min: Optional[float] = None
     rescale_max: Optional[float] = None
     bands: Optional[List[FigureBandSpec]] = None
+    # Draw a colorbar on single-band (colormapped) renders. When False the image
+    # is rendered edge-to-edge with no border / title. Default True keeps the
+    # existing appearance for callers that don't send the field.
+    include_colorbar: Optional[bool] = True
 
 
 class SaveFiguresRequest(BaseModel):
@@ -745,7 +749,8 @@ async def save_figures(request: SaveFiguresRequest):
 
     def _save_one_figure(src, window, title: str, filename: str, cmap: Optional[str],
                          rmin: Optional[float], rmax: Optional[float], band_idx: Optional[int],
-                         prefer_sentinel_rgb: bool = False, rgb_bands: Optional[List[int]] = None):
+                         prefer_sentinel_rgb: bool = False, rgb_bands: Optional[List[int]] = None,
+                         include_colorbar: bool = True):
         # Higher dpi for PDF — vector elements stay sharp regardless, but the
         # embedded raster (the imshow of the data) inherits the figure dpi.
         render_dpi = 300 if request.format == "pdf" else 160
@@ -788,6 +793,27 @@ async def save_figures(request: SaveFiguresRequest):
         else:
             data = _read_as_float(src, window, indexes=1)
         low, high = _resolve_single_band_range(data, rmin, rmax)
+
+        # No-colorbar path: discard the titled 8×8 layout and render the
+        # colormapped data edge-to-edge (axes fills the figure) so the output
+        # has no white border — matching the RGB / EOX figures.
+        if not include_colorbar:
+            plt.close(fig)
+            h_px, w_px = data.shape[:2]
+            fig_w_in = 10.0
+            fig_h_in = max(0.5, fig_w_in * (h_px / max(1, w_px)))
+            fig = plt.figure(figsize=(fig_w_in, fig_h_in), dpi=render_dpi)
+            ax = fig.add_axes([0, 0, 1, 1])  # axes fills figure → no margins
+            ax.set_axis_off()
+            ax.imshow(data, cmap=_resolve_cmap(cmap), vmin=low, vmax=high, aspect="auto")
+            out_path = output_dir / filename
+            save_kwargs = {"pad_inches": 0}
+            if request.format == "png":
+                save_kwargs["transparent"] = True
+            fig.savefig(out_path, format=request.format, **save_kwargs)
+            plt.close(fig)
+            return str(out_path)
+
         im = ax.imshow(data, cmap=_resolve_cmap(cmap), vmin=low, vmax=high)
         # Show colorbar only for single-band renderings; match colorbar height to image axes.
         divider = make_axes_locatable(ax)
@@ -826,7 +852,8 @@ async def save_figures(request: SaveFiguresRequest):
                         rmin = bs.rescale_min if bs.rescale_min is not None else layer.rescale_min
                         rmax = bs.rescale_max if bs.rescale_max is not None else layer.rescale_max
                         path = _save_one_figure(
-                            src, window, title, fname, cmap, rmin, rmax, bs.band_index, is_sentinel, layer.rgb_bands
+                            src, window, title, fname, cmap, rmin, rmax, bs.band_index, is_sentinel, layer.rgb_bands,
+                            include_colorbar=(layer.include_colorbar is not False),
                         )
                         saved_files.append(path)
                 else:
@@ -840,7 +867,8 @@ async def save_figures(request: SaveFiguresRequest):
                         fname = f"{_sanitize_name(base_name)}.{request.format}"
                     path = _save_one_figure(src, window, layer.name, fname,
                                             layer.colormap, layer.rescale_min, layer.rescale_max, None,
-                                            is_sentinel, layer.rgb_bands)
+                                            is_sentinel, layer.rgb_bands,
+                                            include_colorbar=(layer.include_colorbar is not False))
                     saved_files.append(path)
         except Exception as e:
             errors.append({"layer_id": layer.layer_id, "name": layer.name, "error": str(e)})

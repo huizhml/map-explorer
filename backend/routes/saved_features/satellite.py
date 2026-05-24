@@ -187,8 +187,11 @@ def _stitch_bbox_eox_s2cloudless(
 
     Source: EOX `s2cloudless-<year>_3857` WMTS layer
     (`https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-<year>_3857/default/g/{z}/{y}/{x}.jpg`).
-    Standard EPSG:3857 Web Mercator tile grid with 256×256 JPEGs; EOX publishes
-    zoom 0-14 only.
+    Standard EPSG:3857 Web Mercator tile grid with 256×256 JPEGs. EOX serves the
+    grid up to zoom 18 (verified; 19+ → 404). Sentinel-2 is ~10 m native (zoom
+    ~14), so zooms 15-18 are server-side *overzoom* — no new native detail, but
+    EOX's interpolation yields a smoother, higher-pixel texture than capping the
+    fetch at native and letting the renderer upsample it blockily.
 
     Returns (png_bytes, metadata) using the same shape as
     `_stitch_bbox_satellite` so callers can swap the two interchangeably.
@@ -210,8 +213,12 @@ def _stitch_bbox_eox_s2cloudless(
     m_per_px_zoom0 = 156543.03392 * max(0.1, math.cos(lat_rad))
 
     tile_px = 256
-    # EOX caps the 3857 grid at zoom 14; clamp to that.
-    EOX_MAX_ZOOM = 14
+    # EOX serves the s2cloudless 3857 grid up to zoom 18 (19+ → 404). The zoom is
+    # chosen to fill max_width_px, so this cap only bites on very short bboxes;
+    # most fetches land at the zoom that fills the requested width. Above native
+    # (~zoom 14) tiles are overzoomed (interpolated), which still renders far
+    # smoother than the old zoom-14 cap (which produced a tiny, blocky texture).
+    EOX_MAX_ZOOM = 18
     zoom = int(math.floor(math.log2(m_per_px_zoom0 / m_per_px_target)))
     zoom = max(0, min(EOX_MAX_ZOOM, zoom))
 
@@ -301,6 +308,155 @@ def _stitch_bbox_eox_s2cloudless(
         }
     except Exception:
         return None, fallback_meta
+
+
+def _stitch_bbox_xyz(
+    url_template: str,
+    min_lon: float,
+    max_lon: float,
+    min_lat: float,
+    max_lat: float,
+    buffer_m: float = 0.0,
+    max_width_px: int = 4096,
+    max_zoom: int = 18,
+    tile_px: int = 256,
+) -> Tuple[Optional[bytes], dict]:
+    """Fetch + stitch a generic Web-Mercator XYZ ``{z}/{x}/{y}`` tile layer for a
+    bbox into an **RGBA** PNG.
+
+    Generalises ``_stitch_bbox_eox_s2cloudless`` to any tile service whose
+    visualization is already baked into the imagery — e.g. Earth Engine
+    ``getMapId`` tile URLs (``…/tiles/{z}/{x}/{y}``). EE masks nodata with a
+    transparent alpha channel, so the canvas is RGBA and the crop preserves
+    transparency. Individual tile failures (EE occasionally 404s edge tiles or
+    rate-limits) are tolerated — the missing tile is left transparent rather than
+    failing the whole stitch; only a wholesale failure returns ``None``.
+
+    Returns ``(png_bytes, metadata)`` in the same shape as the sibling stitchers
+    so callers can swap them interchangeably.
+    """
+    from PIL import Image
+
+    if not ("{z}" in url_template and "{x}" in url_template and "{y}" in url_template):
+        return None, {
+            "min_lon": min_lon, "max_lon": max_lon,
+            "min_lat": min_lat, "max_lat": max_lat,
+            "zoom": 0, "width_px": 0, "height_px": 0,
+        }
+
+    mean_lat = (min_lat + max_lat) / 2.0
+    lat_rad = math.radians(mean_lat)
+    lat_buf = buffer_m / 111320.0
+    lon_buf = buffer_m / (111320.0 * max(1e-6, math.cos(lat_rad)))
+
+    bmin_lon = min_lon - lon_buf
+    bmax_lon = max_lon + lon_buf
+    bmin_lat = min_lat - lat_buf
+    bmax_lat = max_lat + lat_buf
+
+    span_m = (bmax_lon - bmin_lon) * 111320.0 * max(1e-6, math.cos(lat_rad))
+    m_per_px_target = max(0.01, span_m / max_width_px)
+    m_per_px_zoom0 = 156543.03392 * max(0.1, math.cos(lat_rad))
+
+    zoom = int(math.floor(math.log2(m_per_px_zoom0 / m_per_px_target)))
+    zoom = max(0, min(int(max_zoom), zoom))
+
+    def _ll_to_world(lon_v: float, lat_v: float) -> Tuple[float, float]:
+        siny = math.sin(math.radians(lat_v))
+        siny = min(max(siny, -0.9999), 0.9999)
+        world = tile_px * (2 ** zoom)
+        return (
+            (lon_v + 180.0) / 360.0 * world,
+            (0.5 - math.log((1 + siny) / (1 - siny)) / (4 * math.pi)) * world,
+        )
+
+    left, top = _ll_to_world(bmin_lon, bmax_lat)
+    right, bottom = _ll_to_world(bmax_lon, bmin_lat)
+    img_w = max(1, int(round(right - left)))
+    img_h = max(1, int(round(bottom - top)))
+
+    min_tx = int(math.floor(left / tile_px))
+    max_tx = int(math.floor((right - 1) / tile_px))
+    min_ty = int(math.floor(top / tile_px))
+    max_ty = int(math.floor((bottom - 1) / tile_px))
+    world_tiles = 2 ** zoom
+
+    tiles = [
+        (tx, ty)
+        for ty in range(min_ty, max_ty + 1)
+        if 0 <= ty < world_tiles
+        for tx in range(min_tx, max_tx + 1)
+    ]
+
+    stitched_w = (max_tx - min_tx + 1) * tile_px
+    stitched_h = (max_ty - min_ty + 1) * tile_px
+    stitched = Image.new("RGBA", (stitched_w, stitched_h), (0, 0, 0, 0))
+
+    def _fetch_one(tx_ty: Tuple[int, int]) -> Optional[Tuple[int, int, bytes]]:
+        tx, ty = tx_ty
+        wrapped_tx = tx % world_tiles
+        url = (
+            url_template
+            .replace("{z}", str(zoom))
+            .replace("{x}", str(wrapped_tx))
+            .replace("{y}", str(ty))
+        )
+        try:
+            resp = requests.get(
+                url, timeout=20,
+                headers={"User-Agent": "map-explorer/area-images"},
+            )
+            resp.raise_for_status()
+            return tx, ty, resp.content
+        except Exception:
+            return None  # tolerate single-tile failures (404 / rate-limit)
+
+    fallback_meta = {
+        "min_lon": bmin_lon, "max_lon": bmax_lon,
+        "min_lat": bmin_lat, "max_lat": bmax_lat,
+        "zoom": zoom, "width_px": 0, "height_px": 0,
+    }
+    try:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(16, max(1, len(tiles)))
+        ) as exe:
+            results = list(exe.map(_fetch_one, tiles))
+    except Exception:
+        return None, fallback_meta
+
+    pasted = 0
+    for item in results:
+        if item is None:
+            continue
+        tx, ty, data = item
+        try:
+            tile_img = Image.open(io.BytesIO(data)).convert("RGBA")
+        except Exception:
+            continue
+        if tile_img.size != (tile_px, tile_px):
+            tile_img = tile_img.resize((tile_px, tile_px))
+        # Use the tile's own alpha as the paste mask so transparent (masked)
+        # pixels don't overwrite neighbours.
+        stitched.paste(tile_img, ((tx - min_tx) * tile_px, (ty - min_ty) * tile_px), tile_img)
+        pasted += 1
+
+    if pasted == 0:
+        return None, fallback_meta
+
+    crop_left = int(round(left - min_tx * tile_px))
+    crop_top = int(round(top - min_ty * tile_px))
+    cropped = stitched.crop((crop_left, crop_top, crop_left + img_w, crop_top + img_h))
+    out = io.BytesIO()
+    cropped.save(out, format="PNG")
+    return out.getvalue(), {
+        "min_lon": bmin_lon,
+        "max_lon": bmax_lon,
+        "min_lat": bmin_lat,
+        "max_lat": bmax_lat,
+        "zoom": zoom,
+        "width_px": img_w,
+        "height_px": img_h,
+    }
 
 
 def _burn_scale_bar(png_bytes: bytes, meta: dict) -> bytes:

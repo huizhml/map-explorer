@@ -117,6 +117,145 @@ def _resolve_rgb_indexes(src, requested: Optional[List[int]], prefer_sentinel_rg
     return [1, 2, 3]
 
 
+def _draw_axes_scale_bar(fig, ax, img_w_px: int, sat_meta: Dict[str, Any]) -> None:
+    """Draw a restrained metric scale bar in the lower-left of an image axes.
+
+    Shared by the tile-stitched image paths (currently Earth Engine). Mirrors the
+    EOX mosaic bar: thin black line with a white halo, short end ticks, label
+    centred above, sized in axes fractions so it stays proportionate at any
+    source resolution. Decorative — callers wrap this so a failure never blocks
+    the export.
+    """
+    import math
+    from matplotlib.patheffects import withStroke
+    from matplotlib.transforms import blended_transform_factory
+
+    from .utils import nice_bar_length_m, step_up_bar_length_m
+
+    min_lon = float(sat_meta.get("min_lon", 0.0))
+    max_lon = float(sat_meta.get("max_lon", 0.0))
+    min_lat = float(sat_meta.get("min_lat", 0.0))
+    max_lat = float(sat_meta.get("max_lat", 0.0))
+    mean_lat_rad = math.radians((min_lat + max_lat) / 2.0)
+    span_m = (max_lon - min_lon) * 111320.0 * max(1e-6, math.cos(mean_lat_rad))
+    if span_m <= 0 or img_w_px <= 0:
+        return
+
+    bar_m = nice_bar_length_m(span_m * 0.12) or 100.0
+    bar_m = step_up_bar_length_m(bar_m)
+    bar_px = bar_m / span_m * img_w_px
+    bar_x0 = img_w_px * 0.03
+    bar_x1 = bar_x0 + bar_px
+    bar_y_axes = 0.05
+    tick_h = 0.05
+    line_halo = [withStroke(linewidth=14, foreground="white")]
+    text_halo = [withStroke(linewidth=6, foreground="black")]
+    trans = blended_transform_factory(ax.transData, ax.transAxes)
+
+    ax.plot(
+        [bar_x0, bar_x1], [bar_y_axes, bar_y_axes],
+        color="black", linewidth=7, solid_capstyle="butt",
+        transform=trans, path_effects=line_halo, zorder=5,
+    )
+    for xv in (bar_x0, bar_x1):
+        ax.plot(
+            [xv, xv], [bar_y_axes - tick_h, bar_y_axes + tick_h],
+            color="black", linewidth=7, solid_capstyle="butt",
+            transform=trans, path_effects=line_halo, zorder=5,
+        )
+    label_text = f"{int(bar_m)} m" if bar_m < 1000 else f"{bar_m / 1000:g} km"
+    label_cx = (bar_x0 + bar_x1) / 2.0
+    txt = ax.text(
+        label_cx, bar_y_axes + tick_h + 0.03, label_text,
+        transform=trans, ha="center", va="bottom",
+        fontsize=34, color="white", path_effects=text_halo, zorder=6,
+    )
+    # Nudge the label back inside the frame only when a short bar would let it
+    # spill past the image edge (mirrors the EOX / Google PNG paths).
+    try:
+        renderer = fig.canvas.get_renderer()
+        bbox = txt.get_window_extent(renderer=renderer)
+        inv = ax.transData.inverted()
+        x_l = inv.transform((bbox.x0, bbox.y0))[0]
+        x_r = inv.transform((bbox.x1, bbox.y0))[0]
+        x_min, x_max = sorted(ax.get_xlim())
+        pad = (x_max - x_min) * 0.01
+        if x_l < x_min + pad:
+            txt.set_x(label_cx + (x_min + pad - x_l))
+        elif x_r > x_max - pad:
+            txt.set_x(label_cx - (x_r - (x_max - pad)))
+    except Exception:
+        pass  # renderer unavailable — leave the label centred
+
+
+def render_xyz_tile_figure(
+    tile_url: str,
+    wgs_xmin: float,
+    wgs_xmax: float,
+    wgs_ymin: float,
+    wgs_ymax: float,
+    fmt: str,
+    draw_scale_bar: bool = True,
+    max_width_px: int = 4096,
+    max_zoom: int = 18,
+) -> bytes:
+    """Stitch a Web-Mercator XYZ tile layer for a WGS84 bbox and render it to
+    `fmt` (png/jpg/pdf) via matplotlib, with an optional vector scale bar.
+
+    Used for Earth Engine layers, whose imagery is served as ``{z}/{x}/{y}``
+    tiles with the visualization already baked in — there is no colormap /
+    rescale to apply, we just composite the tiles. PNG output preserves the EE
+    alpha mask (transparent nodata); JPEG is flattened over white.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    from .satellite import _stitch_bbox_xyz
+
+    tile_bytes, tile_meta = _stitch_bbox_xyz(
+        tile_url,
+        float(wgs_xmin), float(wgs_xmax), float(wgs_ymin), float(wgs_ymax),
+        buffer_m=0.0, max_width_px=max_width_px, max_zoom=max_zoom,
+    )
+    if tile_bytes is None:
+        raise ValueError("Tile fetch returned no imagery for the selection.")
+
+    rgba = np.asarray(Image.open(io.BytesIO(tile_bytes)).convert("RGBA"))
+    if fmt == "jpg":
+        # JPEG has no alpha channel — flatten the transparent (masked) pixels
+        # over white so they don't render as black.
+        rgb = rgba[..., :3].astype(np.float32)
+        alpha = rgba[..., 3:4].astype(np.float32) / 255.0
+        arr_disp = (rgb * alpha + 255.0 * (1.0 - alpha)).astype(np.uint8)
+    else:
+        arr_disp = rgba
+
+    render_dpi = 300 if fmt == "pdf" else 240
+    h_px, w_px = arr_disp.shape[:2]
+    fig_w_in = 10.0
+    fig_h_in = max(0.5, fig_w_in * (h_px / max(1, w_px)))
+    fig = plt.figure(figsize=(fig_w_in, fig_h_in), dpi=render_dpi)
+    ax = fig.add_axes([0, 0, 1, 1])  # axes fills the figure → no margins
+    ax.set_axis_off()
+    ax.imshow(arr_disp, interpolation="bilinear", aspect="auto")
+
+    if draw_scale_bar:
+        try:
+            _draw_axes_scale_bar(fig, ax, w_px, tile_meta)
+        except Exception:
+            pass  # scale bar is decorative; never block the export
+
+    buf = io.BytesIO()
+    save_kwargs: Dict[str, Any] = {"pad_inches": 0}
+    if fmt == "png":
+        save_kwargs["transparent"] = True  # keep the EE nodata mask transparent
+    fig.savefig(buf, format=fmt, **save_kwargs)
+    plt.close(fig)
+    return buf.getvalue()
+
+
 def render_area_images(
     payload: SaveAreaImagesRequest,
     session_dir: Path,
@@ -138,7 +277,7 @@ def render_area_images(
         src, window, title: str, file_name: str, cmap: Optional[str],
         rmin: Optional[float], rmax: Optional[float], band_idx: Optional[int],
         prefer_sentinel_rgb: bool = False, rgb_bands: Optional[List[int]] = None,
-        is_rh_metric: bool = False,
+        is_rh_metric: bool = False, include_colorbar: bool = True,
     ) -> bytes:
         # Higher dpi for PDF — vector elements stay sharp regardless, but the
         # embedded raster (the imshow of the data) inherits the figure dpi.
@@ -181,11 +320,31 @@ def render_area_images(
         else:
             data = _read_as_float(src, window, indexes=1)
 
+        low, high = _resolve_single_band_range(data, rmin, rmax)
+
+        # No-colorbar path: render the colormapped data edge-to-edge with no
+        # margins (axes fills the figure), matching the RGB / EOX outputs which
+        # have no white border. nodata (NaN) stays transparent in PNG output.
+        if not include_colorbar:
+            h_px, w_px = data.shape[:2]
+            fig_w_in = 10.0
+            fig_h_in = max(0.5, fig_w_in * (h_px / max(1, w_px)))
+            fig = plt.figure(figsize=(fig_w_in, fig_h_in), dpi=render_dpi)
+            ax = fig.add_axes([0, 0, 1, 1])  # axes fills figure → no margins
+            ax.set_axis_off()
+            ax.imshow(data, cmap=_resolve_cmap(cmap), vmin=low, vmax=high, aspect="auto")
+            buf = io.BytesIO()
+            save_kwargs: Dict[str, Any] = {"pad_inches": 0}
+            if payload.format == "png":
+                save_kwargs["transparent"] = True
+            fig.savefig(buf, format=payload.format, **save_kwargs)
+            plt.close(fig)
+            return buf.getvalue()
+
         # Single-band path keeps the original layout because the colorbar
         # needs the right-hand margin matplotlib reserves by default.
         fig, ax = plt.subplots(figsize=(8, 8), dpi=render_dpi)
         ax.set_axis_off()
-        low, high = _resolve_single_band_range(data, rmin, rmax)
         im = ax.imshow(data, cmap=_resolve_cmap(cmap), vmin=low, vmax=high)
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.15)
@@ -304,7 +463,7 @@ def render_area_images(
                 # Label is white (with a thin black halo for legibility over
                 # bright patches), so its halo is the opposite colour.
                 line_halo = [withStroke(linewidth=14, foreground="white")]
-                text_halo = [withStroke(linewidth=4, foreground="black")]
+                text_halo = [withStroke(linewidth=6, foreground="black")]
                 trans = blended_transform_factory(ax.transData, ax.transAxes)
 
                 ax.plot(
@@ -331,7 +490,7 @@ def render_area_images(
                     label_cx, bar_y_axes + tick_h + 0.03,
                     label_text,
                     transform=trans, ha="center", va="bottom",
-                    fontsize=22, color="white",
+                    fontsize=34, color="white",
                     path_effects=text_halo, zorder=6,
                 )
                 try:
@@ -379,6 +538,12 @@ def render_area_images(
             # share the "prediction" layer_type but their values are unitless.
             is_rh_layer = layer.layer_type == "prediction" and not layer.bands
 
+            # Whether single-band (colormapped) renders get a colorbar. When off,
+            # the image is rendered edge-to-edge with no border (like EOX/RGB).
+            # `getattr` default keeps older `FigureLayerSpec` payloads working.
+            _icb = getattr(layer, "include_colorbar", None)
+            include_colorbar = True if _icb is None else bool(_icb)
+
             # EOX s2cloudless is a WMTS tile service, not a COG — rasterio
             # cannot open its `{z}/{x}/{y}` template URL. Route it through the
             # tile-stitcher used by the transect figure instead. Subtype is the
@@ -420,6 +585,37 @@ def render_area_images(
                 )
                 continue
 
+            # Earth Engine layers are XYZ tile services (visualization baked into
+            # the tiles), not COGs — rasterio cannot open the `{z}/{x}/{y}` URL.
+            # Stitch the tiles for the selection and render via matplotlib so the
+            # output honours `payload.format` (png/jpg/pdf).
+            if layer.layer_type == "earthengine":
+                file_name = (
+                    f"{sanitize_name(layer.name)}_"
+                    f"{sanitize_name(location_tag)}.{payload.format}"
+                )
+                _isb = getattr(layer, "include_scale_bar", None)
+                draw_bar = True if _isb is None else bool(_isb)
+                print(
+                    f"[area_images] EE layer detected: id={layer.layer_id} "
+                    f"draw_bar={draw_bar} -> {file_name}",
+                    flush=True,
+                )
+                image_bytes = render_xyz_tile_figure(
+                    layer.url,
+                    float(wgs_xmin), float(wgs_xmax),
+                    float(wgs_ymin), float(wgs_ymax),
+                    payload.format, draw_scale_bar=draw_bar,
+                )
+                (session_dir / file_name).write_bytes(image_bytes)
+                _record_export(file_name, layer)
+                print(
+                    f"[area_images] EE layer rendered: {len(image_bytes)} bytes "
+                    f"-> image_exports now {len(image_exports)} entries",
+                    flush=True,
+                )
+                continue
+
             with rasterio.open(layer.url) as src:
                 src_bounds = transform_bounds(
                     "EPSG:3857", src.crs, xmin, ymin, xmax, ymax, densify_pts=21,
@@ -443,7 +639,7 @@ def render_area_images(
                             band.rescale_min if band.rescale_min is not None else layer.rescale_min,
                             band.rescale_max if band.rescale_max is not None else layer.rescale_max,
                             band.band_index, is_sentinel, layer.rgb_bands,
-                            is_rh_metric=False,
+                            is_rh_metric=False, include_colorbar=include_colorbar,
                         )
                         (session_dir / file_name).write_bytes(image_bytes)
                         _record_export(file_name, layer, band_name=band_name)
@@ -456,7 +652,7 @@ def render_area_images(
                         src, window, layer.name, file_name,
                         layer.colormap, layer.rescale_min, layer.rescale_max,
                         None, is_sentinel, layer.rgb_bands,
-                        is_rh_metric=is_rh_layer,
+                        is_rh_metric=is_rh_layer, include_colorbar=include_colorbar,
                     )
                     (session_dir / file_name).write_bytes(image_bytes)
                     _record_export(file_name, layer)

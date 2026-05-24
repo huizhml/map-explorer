@@ -84,6 +84,11 @@ class FigureLayerSpec(BaseModel):
     # s2cloudless mosaics — every other path ignores it). Default True so old
     # saved features without the field keep their existing appearance.
     include_scale_bar: Optional[bool] = True
+    # Draw a colorbar on single-band (colormapped) renders, e.g. RH predictions
+    # and diversity bands. When False the image is rendered edge-to-edge with no
+    # border (matching the EOX/RGB outputs). Default True so existing saved
+    # features keep their colorbar.
+    include_colorbar: Optional[bool] = True
 
 
 class SaveAreaImagesRequest(BaseModel):
@@ -177,6 +182,11 @@ class TransectFigureRequest(BaseModel):
     # behaviour); when False, CR shares the left axis with FHD/ENL.  Ignored
     # when CR is the only selected metric (it gets the primary axis either way).
     cr_own_yaxis: bool = False
+    # Master toggle for the small per-panel source/label badges — the top-right
+    # (or footer) text on each panel: satellite source, "JRC TMF AnnualChanges",
+    # "VSM Vertical Profile", "VSM Diversity indices". Defaults True so existing
+    # exports keep their labels; the UI exposes a single checkbox to hide them.
+    show_panel_labels: bool = True
     # Optional: JRC TMF AnnualChanges (Dec 2020) for the same buffered bbox as
     # the satellite snapshot.  Renders as an additional sharex panel right
     # below the satellite map.  Shares `satellite_buffer_m`.
@@ -209,6 +219,24 @@ class TransectFigureRequest(BaseModel):
     # Default tuned for the typical forest-canopy under-exposure of s2cloudless.
     # Ignored when `basemap_source != "eox_s2cloudless"`.
     eox_brightness: float = 1.3
+
+    # ---- 3D perspective render (BIOMASS-style; /transect/figure-3d) -------
+    # Camera elevation angle in degrees (height of the eye above the ground
+    # plane). Low values give the shallow oblique look of the reference image;
+    # too low makes the flat ground sit edge-on and read as part of the wall.
+    view_elev: float = 28.0
+    # Camera azimuth in degrees. None → auto-derived from the transect bearing
+    # so the swath recedes along the long diagonal of the frame.
+    view_azim: Optional[float] = None
+    # Wall (heatmap) height as a fraction of the longer ground span — pure
+    # visual exaggeration so the ~100 m canopy reads against a multi-km swath.
+    vertical_exag: float = 0.10
+    # Camera zoom: >1 enlarges the scene in the frame (fills the whitespace mpl
+    # 3D leaves around the axes); <1 pulls back.
+    view_zoom: float = 2.2
+    # Target pixel width the satellite is downsampled to before draping as the
+    # 3D ground texture (each pixel becomes a quad, so this caps quad count).
+    ground_max_px: int = 480
 
 
 class VerticalProfileCurvePoint(BaseModel):

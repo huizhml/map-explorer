@@ -42,8 +42,10 @@ from .point_snapshots import (
     _extract_prediction_rh98_snapshot,
     _resolve_prediction_tile_name,
 )
+from .render_lock import locked_render
 from .satellite import _burn_scale_bar, _stitch_bbox_satellite
 from .transect_figure import _render_transect_figure
+from .transect_figure_3d import _render_transect_figure_3d
 from .vertical_profile_figure import _render_vertical_profile_figure
 from .utils import (
     existing_image_exports,
@@ -1104,13 +1106,33 @@ async def transect_figure(req: TransectFigureRequest):
     """
     loop = asyncio.get_event_loop()
     payload, media_type = await loop.run_in_executor(
-        None, lambda: _render_transect_figure(req),
+        None, lambda: locked_render(_render_transect_figure, req),
     )
     suffix = {"image/png": "png", "image/jpeg": "jpg", "application/pdf": "pdf"}.get(media_type, "bin")
     return Response(
         content=payload,
         media_type=media_type,
         headers={"Content-Disposition": f'inline; filename="transect-figure.{suffix}"'},
+    )
+
+
+@router.post("/transect/figure-3d")
+async def transect_figure_3d(req: TransectFigureRequest):
+    """Render the BIOMASS-style 3D transect figure: satellite ground plane with
+    the vertical-profile heatmap standing up as a wall along the transect line.
+
+    Reuses `TransectFigureRequest` (satellite + heatmap fields), plus the 3D
+    camera knobs `view_elev` / `view_azim` / `vertical_exag` / `ground_max_px`.
+    """
+    loop = asyncio.get_event_loop()
+    payload, media_type = await loop.run_in_executor(
+        None, lambda: locked_render(_render_transect_figure_3d, req),
+    )
+    suffix = {"image/png": "png", "image/jpeg": "jpg", "application/pdf": "pdf"}.get(media_type, "bin")
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="transect-figure-3d.{suffix}"'},
     )
 
 
@@ -1123,7 +1145,7 @@ async def vertical_profile_figure(req: VerticalProfileFigureRequest):
     """
     loop = asyncio.get_event_loop()
     payload, media_type = await loop.run_in_executor(
-        None, lambda: _render_vertical_profile_figure(req),
+        None, lambda: locked_render(_render_vertical_profile_figure, req),
     )
     suffix = {"image/png": "png", "image/jpeg": "jpg", "application/pdf": "pdf"}.get(media_type, "bin")
     return Response(

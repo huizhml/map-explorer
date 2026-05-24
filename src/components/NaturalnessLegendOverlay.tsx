@@ -1,6 +1,7 @@
-import { Box, Paper, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import type { Layer } from './LayerControl';
 import { NATURALNESS_MAP_CLASSES, type NaturalnessClass } from '../constants/naturalnessMap';
+import { CollapsibleLegend } from './CollapsibleLegend';
 
 interface NaturalnessLegendOverlayProps {
   layers: Layer[];
@@ -26,25 +27,7 @@ export function NaturalnessLegendOverlay({ layers }: NaturalnessLegendOverlayPro
         pointerEvents: 'none',
       }}
     >
-      <Paper
-        elevation={4}
-        sx={{
-          px: 1.5,
-          py: 1.2,
-          maxWidth: 360,
-          bgcolor: 'rgba(255,255,255,0.96)',
-          backdropFilter: 'blur(2px)',
-        }}
-      >
-        <Typography
-          variant="caption"
-          sx={{ display: 'block', fontWeight: 700, letterSpacing: 0.15, textTransform: 'uppercase', mb: 0.4 }}
-        >
-          Naturalness map
-        </Typography>
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.8 }}>
-          {top.name}
-        </Typography>
+      <CollapsibleLegend title="Naturalness map" subtitle={top.name} sx={{ maxWidth: 360 }}>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6 }}>
           {classes.map((c) => (
             <Box key={c.value} sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.8 }}>
@@ -67,7 +50,7 @@ export function NaturalnessLegendOverlay({ layers }: NaturalnessLegendOverlayPro
             </Box>
           ))}
         </Box>
-      </Paper>
+      </CollapsibleLegend>
     </Box>
   );
 }

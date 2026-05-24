@@ -602,6 +602,22 @@ export function TransectProfileHeatmap({
   const theme = useTheme();
   const [hovered, setHovered] = useState<{ xIndex: number; rh: number; value: number; clientX: number; clientY: number } | null>(null);
   const [lockedSampleIndex, setLockedSampleIndex] = useState<number | null>(null);
+  // Mouse interactivity (hover tooltips + click-to-lock) is opt-in: off by
+  // default so the heatmap reads as a static figure, toggled on via the toolbar
+  // button. `showInteractionHints` still gates whether that button even appears
+  // (preview/export contexts pass it false to stay fully static).
+  const [interactionEnabled, setInteractionEnabled] = useState(false);
+  const interactive = showInteractionHints && interactionEnabled;
+  const toggleInteraction = () => {
+    setInteractionEnabled((prev) => {
+      if (prev) {
+        // Turning off: drop any transient hover/lock so no highlight lingers.
+        setHovered(null);
+        setLockedSampleIndex(null);
+      }
+      return !prev;
+    });
+  };
   const cbGradientId = useId().replace(/:/g, '');
   const svgContainerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(svgWidth);
@@ -708,22 +724,34 @@ export function TransectProfileHeatmap({
         Heatmap across transect locations ({xAxis === 'lon' ? 'longitude' : 'latitude'}) and height bins (y, 1m).
       </Typography> */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
-        {showInteractionHints ? (
+        {interactive ? (
           <Typography variant="caption" color="text.secondary">
             Hover cells for details. Click a column to lock, click again to unlock.
           </Typography>
         ) : (
           <Box />
         )}
-        {showInteractionHints && lockedSampleIndex != null && (
-          <Button
-            size="small"
-            variant="outlined"
-            onClick={() => setLockedSampleIndex(null)}
-            sx={{ minWidth: 74, px: 1 }}
-          >
-            Unlock
-          </Button>
+        {showInteractionHints && (
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            {interactive && lockedSampleIndex != null && (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => setLockedSampleIndex(null)}
+                sx={{ minWidth: 74, px: 1 }}
+              >
+                Unlock
+              </Button>
+            )}
+            <Button
+              size="small"
+              variant={interactive ? 'contained' : 'outlined'}
+              onClick={toggleInteraction}
+              sx={{ px: 1 }}
+            >
+              {interactive ? 'Interactive: on' : 'Enable interactivity'}
+            </Button>
+          </Box>
         )}
       </Box>
       <Box ref={svgContainerRef} sx={{ width: '100%', height: chartHeight }}>
@@ -788,8 +816,8 @@ export function TransectProfileHeatmap({
                   opacity={isDimmedColumn ? 0.35 : 1}
                   stroke={isActiveColumn ? theme.palette.primary.main : 'none'}
                   strokeWidth={isActiveColumn ? 0.45 : 0}
-                  style={{ cursor: 'pointer' }}
-                  onMouseMove={showInteractionHints
+                  style={{ cursor: interactive ? 'pointer' : 'default' }}
+                  onMouseMove={interactive
                     ? (evt) => setHovered({
                       xIndex: p.xIndex,
                       rh: p.rh,
@@ -798,11 +826,11 @@ export function TransectProfileHeatmap({
                       clientY: evt.clientY,
                     })
                     : undefined}
-                  onClick={showInteractionHints
+                  onClick={interactive
                     ? () => setLockedSampleIndex((prev) => (prev === p.xIndex ? null : p.xIndex))
                     : undefined}
                 />
-                {showInteractionHints && (
+                {interactive && (
                   <title>{`${xAxis === 'lon' ? 'Lon' : 'Lat'} ${formatCoord(p.xIndex)}, Height bin ${formatHeightBin(p.rh)}, Energy ${p.value.toFixed(2)}%`}</title>
                 )}
               </g>
@@ -901,7 +929,7 @@ export function TransectProfileHeatmap({
           {Math.round(totalLengthMeters)} m total
         </Typography>
       )}
-      {showInteractionHints && hovered && (
+      {interactive && hovered && (
         <Paper
           elevation={6}
           sx={{

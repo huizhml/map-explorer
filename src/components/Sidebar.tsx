@@ -117,6 +117,8 @@ interface SidebarProps {
     defaultSelectedBand?: number;
     /** Used to surface a scale-bar toggle on EOX s2cloudless mosaic rows. */
     layerSubType?: string;
+    /** Layer type (e.g. 'earthengine') — also surfaces the scale-bar toggle. */
+    layerType?: string;
   }>;
   selectedFigureLayerIds: string[];
   onToggleFigureLayer: (layerId: string) => void;
@@ -1193,7 +1195,21 @@ export function Sidebar({
                                       </Box>
                                     </>
                                   )}
-                                  {layer.layerSubType === 's2cloudless_mosaic' && (
+                                  {layer.layerType === 'prediction' && (
+                                    <FormControlLabel
+                                      sx={{ m: 0 }}
+                                      control={
+                                        <Checkbox
+                                          size="small"
+                                          checked={ovr?.includeColorbar !== false}
+                                          onChange={(e) => onUpdateFigureLayerOverride(layer.id, { includeColorbar: e.target.checked })}
+                                          sx={{ color: ui.textMuted }}
+                                        />
+                                      }
+                                      label={<Typography variant="caption" sx={{ color: ui.textPrimary }}>Include colorbar</Typography>}
+                                    />
+                                  )}
+                                  {(layer.layerSubType === 's2cloudless_mosaic' || layer.layerType === 'earthengine') && (
                                     <FormControlLabel
                                       sx={{ m: 0 }}
                                       control={
@@ -2215,7 +2231,21 @@ export function Sidebar({
                                     inputProps={{ step: 'any' }}
                                   />
                                 </Box>
-                                {layer.layerSubType === 's2cloudless_mosaic' && (
+                                {layer.layerType === 'prediction' && (
+                                  <FormControlLabel
+                                    sx={{ m: 0 }}
+                                    control={
+                                      <Checkbox
+                                        size="small"
+                                        checked={ovr?.includeColorbar !== false}
+                                        onChange={(e) => onUpdateFigureLayerOverride(layer.id, { includeColorbar: e.target.checked })}
+                                        sx={{ color: ui.textMuted }}
+                                      />
+                                    }
+                                    label={<Typography variant="caption" sx={{ color: ui.textPrimary }}>Include colorbar</Typography>}
+                                  />
+                                )}
+                                {(layer.layerSubType === 's2cloudless_mosaic' || layer.layerType === 'earthengine') && (
                                   <FormControlLabel
                                     sx={{ m: 0 }}
                                     control={

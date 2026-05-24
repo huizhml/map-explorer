@@ -178,6 +178,10 @@ export interface FigureLayerOverrides {
    *  s2cloudless mosaics today); other layers ignore the flag. Undefined
    *  means "use the backend default" (currently true). */
   includeScaleBar?: boolean;
+  /** Draw a colorbar on single-band (colormapped) renders such as RH
+   *  predictions / diversity bands. When false the image is saved edge-to-edge
+   *  with no border. Undefined means "use the backend default" (true). */
+  includeColorbar?: boolean;
 }
 
 export function SidebarContainer() {
@@ -1569,7 +1573,9 @@ export function SidebarContainer() {
     return layers
       .filter((layer) => {
         if (!layer.metadata?.url) return false;
-        return layer.type === 'prediction' || layer.type === 'sentinel2';
+        // Earth Engine layers expose their `{z}/{x}/{y}` tile URL as metadata.url
+        // and are rendered server-side by stitching those tiles (imagery only).
+        return layer.type === 'prediction' || layer.type === 'sentinel2' || layer.type === 'earthengine';
       })
       .map((layer) => {
         const meta = layer.metadata ?? {};
@@ -1781,6 +1787,7 @@ export function SidebarContainer() {
               rescale_min: rmin,
               rescale_max: rmax,
               include_scale_bar: ovr?.includeScaleBar,
+              include_colorbar: ovr?.includeColorbar,
               bands: hasBands
                 ? ovr!.selectedBands.map((bi) => ({
                     ...(isDiversity && ovr?.rescaleMin === undefined && ovr?.rescaleMax === undefined
@@ -1890,6 +1897,7 @@ export function SidebarContainer() {
               rescale_min: rmin,
               rescale_max: rmax,
               include_scale_bar: ovr?.includeScaleBar,
+              include_colorbar: ovr?.includeColorbar,
               bands: hasBands
                 ? ovr!.selectedBands.map((bi) => ({
                     ...(isDiversity && ovr?.rescaleMin === undefined && ovr?.rescaleMax === undefined
@@ -1976,7 +1984,7 @@ export function SidebarContainer() {
       onIncludeGoogleSatelliteChange={setIncludeGoogleSatellite}
       includeGoogleSatelliteScaleBar={includeGoogleSatelliteScaleBar}
       onIncludeGoogleSatelliteScaleBarChange={setIncludeGoogleSatelliteScaleBar}
-      availableFigureLayers={exportableFigureLayers.map(({ id, name, bandNames, colormap, rescaleMin, rescaleMax, selectedBand, layerSubType }) => ({ id, name, bandNames, defaultColormap: colormap, defaultRescaleMin: rescaleMin, defaultRescaleMax: rescaleMax, defaultSelectedBand: selectedBand, layerSubType }))}
+      availableFigureLayers={exportableFigureLayers.map(({ id, name, bandNames, colormap, rescaleMin, rescaleMax, selectedBand, layerSubType, layerType }) => ({ id, name, bandNames, defaultColormap: colormap, defaultRescaleMin: rescaleMin, defaultRescaleMax: rescaleMax, defaultSelectedBand: selectedBand, layerSubType, layerType }))}
       selectedFigureLayerIds={selectedFigureLayerIds}
       onToggleFigureLayer={handleToggleFigureLayer}
       figureLayerOverrides={figureLayerOverrides}

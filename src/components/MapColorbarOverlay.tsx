@@ -1,7 +1,8 @@
-import React, { useMemo } from 'react';
-import { Box, Paper, Typography } from '@mui/material';
+import { useMemo } from 'react';
+import { Box, Typography } from '@mui/material';
 import type { Layer } from './LayerControl';
 import { COLORMAP_GRADIENTS } from '../constants/colormaps';
+import { CollapsibleLegend } from './CollapsibleLegend';
 
 type ColorbarGroup = {
   key: string;
@@ -93,60 +94,42 @@ export function MapColorbarOverlay({ layers }: MapColorbarOverlayProps) {
       }}
     >
       {groups.map((group) => (
-        <Paper
+        <CollapsibleLegend
           key={group.key}
-          elevation={3}
-          sx={{
-            p: 1,
-            display: 'flex',
-            alignItems: 'stretch',
-            gap: 1,
-            bgcolor: 'rgba(255,255,255,0.95)',
-            backdropFilter: 'blur(2px)',
-          }}
+          title={group.layerNames.length > 1 ? `${group.layerNames.length} layers` : 'Layer'}
+          subtitle={
+            <Box component="span" sx={{ wordBreak: 'break-word' }}>{getGroupLabel(group.layerNames)}</Box>
+          }
+          sx={{ maxWidth: 220 }}
         >
-          <Box
-            sx={{
-              width: 18,
-              height: 110,
-              borderRadius: 1,
-              border: '1px solid',
-              borderColor: 'divider',
-              background: getGradient(group.colormap),
-              flexShrink: 0,
-            }}
-          />
-          <Box sx={{ minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-            <Box>
-              <Typography variant="caption" sx={{ fontWeight: 700, display: 'block', lineHeight: 1.2 }}>
-                {group.layerNames.length > 1 ? `${group.layerNames.length} layers` : 'Layer'}
-              </Typography>
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{
-                  display: 'block',
-                  lineHeight: 1.2,
-                  wordBreak: 'break-word',
-                }}
-              >
-                {getGroupLabel(group.layerNames)}
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, textTransform: 'uppercase' }}>
+          <Box sx={{ display: 'flex', alignItems: 'stretch', gap: 1 }}>
+            <Box
+              sx={{
+                width: 18,
+                height: 110,
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: 'divider',
+                background: getGradient(group.colormap),
+                flexShrink: 0,
+              }}
+            />
+            <Box sx={{ minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', textTransform: 'uppercase' }}>
                 {group.colormap}
               </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-              <Typography variant="caption" sx={{ lineHeight: 1 }}>
-                {formatValue(group.max)}
-              </Typography>
-              <Box sx={{ flexGrow: 1 }} />
-              <Typography variant="caption" sx={{ lineHeight: 1 }}>
-                {formatValue(group.min)}
-              </Typography>
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                <Typography variant="caption" sx={{ lineHeight: 1 }}>
+                  {formatValue(group.max)}
+                </Typography>
+                <Box sx={{ flexGrow: 1 }} />
+                <Typography variant="caption" sx={{ lineHeight: 1 }}>
+                  {formatValue(group.min)}
+                </Typography>
+              </Box>
             </Box>
           </Box>
-        </Paper>
+        </CollapsibleLegend>
       ))}
     </Box>
   );

@@ -40,6 +40,25 @@ export type EarthEngineSidebarUi = {
 
 const JRC_TMF_ANNUAL_CHANGES_PALETTE = ['005A00', '648723', 'FFBE2D', 'D2FA3C', '008CBE', 'FFFFFF'];
 
+/**
+ * Friendly layer names keyed by asset id, matching the preset buttons below.
+ * A layer added from a preset then reads the same in the layer control as the
+ * button that configured it; custom assets fall back to a generated `EE …` name.
+ */
+const EE_PRESET_LABELS: Record<string, string> = {
+  'projects/JRC/TMF/v1_2025/AnnualChanges': 'JRC TMF AnnualChanges',
+  'users/potapovpeter/GEDI_V27': 'UMD 30m',
+  'users/nlang/ETH_GlobalCanopyHeight_2020_10m_v1': 'ETH 10m',
+  'projects/worldwidemap/assets/canopyheight2020': 'UM 10m',
+  'projects/meta-forest-monitoring-okw37/assets/CanopyHeight': 'Meta 1m',
+};
+
+/** matplotlib "inferno" sampled to hex — used for the canopy-height presets. */
+const INFERNO_PALETTE = [
+  '000004', '1B0C42', '4B0C6B', '781C6D', 'A52C60',
+  'CF4446', 'ED6925', 'FB9B06', 'F7D13D', 'FCFFA4',
+];
+
 function parsePalette(input: string): string[] | undefined {
   const raw = input.trim();
   if (!raw) return undefined;
@@ -113,6 +132,31 @@ export function EarthEngineLayerSection({ ui }: { ui: EarthEngineSidebarUi }) {
     setPaletteStr(JRC_TMF_ANNUAL_CHANGES_PALETTE.join(', '));
   };
 
+  /**
+   * Canopy-height presets. All are single-band height rasters, so we leave the
+   * band field blank (the backend visualizes the lone band directly, avoiding
+   * any band-name mismatch). ImageCollections are mosaicked into one image.
+   */
+  const applyCanopyPreset = (assetId: string, kind: 'image' | 'image_collection', max: string) => {
+    setAssetId(assetId);
+    setAssetKind(kind);
+    setReduceCollection('mosaic');
+    setBand('');
+    setMaskSelf(true);
+    setVisMin('0');
+    setVisMax(max);
+    setPaletteStr(INFERNO_PALETTE.join(', '));
+  };
+
+  const applyPresetCanopyUmd = () =>
+    applyCanopyPreset('users/potapovpeter/GEDI_V27', 'image_collection', '50');
+  const applyPresetCanopyEth = () =>
+    applyCanopyPreset('users/nlang/ETH_GlobalCanopyHeight_2020_10m_v1', 'image', '50');
+  const applyPresetCanopyUm = () =>
+    applyCanopyPreset('projects/worldwidemap/assets/canopyheight2020', 'image_collection', '5000');
+  const applyPresetCanopyMeta = () =>
+    applyCanopyPreset('projects/meta-forest-monitoring-okw37/assets/CanopyHeight', 'image_collection', '50');
+
   const addLayer = useCallback(async () => {
     if (!map || !layerManager) {
       setError('Map not ready.');
@@ -154,7 +198,12 @@ export function EarthEngineLayerSection({ ui }: { ui: EarthEngineSidebarUi }) {
 
       const labelBand = band.trim() ? ` — ${band.trim()}` : '';
       const layerId = `earthengine-${Date.now()}`;
-      const name = `EE ${resolvedAsset.split('/').pop() ?? resolvedAsset}${labelBand}`;
+      // Prefer the preset's friendly name (matches the button) when the asset is
+      // a known preset; otherwise fall back to the generated `EE …` name.
+      const presetLabel = EE_PRESET_LABELS[assetId.trim()] ?? EE_PRESET_LABELS[resolvedAsset];
+      const name = presetLabel
+        ? `${presetLabel}${labelBand}`
+        : `EE ${resolvedAsset.split('/').pop() ?? resolvedAsset}${labelBand}`;
 
       const olLayer = new TileLayer({
         source: new XYZ({
@@ -272,6 +321,54 @@ export function EarthEngineLayerSection({ ui }: { ui: EarthEngineSidebarUi }) {
           >
             Preset: JRC TMF AnnualChanges (Dec2020)
           </Button>
+          <Typography
+            variant="caption"
+            sx={{
+              display: 'block',
+              mb: 0.75,
+              color: ui.textMuted,
+              fontSize: '0.62rem',
+              fontWeight: 700,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+            }}
+          >
+            Canopy height (inferno)
+          </Typography>
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1, mb: 1 }}>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={applyPresetCanopyUmd}
+              sx={{ ...dashedBtnSx, textTransform: 'none' }}
+            >
+              UMD 30m
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={applyPresetCanopyEth}
+              sx={{ ...dashedBtnSx, textTransform: 'none' }}
+            >
+              ETH 10m
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={applyPresetCanopyUm}
+              sx={{ ...dashedBtnSx, textTransform: 'none' }}
+            >
+              UM 10m
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={applyPresetCanopyMeta}
+              sx={{ ...dashedBtnSx, textTransform: 'none' }}
+            >
+              Meta 1m
+            </Button>
+          </Box>
           <TextField
             label="Asset ID"
             value={assetId}
