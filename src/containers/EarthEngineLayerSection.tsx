@@ -51,7 +51,11 @@ const EE_PRESET_LABELS: Record<string, string> = {
   'users/nlang/ETH_GlobalCanopyHeight_2020_10m_v1': 'ETH 10m',
   'projects/worldwidemap/assets/canopyheight2020': 'UM 10m',
   'projects/meta-forest-monitoring-okw37/assets/CanopyHeight': 'Meta 1m',
+  'projects/nature-trace/assets/forest_typology/forest_typology_2020_v1_0_collection':
+    'Forest Typology 2020',
 };
+
+const FOREST_TYPOLOGY_PALETTE = ['FFFFFF', '008000'];
 
 /** matplotlib "inferno" sampled to hex — used for the canopy-height presets. */
 const INFERNO_PALETTE = [
@@ -156,6 +160,17 @@ export function EarthEngineLayerSection({ ui }: { ui: EarthEngineSidebarUi }) {
     applyCanopyPreset('projects/worldwidemap/assets/canopyheight2020', 'image_collection', '5000');
   const applyPresetCanopyMeta = () =>
     applyCanopyPreset('projects/meta-forest-monitoring-okw37/assets/CanopyHeight', 'image_collection', '50');
+
+  const applyPresetForestTypology = () => {
+    setAssetId('projects/nature-trace/assets/forest_typology/forest_typology_2020_v1_0_collection');
+    setAssetKind('image_collection');
+    setReduceCollection('mosaic');
+    setBand('B0');
+    setMaskSelf(true);
+    setVisMin('0');
+    setVisMax('250');
+    setPaletteStr(FOREST_TYPOLOGY_PALETTE.join(', '));
+  };
 
   const addLayer = useCallback(async () => {
     if (!map || !layerManager) {
@@ -320,6 +335,15 @@ export function EarthEngineLayerSection({ ui }: { ui: EarthEngineSidebarUi }) {
             sx={{ ...dashedBtnSx, mb: 1, textTransform: 'none' }}
           >
             Preset: JRC TMF AnnualChanges (Dec2020)
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            fullWidth
+            onClick={applyPresetForestTypology}
+            sx={{ ...dashedBtnSx, mb: 1, textTransform: 'none' }}
+          >
+            Preset: Forest Typology 2020 (nature-trace)
           </Button>
           <Typography
             variant="caption"
