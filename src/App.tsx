@@ -164,7 +164,7 @@ function App() {
   React.useEffect(() => { updateLayersList(); }, [updateLayersList]);
 
   // Hooks
-  const { handleLoadSentinel2Image, handleLoadPredictionCOG, handleLoadAuxiliaryLayer, handleLoadGEDIPoints } = useLayerLoaders(updateLayersList);
+  const { handleLoadSentinel2Image, handleLoadPredictionCOG, handleLoadPredictionIntervalCOG, handleLoadAuxiliaryLayer, handleLoadGEDIPoints } = useLayerLoaders(updateLayersList);
   const { showZoomMessage, globalLayersRef } = useAutoLoadVSM(updateLayersList);
   const { gediPointPopup, closeGediPopup, clearInspectPin, clearInspectLine } = useMapInteractions(updateLayersList);
   const {
@@ -268,6 +268,7 @@ function App() {
           coordinates={popupCoordinates}
           onLoadSentinel2Image={handleLoadSentinel2Image}
           onLoadPredictionCOG={handleLoadPredictionCOG}
+          onLoadPredictionIntervalCOG={handleLoadPredictionIntervalCOG}
           onLoadAuxiliaryLayer={handleLoadAuxiliaryLayer}
           onLoadGEDIPoints={handleLoadGEDIPoints}
           onSavePoint={(draft) => {

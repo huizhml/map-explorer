@@ -8,7 +8,7 @@
  * matplotlib name differs in case (e.g. `rdgy` → `RdGy`).
  */
 export const COLORMAPS = [
-  'greens', 'viridis', 'inferno', 'magma', 'plasma', 'cividis',
+  'greens', 'viridis', 'inferno', 'magma', 'plasma', 'cividis', 'mako',
   'ylgn', 'ylgnbu', 'gnbu', 'bugn', 'pubu', 'rdylgn',
   'spectral', 'rdbu', 'rdgy', 'greys', 'blues', 'reds', 'oranges',
   'ylgn_r', 'spectral_r', 'rdbu_r',
@@ -24,6 +24,7 @@ export type ColormapName = (typeof COLORMAPS)[number];
  */
 export const COLORMAP_GRADIENTS: Record<string, string[]> = {
   inferno: ['#000004', '#420a68', '#932667', '#dd513a', '#fba40a', '#fcffa4'],
+  mako: ['#0b0405', '#382a54', '#395d9c', '#3497a9', '#60ceac', '#def5e5'],
   greens: ['#f7fcf5', '#d9f0d3', '#a6dba0', '#5aae61', '#1b7837', '#00441b'],
   ylgn_r: ['#004529', '#238443', '#78c679', '#c2e699', '#ffffcc'],
   rdbu: ['#67001f', '#d6604d', '#f7f7f7', '#4393c3', '#053061'],

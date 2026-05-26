@@ -4,6 +4,7 @@ export PREDICTIONS_MOSAIC_LOCAL_PATH="/projects/dereeco/data/gvs/products/vsm/20
 export PREDICTIONS_LOCAL_PATH="/projects/dereeco/data/gvs/products/vsm/2020/{version}/tiles/cog/{tile}/RH{rh}_Q{q}.tif"
 export DIVERSITY_INDICES_LOCAL_PATH="/projects/dereeco/data/gvs/products/diversity_indices/{year}/{version}/tiles/"
 export ALS_LOCAL_PATH="/projects/dereeco/data/gvs/evaluation/with_airborne_lidar/ALS_MaxGEDIFootprint_GSD10m/{tile}.cog.tif"
+export LVIS_LOCAL_PATH="/projects/dereeco/data/gvs/evaluation/with_airborne_lidar/LVIS_RH98_GSD10m/{tile}.cog.tif"
 # export ALS_LOCAL_TEMPLATE="/projects/dereeco/data/gvs/evaluation/with_airborne_lidar/ALS_MaxGEDIFootprint_GSD10m/{tile}.cog.tif"
 
 # export PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH="/projects/dereeco/data/gvs/products/vsm/2020/original/tiles/cog/"

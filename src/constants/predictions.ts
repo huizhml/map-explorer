@@ -25,6 +25,7 @@ export type VsmLayerEntry = {
   year: 2020 | 2024;
   rhIndex: number;
   qChoice: VsmQChoice;
+  version: VsmVersion;
 };
 
 /** Maps qChoice to short label used in layer IDs (Q0, Q1, Q2 or range 0-Q2, 0-Q1, 1-Q2). */
@@ -51,7 +52,27 @@ function getQLabelForId(qChoice: VsmQChoice): string {
 
 export function getVsmLayerId(entry: VsmLayerEntry): string {
   const qLabel = getQLabelForId(entry.qChoice);
-  return `prediction-global-RH${entry.rhIndex}-${qLabel}-${entry.year}`;
+  const versionSuffix = entry.year === 2020 ? `-${entry.version}` : '';
+  return `prediction-global-RH${entry.rhIndex}-${qLabel}-${entry.year}${versionSuffix}`;
+}
+
+/** Intervals decompose into (high_q_index, low_q_index) pairs of single-Q
+ *  files that get subtracted on the fly by /predictions/interval-tile. */
+export type IntervalQChoice = '95%-5%' | '95%-50%' | '50%-5%';
+
+export function isIntervalQChoice(q: VsmQChoice): q is IntervalQChoice {
+  return q === '95%-5%' || q === '95%-50%' || q === '50%-5%';
+}
+
+export function getIntervalQIndexes(q: IntervalQChoice): { high: number; low: number } {
+  switch (q) {
+    case '95%-5%':
+      return { high: 0, low: 2 };
+    case '95%-50%':
+      return { high: 0, low: 1 };
+    case '50%-5%':
+      return { high: 1, low: 2 };
+  }
 }
 
 /** API q_index: 0, 1, 2 for single quantile; '0-Q2', '0-Q1', '1-Q2' for ranges. */
@@ -89,13 +110,27 @@ export function getDefaultRescaleForRh(rhIndex: number): { min: number; max: num
   };
 }
 
-/** Rescale and colormap for visualization. Skewness (e.g. RH98) uses -40..180 and RdBu. */
+/** Per-(rh, interval) max overrides — intervals cluster much higher than the
+ *  single-Q range, so the absolute-height defaults clip them too aggressively.
+ *  Anything not in this table falls back to getDefaultRescaleForRh. */
+const INTERVAL_RESCALE_MAX: Partial<Record<IntervalQChoice, Record<number, number>>> = {
+  '95%-5%': { 98: 300, 25: 200 },
+};
+
+/** Rescale and colormap for visualization. Skewness (e.g. RH98) uses -40..180 and RdBu.
+ *  Intervals (95%-5%, 95%-50%, 50%-5%) default to mako, which reads better than
+ *  inferno for difference magnitudes that cluster near zero. */
 export function getDefaultRescaleAndColormap(
   rhIndex: number,
   qChoice: VsmQChoice
 ): { min: number; max: number; colormap: string } {
   if (qChoice === 'skewness' && rhIndex === 98) {
     return { min: -40, max: 180, colormap: 'RdBu' };
+  }
+  if (isIntervalQChoice(qChoice)) {
+    const override = INTERVAL_RESCALE_MAX[qChoice]?.[rhIndex];
+    const max = override ?? getDefaultRescaleForRh(rhIndex).max;
+    return { min: 0, max, colormap: 'mako' };
   }
   const rescale = getDefaultRescaleForRh(rhIndex);
   return { ...rescale, colormap: 'inferno' };

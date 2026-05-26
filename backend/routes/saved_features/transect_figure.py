@@ -337,7 +337,7 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     # The remaining axis label ("Height (m)" on the heatmap) uses the
     # user-requested font size. Tick numerals on every axis (and the colorbar)
     # are 2 pt smaller so they sit visually subordinate to the labels.
-    _tick_fs = max(6, req.font_size - 2)
+    _tick_fs = max(6, req.font_size - 4)
     plt.rcParams["font.size"]        = req.font_size
     plt.rcParams["axes.labelsize"]   = req.font_size
     plt.rcParams["axes.titlesize"]   = req.font_size
@@ -623,7 +623,7 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # when it finds nicer round values in the data span.
         ax.set_yticks([0.0,  max_h]) # max_h / 2.0,
         ax.set_yticklabels(['0', f'{max_h:.0f}m']) # f'{max_h / 2.0:.0f}m'
-        # Inset colorbar — lives inside the heatmap (lower-left) on a
+        # Inset colorbar — lives inside the heatmap (top-left) on a
         # semi-transparent white pad so it stays legible against any cell
         # colour and doesn't steal width from the panel. `ax.inset_axes`
         # installs a locator that re-positions the inset on every draw
@@ -632,23 +632,24 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # in this function.
         from matplotlib.patches import Rectangle
         _cbar_label_fs = max(7, req.font_size - 2)
-        # Background pad in heatmap-axes-fraction. Narrow + tall to comfortably
-        # contain the vertical bar plus the tick numerals and rotated
-        # "Energy (%)" label that flow to its right. (The panel is wide and
-        # short, so a fraction of x is far more pixels than the same fraction of
-        # y — hence the bar is thin in x and long in y.)
+        # Background pad in heatmap-axes-fraction. Wide + short to comfortably
+        # contain the horizontal bar plus the tick numerals and "Energy (%)"
+        # label that stack below it. (The panel is wide and short, so a
+        # fraction of x is far more pixels than the same fraction of y —
+        # hence the bar is wide in x and thin in y.)
         ax.add_patch(Rectangle(
-            (0.012, 0.10), 0.11, 0.66,
+            (0.86, 0.62), 0.16, 0.4, # x0, y0, width, height
             transform=ax.transAxes,
-            facecolor="white", alpha=0.7,
+            facecolor="white", alpha=1,
             edgecolor="#888", linewidth=0.6,
             zorder=5,
         ))
-        # The bar itself — thin vertical strip near the pad's left; tick
-        # numerals sit on its right and the rotated label flows further right.
-        cax = ax.inset_axes([0.035, 0.18, 0.02, 0.48])
+        # The bar itself — thin horizontal strip in the middle of the pad;
+        # the "Energy (%)" label sits above it and tick numerals sit below.
+        cax = ax.inset_axes([0.88, 0.76, 0.1, 0.08])
         cax.set_zorder(6)
-        cbar = fig.colorbar(mesh, cax=cax, orientation="vertical")
+        cbar = fig.colorbar(mesh, cax=cax, orientation="horizontal")
+        cbar.ax.xaxis.set_label_position("top")
         cbar.set_label("Energy (%)", fontsize=_cbar_label_fs, labelpad=2)
         cbar.set_ticks([z_min, z_max])
         cbar.ax.tick_params(labelsize=_tick_fs, length=2, pad=1)
@@ -692,7 +693,7 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             # Fixed [0, 10] range for the diversity-indices view: FHD/ENL
             # typically top out around 4–6, so 10 leaves headroom for the
             # top-right source badge without crowding the data.
-            ax.set_ylim(0, 10)
+            ax.set_ylim(0, 11)
             # Integer y-ticks across the [0, 10] range — sparse (≤5) so the
             # panel reads as a strip rather than a dense ladder, and
             # `integer=True` forces whole-number values regardless of the span.
@@ -867,21 +868,33 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             borderaxespad=0.0,
         )
 
-    # Right column — stacked metric legend (FHD / 1D ENL / 2D ENL / CR).
-    if legend_handles:
-        fig.legend(
+    # Metric legend — placed inside the metrics panel at the top-right,
+    # tucked just below the "VSM Diversity indices" source badge. Drawn on
+    # the twin axis (when CR sits there) so it renders above the primary
+    # grid, matching the badge's z-order trick.
+    if legend_handles and "metrics" in panels:
+        legend_host = (
+            metrics_twin_ax
+            if metrics_twin_ax is not None
+            else axes[panels.index("metrics")]
+        )
+        leg = legend_host.legend(
             legend_handles,
             legend_labels,
-            loc="upper center",
-            bbox_to_anchor=(col_centers[2], strip_top_y),
-            bbox_transform=fig.transFigure,
-            ncol=1,
-            frameon=False,
+            loc="upper right",
+            bbox_to_anchor=(1, 0.99),
+            ncol=len(legend_handles),
+            # frameon=True,
             fontsize=_strip_fs,
             handlelength=1.2,
             handletextpad=0.4,
+            columnspacing=1.0,
             borderaxespad=0.0,
+            framealpha=0.7,
+            # edgecolor="#888",
         )
+        # leg.get_frame().set_linewidth(0.6)
+        leg.set_zorder(6)
 
     # Output buffer.
     #

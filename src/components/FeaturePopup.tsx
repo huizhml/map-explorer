@@ -29,7 +29,15 @@ import Point from 'ol/geom/Point';
 import { transform } from 'ol/proj';
 import { apiUrl } from '../utils/apiBase';
 import type { SavedFeatureDraft } from '../services/savedFeaturesApi';
-import { DEFAULT_VSM_VERSION, VSM_VERSION_OPTIONS, type VsmVersion } from '../constants/predictions';
+import {
+  DEFAULT_VSM_VERSION,
+  VSM_VERSION_OPTIONS,
+  isIntervalQChoice,
+  getIntervalQIndexes,
+  type VsmVersion,
+  type VsmQChoice,
+  type IntervalQChoice,
+} from '../constants/predictions';
 // @ts-ignore - Material React Table needs to be installed: npm install material-react-table @tanstack/react-table
 import { MaterialReactTable, useMaterialReactTable, type MRT_ColumnDef } from 'material-react-table';
 
@@ -60,6 +68,14 @@ interface FeaturePopupProps {
     q_index: number;
     year: number;
   }) => void;
+  onLoadPredictionIntervalCOG?: (data: {
+    url_high: string;
+    url_low: string;
+    tile_name: string;
+    rh_index: number;
+    qChoice: IntervalQChoice;
+    year: number;
+  }) => void;
   onLoadAuxiliaryLayer?: (data: {
     url: string;
     tile_name: string;
@@ -77,7 +93,7 @@ interface FeaturePopupProps {
   onSavePoint?: (draft: SavedFeatureDraft) => void;
 }
 
-export function FeaturePopup({ properties, onClose, position, geometry, coordinates, onLoadSentinel2Image, onLoadPredictionCOG, onLoadAuxiliaryLayer, onLoadGEDIPoints, onSavePoint }: FeaturePopupProps) {
+export function FeaturePopup({ properties, onClose, position, geometry, coordinates, onLoadSentinel2Image, onLoadPredictionCOG, onLoadPredictionIntervalCOG, onLoadAuxiliaryLayer, onLoadGEDIPoints, onSavePoint }: FeaturePopupProps) {
   const [year, setYear] = useState<string>('2020');
   const [maxCloudCover, setMaxCloudCover] = useState<string>('50');
   const [loading, setLoading] = useState(false);
@@ -90,7 +106,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [useGrowingMonths, setUseGrowingMonths] = useState(false);
   const [predVersion, setPredVersion] = useState<VsmVersion>(DEFAULT_VSM_VERSION);
   const [rhIndex, setRhIndex] = useState<string>('98');
-  const [qChoice, setQChoice] = useState<'5%' | 'median' | '95%'>('median');
+  const [qChoice, setQChoice] = useState<VsmQChoice>('median');
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [selectedImageForMenu, setSelectedImageForMenu] = useState<Sentinel2Image | null>(null);
   const [offsetLoading, setOffsetLoading] = useState(false);
@@ -108,6 +124,9 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [alsLoading, setAlsLoading] = useState(false);
   const [alsError, setAlsError] = useState<string | null>(null);
   const [alsResult, setAlsResult] = useState<any | null>(null);
+  const [lvisLoading, setLvisLoading] = useState(false);
+  const [lvisError, setLvisError] = useState<string | null>(null);
+  const [lvisResult, setLvisResult] = useState<any | null>(null);
   const [gediLoading, setGediLoading] = useState(false);
   const [gediError, setGediError] = useState<string | null>(null);
   const [gediResult, setGediResult] = useState<any | null>(null);
@@ -490,48 +509,57 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       setPredError('No tile name (Name property) available in FlatGeobuf feature');
       return;
     }
-    const qIndexMap: Record<string, number> = { '5%': 2, 'median': 1, '95%': 0 };
-    const q_index = qIndexMap[qChoice];
     const rh_index = parseInt(rhIndex);
     if (isNaN(rh_index)) {
       setPredError('Invalid RH index');
       return;
     }
 
-    setPredLoading(true);
-    setPredError(null);
-    setPredResult(null);
-    try {
-      console.log('Loading prediction for year:', year);
-      const response = await fetch(apiUrl('/predictions/load'), {
+    const postLoad = (q: number) =>
+      fetch(apiUrl('/predictions/load'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           year: parseInt(year),
           tile_name: properties.Name,
           rh_index,
-          q_index,
+          q_index: q,
           version: predVersion,
         }),
+      }).then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+        const d = await r.json();
+        if (d.success === false || d.error) throw new Error(d.error || 'Failed to load predictions');
+        return d;
       });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      const data = await response.json();
-      if (data.success === false || data.error) {
-        throw new Error(data.error || 'Failed to load predictions');
-      }
-      setPredResult(data);
-      
-      // Load the COG layer via TiTiler
-      if (onLoadPredictionCOG && data.url) {
-        onLoadPredictionCOG({
-          url: data.url,
-          tile_name: properties.Name,
-          rh_index,
-          q_index,
-          year: parseInt(year),
-        });
+
+    setPredLoading(true);
+    setPredError(null);
+    setPredResult(null);
+    try {
+      if (isIntervalQChoice(qChoice)) {
+        const { high, low } = getIntervalQIndexes(qChoice);
+        const [dh, dl] = await Promise.all([postLoad(high), postLoad(low)]);
+        setPredResult({ ...dh, qChoice, url_low: dl.url });
+        if (onLoadPredictionIntervalCOG && dh.url && dl.url) {
+          onLoadPredictionIntervalCOG({
+            url_high: dh.url, url_low: dl.url,
+            tile_name: properties.Name,
+            rh_index, qChoice, year: parseInt(year),
+          });
+        }
+      } else {
+        const qIndexMap: Record<string, number> = { '5%': 2, 'median': 1, '95%': 0 };
+        const q_index = qIndexMap[qChoice];
+        const data = await postLoad(q_index);
+        setPredResult(data);
+        if (onLoadPredictionCOG && data.url) {
+          onLoadPredictionCOG({
+            url: data.url,
+            tile_name: properties.Name,
+            rh_index, q_index, year: parseInt(year),
+          });
+        }
       }
     } catch (err: any) {
       setPredError(err.message || 'Failed to load predictions');
@@ -696,6 +724,43 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       console.error('Load ALS error:', err);
     } finally {
       setAlsLoading(false);
+    }
+  };
+
+  const handleLoadLVIS = async () => {
+    if (!properties?.Name) {
+      setLvisError('No tile name available');
+      return;
+    }
+    setLvisLoading(true);
+    setLvisError(null);
+    setLvisResult(null);
+    try {
+      const response = await fetch(apiUrl('/auxiliary/lvis'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tile_name: properties.Name }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      const data = await response.json();
+      if (data.success === false || data.error) {
+        throw new Error(data.error || 'Failed to load LVIS');
+      }
+      setLvisResult(data);
+      if (onLoadAuxiliaryLayer && data.url) {
+        onLoadAuxiliaryLayer({
+          url: data.url,
+          tile_name: data.tile_name,
+          layer_type: data.layer_type,
+        });
+      }
+    } catch (err: any) {
+      setLvisError(err.message || 'Failed to load LVIS');
+      console.error('Load LVIS error:', err);
+    } finally {
+      setLvisLoading(false);
     }
   };
 
@@ -1148,7 +1213,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
               <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
                 Percentiles
               </Typography>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', mb: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', mb: 1.5 }}>
                 <FormControlLabel
                   sx={{ m: 0 }}
                   control={<Checkbox size="small" checked={qChoice === '5%'} onChange={() => setQChoice('5%')} />}
@@ -1163,6 +1228,27 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
                   sx={{ m: 0 }}
                   control={<Checkbox size="small" checked={qChoice === '95%'} onChange={() => setQChoice('95%')} />}
                   label={<Typography variant="body2">95%</Typography>}
+                />
+              </Box>
+
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                Intervals
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', mb: 2 }}>
+                <FormControlLabel
+                  sx={{ m: 0 }}
+                  control={<Checkbox size="small" checked={qChoice === '95%-5%'} onChange={() => setQChoice('95%-5%')} />}
+                  label={<Typography variant="body2">95%-5%</Typography>}
+                />
+                <FormControlLabel
+                  sx={{ m: 0 }}
+                  control={<Checkbox size="small" checked={qChoice === '95%-50%'} onChange={() => setQChoice('95%-50%')} />}
+                  label={<Typography variant="body2">95%-50%</Typography>}
+                />
+                <FormControlLabel
+                  sx={{ m: 0 }}
+                  control={<Checkbox size="small" checked={qChoice === '50%-5%'} onChange={() => setQChoice('50%-5%')} />}
+                  label={<Typography variant="body2">50%-5%</Typography>}
                 />
               </Box>
 
@@ -1240,7 +1326,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
               <Typography variant="subtitle2" sx={{ fontWeight: 700, mt: 2.5, mb: 1.25 }}>
                 Reference data
               </Typography>
-              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 1.5 }}>
                 <Button
                   variant="contained"
                   onClick={handleLoadALS}
@@ -1249,6 +1335,15 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
                   sx={filledButtonSx}
                 >
                   {alsLoading ? 'Loading...' : 'Load ALS'}
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={handleLoadLVIS}
+                  disabled={lvisLoading}
+                  startIcon={lvisLoading ? <CircularProgress size={16} color="inherit" /> : null}
+                  sx={filledButtonSx}
+                >
+                  {lvisLoading ? 'Loading...' : 'Load LVIS'}
                 </Button>
                 <Button
                   variant="contained"
@@ -1261,20 +1356,25 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
                 </Button>
               </Box>
 
-              {(alsError || gediError) && (
+              {(alsError || lvisError || gediError) && (
                 <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
-                  {alsError || gediError}
+                  {alsError || lvisError || gediError}
                 </Typography>
               )}
-              {(alsResult || gediResult) && (
+              {(alsResult || lvisResult || gediResult) && (
                 <Box sx={{ mt: 1.5, p: 1.25, bgcolor: '#f5f7fb', borderRadius: 2 }}>
                   {alsResult && (
                     <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700 }}>
                       ALS loaded
                     </Typography>
                   )}
-                  {gediResult && (
+                  {lvisResult && (
                     <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700, mt: alsResult ? 0.5 : 0 }}>
+                      LVIS loaded
+                    </Typography>
+                  )}
+                  {gediResult && (
+                    <Typography variant="caption" sx={{ display: 'block', color: 'success.main', fontWeight: 700, mt: (alsResult || lvisResult) ? 0.5 : 0 }}>
                       GEDI loaded ({gediResult.sampled_count} / {gediResult.total_count})
                     </Typography>
                   )}

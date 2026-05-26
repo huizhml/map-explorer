@@ -72,6 +72,10 @@ class FigureLayerSpec(BaseModel):
     # `rasterio.open(url)`. Examples: 's2cloudless_mosaic', 'diversity_indices'.
     layer_subtype: Optional[str] = None
     url: str
+    # For VSM interval layers: the lower-quantile COG. When set, the renderer
+    # opens both `url` (high quantile) and `url_low` and writes the pixel-wise
+    # difference instead of the raw `url` raster.
+    url_low: Optional[str] = None
     rgb_bands: Optional[List[int]] = None
     colormap: Optional[str] = None
     rescale_min: Optional[float] = None

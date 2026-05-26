@@ -1084,6 +1084,8 @@ export function SidebarContainer() {
     setVsmRhIndex,
     vsmQChoice,
     setVsmQChoice,
+    vsmVersion,
+    setVsmVersion,
     drawingActive,
     setDrawingActive,
     drawingMode,
@@ -1355,14 +1357,21 @@ export function SidebarContainer() {
 
   const handleAddLayer = () => {
     if (vsmYear !== 2020 && vsmYear !== 2024) return;
+    // Versioned outputs only exist for 2020; non-2020 years are pinned to 'original'.
+    const effectiveVersion = vsmYear === 2020 ? vsmVersion : 'original';
     const alreadyAdded = addedVsmLayers.some(
-      (e) => e.year === vsmYear && e.rhIndex === vsmRhIndex && e.qChoice === vsmQChoice
+      (e) =>
+        e.year === vsmYear &&
+        e.rhIndex === vsmRhIndex &&
+        e.qChoice === vsmQChoice &&
+        e.version === effectiveVersion
     );
     if (alreadyAdded) return;
     addVsmLayer({
       year: vsmYear as 2020 | 2024,
       rhIndex: vsmRhIndex,
       qChoice: vsmQChoice,
+      version: effectiveVersion,
     });
   };
 
@@ -1588,6 +1597,9 @@ export function SidebarContainer() {
           layerType: String(layer.type),
           layerSubType: meta.layerType ? String(meta.layerType) : undefined,
           url: String(meta.url),
+          // For VSM interval layers `url` is the high single-Q and `urlLow` is
+          // the low single-Q — the backend subtracts them when both are set.
+          urlLow: typeof meta.urlLow === 'string' ? meta.urlLow : undefined,
           colormap: meta.colormap ? String(meta.colormap) : undefined,
           rescaleMin: typeof meta.rescaleMin === 'number' ? meta.rescaleMin : undefined,
           rescaleMax: typeof meta.rescaleMax === 'number' ? meta.rescaleMax : undefined,
@@ -1782,6 +1794,7 @@ export function SidebarContainer() {
               name: layer.name,
               layer_type: layer.layerType,
               url: layer.url,
+              url_low: layer.urlLow,
               rgb_bands: layer.rgbBands,
               colormap: cmap,
               rescale_min: rmin,
@@ -1892,6 +1905,7 @@ export function SidebarContainer() {
               layer_subtype: layer.layerSubType,
               year: layer.year,
               url: layer.url,
+              url_low: layer.urlLow,
               rgb_bands: layer.rgbBands,
               colormap: cmap,
               rescale_min: rmin,
@@ -1959,6 +1973,8 @@ export function SidebarContainer() {
       onVsmRhIndexChange={setVsmRhIndex}
       vsmQChoice={vsmQChoice}
       onVsmQChoiceChange={setVsmQChoice}
+      vsmVersion={vsmVersion}
+      onVsmVersionChange={setVsmVersion}
       drawingActive={drawingActive}
       drawingMode={drawingMode}
       onGetTiles={handleGetTiles}

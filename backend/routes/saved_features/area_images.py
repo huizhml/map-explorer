@@ -278,12 +278,15 @@ def render_area_images(
         rmin: Optional[float], rmax: Optional[float], band_idx: Optional[int],
         prefer_sentinel_rgb: bool = False, rgb_bands: Optional[List[int]] = None,
         is_rh_metric: bool = False, include_colorbar: bool = True,
+        precomputed_data: Optional[np.ndarray] = None,
     ) -> bytes:
         # Higher dpi for PDF — vector elements stay sharp regardless, but the
         # embedded raster (the imshow of the data) inherits the figure dpi.
         render_dpi = 300 if payload.format == "pdf" else 160
 
-        if band_idx is not None:
+        if precomputed_data is not None:
+            data = precomputed_data
+        elif band_idx is not None:
             data = _read_as_float(src, window, indexes=band_idx)
         elif src.count >= 3 and cmap is None:
             # RGB / Sentinel-2 path: render edge-to-edge with no margin so the
@@ -320,6 +323,9 @@ def render_area_images(
         else:
             data = _read_as_float(src, window, indexes=1)
 
+        if data.ndim == 3 and data.shape[0] == 1:
+            data = data[0]
+
         low, high = _resolve_single_band_range(data, rmin, rmax)
 
         # No-colorbar path: render the colormapped data edge-to-edge with no
@@ -350,11 +356,12 @@ def render_area_images(
         cax = divider.append_axes("right", size="5%", pad=0.15)
         cbar = fig.colorbar(im, cax=cax)
         # RH prediction rasters store heights in decimeters; convert tick labels
-        # to meters so the colorbar reads in user-facing units.
+        # to meters and append the unit to the max tick (e.g. "50m") so the
+        # unit reads at the same scale as the numbers — the prior approach put
+        # "m" on the colorbar's outer label which rendered microscopically.
         if is_rh_metric:
             cbar.set_ticks([low, high])
-            cbar.set_ticklabels([f"{low / 10:g}", f"{high / 10:g}"])
-            cbar.set_label("m", fontsize=8)
+            cbar.set_ticklabels([f"{low / 10:g}", f"{high / 10:g}m"])
         else:
             cbar.set_ticks([low, high])
             cbar.set_ticklabels([f"{low:g}", f"{high:g}"])
@@ -463,7 +470,7 @@ def render_area_images(
                 # Label is white (with a thin black halo for legibility over
                 # bright patches), so its halo is the opposite colour.
                 line_halo = [withStroke(linewidth=14, foreground="white")]
-                text_halo = [withStroke(linewidth=6, foreground="black")]
+                text_halo = [withStroke(linewidth=12, foreground="black")]
                 trans = blended_transform_factory(ax.transData, ax.transAxes)
 
                 ax.plot(
@@ -486,11 +493,15 @@ def render_area_images(
                 # only when it would actually clip, so a bar with room stays
                 # visually centred. Mirrors the Google PNG path.
                 label_cx = (bar_x0 + bar_x1) / 2.0
+                # ~8% of the 10-in figure width (≈ 100 pt). Matches the
+                # Google-satellite scale bar's `font_px = ref * 0.08` rule so
+                # the label reads at a glance like in the Google export instead
+                # of looking like a tiny annotation on the imagery.
                 txt = ax.text(
                     label_cx, bar_y_axes + tick_h + 0.03,
                     label_text,
                     transform=trans, ha="center", va="bottom",
-                    fontsize=34, color="white",
+                    fontsize=72, color="white",
                     path_effects=text_halo, zorder=6,
                 )
                 try:
@@ -623,6 +634,39 @@ def render_area_images(
                 window = clip_window(src, *src_bounds)
                 if window.width <= 0 or window.height <= 0:
                     raise ValueError("Selection does not overlap layer extent.")
+
+                # VSM interval (95%-5% etc.): high COG is `layer.url`, low COG is
+                # `layer.url_low`. Read both windows, subtract, and feed the
+                # diff to the single-band renderer via precomputed_data. Pixels
+                # at the in-band sentinel (>=32767) become NaN so they render
+                # transparent like normal nodata.
+                if layer.url_low:
+                    high_arr = _read_as_float(src, window, indexes=1)
+                    with rasterio.open(layer.url_low) as src_low:
+                        low_arr = _read_as_float(src_low, window, indexes=1)
+                    if high_arr.shape != low_arr.shape:
+                        raise ValueError(
+                            f"Interval source rasters have mismatched shapes: "
+                            f"{high_arr.shape} vs {low_arr.shape}"
+                        )
+                    SENTINEL = 32767.0
+                    high_arr[high_arr >= SENTINEL] = np.nan
+                    low_arr[low_arr >= SENTINEL] = np.nan
+                    diff = high_arr - low_arr
+                    file_name = (
+                        f"{sanitize_name(layer.name)}_"
+                        f"{sanitize_name(location_tag)}.{payload.format}"
+                    )
+                    image_bytes = _render_one_bytes(
+                        src, window, layer.name, file_name,
+                        layer.colormap, layer.rescale_min, layer.rescale_max,
+                        None, is_sentinel, layer.rgb_bands,
+                        is_rh_metric=is_rh_layer, include_colorbar=include_colorbar,
+                        precomputed_data=diff,
+                    )
+                    (session_dir / file_name).write_bytes(image_bytes)
+                    _record_export(file_name, layer)
+                    continue
 
                 if layer.bands and len(layer.bands) > 0:
                     for band in layer.bands:

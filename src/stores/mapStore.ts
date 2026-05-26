@@ -6,7 +6,7 @@ import { Geometry } from 'ol/geom';
 import { LayerManager } from '../utils/LayerManager';
 import type { Layer } from '../components/LayerControl';
 import type { VsmLayerEntry, VsmQChoice, VsmVersion } from '../constants/predictions';
-import { getVsmLayerId } from '../constants/predictions';
+import { getVsmLayerId, DEFAULT_VSM_VERSION } from '../constants/predictions';
 import type { InspectLayerRow } from '../utils/inspectPoint';
 import { API_BASE_URL } from '../utils/apiBase';
 import type { SavedFeature, SavedFeatureDraft, SavedFeatureGeometry, SavedFeatureGeometryType } from '../services/savedFeaturesApi';
@@ -235,6 +235,8 @@ interface MapStore {
   setVsmRhIndex: (rh: number) => void;
   vsmQChoice: VsmQChoice;
   setVsmQChoice: (q: VsmQChoice) => void;
+  vsmVersion: VsmVersion;
+  setVsmVersion: (v: VsmVersion) => void;
   addedVsmLayers: VsmLayerEntry[];
   addVsmLayer: (entry: VsmLayerEntry) => void;
   removeVsmLayerByLayerId: (layerId: string) => void;
@@ -389,6 +391,8 @@ export const useMapStore = create<MapStore>((set, get) => ({
   setVsmRhIndex: (rh) => set({ vsmRhIndex: rh }),
   vsmQChoice: 'median',
   setVsmQChoice: (q) => set({ vsmQChoice: q }),
+  vsmVersion: DEFAULT_VSM_VERSION,
+  setVsmVersion: (v) => set({ vsmVersion: v }),
   addedVsmLayers: [],
   addVsmLayer: (entry) =>
     set((state) => ({

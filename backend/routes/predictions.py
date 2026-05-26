@@ -456,6 +456,77 @@ async def predictions_load_options():
     return {"message": "OK"}
 
 
+# ---------------------------------------------------------------------------
+# Interval (quantile-difference) tile endpoint
+# ---------------------------------------------------------------------------
+# Single-Q VSM tiles live on disk (RH98_Q0.tif, RH98_Q1.tif, RH98_Q2.tif);
+# intervals (95%-5%, 95%-50%, 50%-5%) are not pre-built, so we compute them
+# per-tile here by subtracting two single-Q COGs on the fly.
+
+from fastapi import Response  # noqa: E402  (kept local to avoid top-level reshuffle)
+from rio_tiler.io import Reader  # noqa: E402
+from rio_tiler.models import ImageData  # noqa: E402
+from rio_tiler.colormap import cmap as _colormap_registry  # noqa: E402
+from rio_tiler.errors import TileOutsideBounds  # noqa: E402
+
+# Sentinel value baked into the source COGs marking "no valid prediction".
+_INTERVAL_SENTINEL = 32767.0
+
+
+@router.get("/predictions/interval-tile/WebMercatorQuad/{z}/{x}/{y}")
+async def get_interval_tile(
+    z: int, x: int, y: int,
+    url_high: str,
+    url_low: str,
+    rescale: str = "0,500",
+    colormap_name: str = "inferno",
+    nodata: float = -9999.0,
+):
+    """Return a PNG tile of (url_high - url_low), rescaled and colormapped.
+
+    Mirrors the parameter style of `/cog/tiles` so the frontend can swap it in
+    for interval qChoices without other changes.
+    """
+    try:
+        rmin, rmax = (float(v) for v in rescale.split(","))
+    except Exception:
+        rmin, rmax = 0.0, 500.0
+
+    try:
+        with Reader(url_high) as src:
+            img_high = src.tile(x, y, z, nodata=nodata)
+        with Reader(url_low) as src:
+            img_low = src.tile(x, y, z, nodata=nodata)
+    except TileOutsideBounds:
+        raise
+
+    high = np.asarray(img_high.data, dtype="float32")
+    low = np.asarray(img_low.data, dtype="float32")
+    # np.ma convention: True = masked (invalid). Mask if either source pixel is
+    # masked, or either hits the in-band sentinel.
+    invalid_2d = (
+        ~img_high.mask.astype(bool)
+        | ~img_low.mask.astype(bool)
+        | (high[0] >= _INTERVAL_SENTINEL)
+        | (low[0] >= _INTERVAL_SENTINEL)
+    )
+    diff = high - low
+    masked_diff = np.ma.masked_array(diff, mask=np.broadcast_to(invalid_2d, diff.shape))
+
+    out = ImageData(masked_diff, crs=img_high.crs, bounds=img_high.bounds)
+    out.rescale(in_range=((rmin, rmax),))
+
+    try:
+        cm = _colormap_registry.get(colormap_name)
+    except Exception:
+        cm = _colormap_registry.get("inferno")
+
+    return Response(
+        content=out.render(img_format="PNG", colormap=cm),
+        media_type="image/png",
+    )
+
+
 @router.post("/predictions/vertical-profile")
 async def predictions_vertical_profile(request: VerticalProfileRequest):
     result = await asyncio.to_thread(

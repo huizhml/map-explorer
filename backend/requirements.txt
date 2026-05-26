@@ -13,3 +13,4 @@ mgrs
 rasterio
 duckdb
 earthengine-api
+seaborn

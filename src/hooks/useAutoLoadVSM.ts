@@ -4,7 +4,14 @@ import XYZ from 'ol/source/XYZ';
 import TileLayer from 'ol/layer/Tile';
 import { transformExtent } from 'ol/proj';
 import { useMapStore } from '../stores/mapStore';
-import { getDefaultRescaleAndColormap, getVsmLayerId, getQIndexForApi, type VsmLayerEntry } from '../constants/predictions';
+import {
+  getDefaultRescaleAndColormap,
+  getVsmLayerId,
+  getQIndexForApi,
+  getIntervalQIndexes,
+  isIntervalQChoice,
+  type VsmLayerEntry,
+} from '../constants/predictions';
 import { apiUrl } from '../utils/apiBase';
 
 const DEBOUNCE_MS = 1500;
@@ -57,23 +64,59 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
 
       if (mgr) {
         const rc = getDefaultRescaleAndColormap(entry.rhIndex, entry.qChoice);
-        mgr.addLayer(layerId, `Global (RH${entry.rhIndex} ${entry.qChoice}, ${entry.year})`, 'prediction', outerGroup as any, {
+        const versionSuffix = entry.year === 2020 ? ` · ${entry.version}` : '';
+        const layerName = `Global (RH${entry.rhIndex} ${entry.qChoice}, ${entry.year}${versionSuffix})`;
+        mgr.addLayer(layerId, layerName, 'prediction', outerGroup as any, {
           tileName: 'Global', rhIndex: entry.rhIndex, qIndex: getQIndexForApi(entry.qChoice),
-          year: entry.year, rescaleMin: rc.min, rescaleMax: rc.max, colormap: rc.colormap, isAutoLoadGroup: true,
+          year: entry.year, version: entry.version,
+          rescaleMin: rc.min, rescaleMax: rc.max, colormap: rc.colormap, isAutoLoadGroup: true,
         });
         updateLayersList();
       }
 
       (async () => {
         try {
-          const qParam = encodeURIComponent(String(getQIndexForApi(entry.qChoice)));
-          const resp = await fetch(apiUrl(`/predictions/mosaic-url?year=${entry.year}&rh_index=${entry.rhIndex}&q_index=${qParam}`));
-          const data = await resp.json();
+          const versionParam = `&version=${encodeURIComponent(entry.version)}`;
+          const fetchMosaic = (q: number | string) =>
+            fetch(apiUrl(`/predictions/mosaic-url?year=${entry.year}&rh_index=${entry.rhIndex}&q_index=${encodeURIComponent(String(q))}${versionParam}`))
+              .then((r) => r.json());
+
+          const isInterval = isIntervalQChoice(entry.qChoice);
+          let mosaicUrlHigh: string | null = null;
+          let mosaicUrlLow: string | null = null;
+
+          if (isInterval) {
+            const { high, low } = getIntervalQIndexes(entry.qChoice as Exclude<typeof entry.qChoice, 'skewness' | '5%' | 'median' | '95%'>);
+            const [dh, dl] = await Promise.all([fetchMosaic(high), fetchMosaic(low)]);
+            if (dh?.success && dh.url) mosaicUrlHigh = dh.url;
+            if (dl?.success && dl.url) mosaicUrlLow = dl.url;
+          } else {
+            const d = await fetchMosaic(getQIndexForApi(entry.qChoice));
+            if (d?.success && d.url) mosaicUrlHigh = d.url;
+          }
+
           const s = globalLayersRef.current.get(layerId);
-          if (!s || s.cancelled || !data.success) return;
+          if (!s || s.cancelled) return;
+
+          // Surface the underlying COG path(s) on the managed-layer metadata so
+          // this auto-loaded layer shows up in the "Layers To Save" panel. For
+          // intervals, both high and low single-Q paths are needed — the save
+          // endpoint subtracts them server-side via /predictions/interval-tile.
+          const managed = useMapStore.getState().layerManager?.getLayer(layerId);
+          if (managed?.metadata && mosaicUrlHigh && (!isInterval || mosaicUrlLow)) {
+            managed.metadata.url = mosaicUrlHigh;
+            if (isInterval && mosaicUrlLow) managed.metadata.urlLow = mosaicUrlLow;
+            updateLayersList();
+          }
+
+          // Mosaic display layer (low-zoom overview). Intervals stitch two
+          // single-Q mosaics on the fly via /predictions/interval-tile.
+          if (!mosaicUrlHigh) return;
           const rc = getDefaultRescaleAndColormap(entry.rhIndex, entry.qChoice);
-          const url = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}`);
-          const mosaicLayer = new TileLayer({ source: new XYZ({ url, crossOrigin: 'anonymous', maxZoom: 14 }), zIndex: 599, maxZoom: MIN_ZOOM });
+          const mosaicTileUrl = isInterval && mosaicUrlLow
+            ? apiUrl(`/predictions/interval-tile/WebMercatorQuad/{z}/{x}/{y}?url_high=${encodeURIComponent(mosaicUrlHigh)}&url_low=${encodeURIComponent(mosaicUrlLow)}&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}`)
+            : apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicUrlHigh)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}`);
+          const mosaicLayer = new TileLayer({ source: new XYZ({ url: mosaicTileUrl, crossOrigin: 'anonymous', maxZoom: 14 }), zIndex: 599, maxZoom: MIN_ZOOM });
           const st = globalLayersRef.current.get(layerId);
           if (st && !st.cancelled && map.getLayers().getArray().includes(st.outerGroup)) st.outerGroup.getLayers().insertAt(0, mosaicLayer);
         } catch (err) {
@@ -101,7 +144,28 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
       if (toLoad.length === 0) return;
 
       const { entry } = state;
-      const qIdx = getQIndexForApi(entry.qChoice);
+      const isInterval = isIntervalQChoice(entry.qChoice);
+
+      // For single-Q: one /predictions/load call returns the COG URL we tile via /cog/tiles.
+      // For intervals: load BOTH single-Q files and tile via /predictions/interval-tile,
+      // which subtracts (url_high - url_low) on the server.
+      const loadSourceUrls = async (tileName: string): Promise<{ urls: string[]; bboxRef: string } | null> => {
+        const post = (q: number | string) =>
+          fetch(apiUrl('/predictions/load'), {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ year: entry.year, tile_name: tileName, rh_index: entry.rhIndex, q_index: q, version: entry.version }),
+          }).then((r) => (r.ok ? r.json() : null));
+
+        if (isInterval) {
+          const { high, low } = getIntervalQIndexes(entry.qChoice as Exclude<typeof entry.qChoice, 'skewness' | '5%' | 'median' | '95%'>);
+          const [dh, dl] = await Promise.all([post(high), post(low)]);
+          if (!dh?.success || !dh.url || !dl?.success || !dl.url) return null;
+          return { urls: [dh.url, dl.url], bboxRef: dh.url };
+        }
+        const data = await post(getQIndexForApi(entry.qChoice));
+        if (!data?.success || !data.url) return null;
+        return { urls: [data.url], bboxRef: data.url };
+      };
 
       for (let i = 0; i < toLoad.length; i += MAX_CONCURRENT) {
         if (state.cancelled) return;
@@ -109,15 +173,10 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
           if (state.cancelled) return;
           state.autoLoadingTiles.add(tileName);
           try {
-            const resp = await fetch(apiUrl('/predictions/load'), {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ year: entry.year, tile_name: tileName, rh_index: entry.rhIndex, q_index: qIdx }),
-            });
-            if (!resp.ok) return;
-            const data = await resp.json();
-            if (!data.success || !data.url || state.cancelled) return;
+            const loaded = await loadSourceUrls(tileName);
+            if (!loaded || state.cancelled) return;
 
-            const infoResp = await fetch(apiUrl(`/cog/info?url=${encodeURIComponent(data.url)}`));
+            const infoResp = await fetch(apiUrl(`/cog/info?url=${encodeURIComponent(loaded.bboxRef)}`));
             if (!infoResp.ok) return;
             const info = await infoResp.json();
             const bbox = info.bounds;
@@ -133,7 +192,9 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
             const rMin = globalManaged?.metadata?.rescaleMin ?? rc.min;
             const rMax = globalManaged?.metadata?.rescaleMax ?? rc.max;
             const cm = globalManaged?.metadata?.colormap ?? rc.colormap;
-            const url = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rMin},${rMax}&colormap_name=${encodeURIComponent(cm)}`);
+            const url = isInterval
+              ? apiUrl(`/predictions/interval-tile/WebMercatorQuad/{z}/{x}/{y}?url_high=${encodeURIComponent(loaded.urls[0])}&url_low=${encodeURIComponent(loaded.urls[1])}&rescale=${rMin},${rMax}&colormap_name=${encodeURIComponent(cm)}`)
+              : apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(loaded.urls[0])}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rMin},${rMax}&colormap_name=${encodeURIComponent(cm)}`);
             const opts: any = { source: new XYZ({ url, crossOrigin: 'anonymous', maxZoom: 18, wrapX: true }), minZoom: MIN_ZOOM - 1 };
             if ((extent[2] - extent[0]) <= 1_000_000) opts.extent = extent;
             if (!state.cancelled) state.group.getLayers().push(new TileLayer(opts));

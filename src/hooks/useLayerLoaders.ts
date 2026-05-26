@@ -8,7 +8,7 @@ import XYZ from 'ol/source/XYZ';
 import TileLayer from 'ol/layer/Tile';
 import { transformExtent } from 'ol/proj';
 import { useMapStore } from '../stores/mapStore';
-import { getDefaultRescaleForRh } from '../constants/predictions';
+import { getDefaultRescaleForRh, getDefaultRescaleAndColormap, type IntervalQChoice } from '../constants/predictions';
 import {
   CANOPY_RATIO_RANGE,
   DIVERSITY_INDICES_BAND_NAMES,
@@ -221,6 +221,77 @@ export function useLayerLoaders(updateLayersList: () => void) {
     }
   }, [map, layerManager, updateLayersList]);
 
+  const handleLoadPredictionIntervalCOG = useCallback(async (
+    data: {
+      url_high: string;
+      url_low: string;
+      tile_name: string;
+      rh_index: number;
+      qChoice: IntervalQChoice;
+      year: number;
+    },
+    skipZoom = false,
+  ) => {
+    if (!map) return;
+    try {
+      // url_high is the bbox reference — both COGs share the same tile extent.
+      const { extent, isAntimeridian } = await fetchCogExtent(data.url_high);
+      if (isAntimeridian) skipZoom = true;
+
+      if (!skipZoom && extent.every((v: number) => isFinite(v))) {
+        await new Promise<void>((resolve) => {
+          map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 18, callback: () => resolve() });
+          setTimeout(resolve, 1100);
+        });
+      }
+
+      const defaultRescale = getDefaultRescaleAndColormap(data.rh_index, data.qChoice);
+      const colormap = defaultRescale.colormap;
+      const tileUrl = apiUrl(
+        `/predictions/interval-tile/WebMercatorQuad/{z}/{x}/{y}` +
+        `?url_high=${encodeURIComponent(data.url_high)}` +
+        `&url_low=${encodeURIComponent(data.url_low)}` +
+        `&rescale=${defaultRescale.min},${defaultRescale.max}` +
+        `&colormap_name=${encodeURIComponent(colormap)}`,
+      );
+
+      const layerOpts: any = {
+        source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
+        opacity: 1, zIndex: 600,
+      };
+      if (!isAntimeridian && extent.every((v: number) => isFinite(v))) layerOpts.extent = extent;
+
+      const newLayer = new TileLayer(layerOpts);
+      const layerId = `prediction-${data.tile_name}-RH${data.rh_index}-${data.qChoice}-${data.year}-${Date.now()}`;
+      const layerName = `${data.tile_name} ${data.year} RH${data.rh_index} ${data.qChoice}`;
+
+      map.addLayer(newLayer);
+      setPredictionLayers((prev: any[]) => [...prev, {
+        layer: newLayer, id: layerId,
+        tileName: data.tile_name, rhIndex: data.rh_index,
+        qIndex: data.qChoice, year: data.year,
+        url: data.url_high, useClientSideTransform: false,
+      }]);
+
+      const metadata: any = {
+        tileName: data.tile_name, rhIndex: data.rh_index,
+        qIndex: data.qChoice, year: data.year,
+        // `url` is what the figure exporter filters on; point it at the high
+        // quantile so the layer shows up in "layers to save". The exporter
+        // honors `urlLow` to subtract the two on the backend.
+        url: data.url_high, urlLow: data.url_low,
+        rescaleMin: defaultRescale.min, rescaleMax: defaultRescale.max,
+        colormap, useClientSideTransform: false,
+      };
+      if (extent.every((v: number) => isFinite(v))) metadata.extent = extent;
+      layerManager?.addLayer(layerId, layerName, 'prediction', newLayer, metadata);
+      updateLayersList();
+    } catch (error) {
+      console.error('Error loading prediction interval COG:', error);
+      alert(`Failed to load prediction interval: ${error instanceof Error ? error.message : error}`);
+    }
+  }, [map, layerManager, updateLayersList]);
+
   const handleLoadAuxiliaryLayer = useCallback(async (data: {
     url: string; tile_name: string; layer_type: string;
     metric?: 'entropy' | 'enl1d' | 'enl2d'; bands?: string[];
@@ -283,15 +354,16 @@ export function useLayerLoaders(updateLayersList: () => void) {
       const rescaleMap: Record<string, string> = {
         cr: `${CANOPY_RATIO_RANGE[0]},${CANOPY_RATIO_RANGE[1]}`,
         als: '0,50',
+        lvis: '0,50',
         profile_entropy: `${profileEntropyRange[0]},${profileEntropyRange[1]}`,
       };
       const rescale = rescaleMap[data.layer_type] ?? '0,5490';
       const [rescaleMin, rescaleMax] = rescale.split(',').map(Number);
-      const colormapMap: Record<string, string> = { cr: 'rdbu', als: 'inferno', profile_entropy: 'greens' };
+      const colormapMap: Record<string, string> = { cr: 'rdbu', als: 'inferno', lvis: 'inferno', profile_entropy: 'greens' };
       const colormap = colormapMap[data.layer_type];
       const colormapParam = colormap ? `&colormap_name=${colormap}` : '';
-      // CR and profile_entropy COGs are written with -9999 nodata; ALS uses 255.
-      const nodataValueByType: Record<string, string> = { als: '255', cr: '-9999', profile_entropy: '-9999' };
+      // CR and profile_entropy COGs are written with -9999 nodata; ALS/LVIS use 255.
+      const nodataValueByType: Record<string, string> = { als: '255', lvis: '255', cr: '-9999', profile_entropy: '-9999' };
       const nodataValue = nodataValueByType[data.layer_type];
       const nodataParam = nodataValue ? `&nodata=${nodataValue}` : '';
       const tileUrl = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=${rescale}${nodataParam}${colormapParam}`);
@@ -363,5 +435,5 @@ export function useLayerLoaders(updateLayersList: () => void) {
     })();
   }, [map, layerManager, updateLayersList]);
 
-  return { handleLoadSentinel2Image, handleLoadPredictionCOG, handleLoadAuxiliaryLayer, handleLoadGEDIPoints };
+  return { handleLoadSentinel2Image, handleLoadPredictionCOG, handleLoadPredictionIntervalCOG, handleLoadAuxiliaryLayer, handleLoadGEDIPoints };
 }

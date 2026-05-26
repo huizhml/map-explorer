@@ -44,7 +44,8 @@ import {
   OpenInFull as OpenInFullIcon,
   EditOutlined as EditOutlinedIcon,
 } from '@mui/icons-material';
-import type { VsmQChoice } from '../constants/predictions';
+import type { VsmQChoice, VsmVersion } from '../constants/predictions';
+import { VSM_VERSION_OPTIONS } from '../constants/predictions';
 import type { FigureLayerOverrides } from '../containers/SidebarContainer';
 import { apiUrl } from '../utils/apiBase';
 import type { SavedFeature } from '../services/savedFeaturesApi';
@@ -59,6 +60,7 @@ export interface VsmLayerEntryDisplay {
   year: number;
   rhIndex: number;
   qChoice: string;
+  version: VsmVersion;
 }
 
 interface SidebarProps {
@@ -71,6 +73,8 @@ interface SidebarProps {
   onVsmRhIndexChange: (rh: number) => void;
   vsmQChoice: VsmQChoice;
   onVsmQChoiceChange: (q: VsmQChoice) => void;
+  vsmVersion: VsmVersion;
+  onVsmVersionChange: (v: VsmVersion) => void;
   // Drawing tools props
   drawingActive: boolean;
   drawingMode: 'tiles' | 'figures' | 'figures_db';
@@ -452,6 +456,8 @@ export function Sidebar({
   onVsmRhIndexChange,
   vsmQChoice,
   onVsmQChoiceChange,
+  vsmVersion,
+  onVsmVersionChange,
   drawingActive,
   drawingMode,
   onGetTiles,
@@ -827,6 +833,34 @@ export function Sidebar({
                   />
                 </Box>
 
+                <FormControl
+                  size="small"
+                  fullWidth
+                  disabled={vsmYear !== 2020}
+                  sx={{ mb: 2 }}
+                >
+                  <InputLabel sx={{ color: ui.fieldLabel }}>Product version</InputLabel>
+                  <Tooltip
+                    title={vsmYear === 2020 ? '' : 'Versioned outputs only exist for 2020'}
+                    placement="top"
+                  >
+                    <Select
+                      label="Product version"
+                      value={vsmVersion}
+                      onChange={(e) => onVsmVersionChange(e.target.value as VsmVersion)}
+                      sx={{
+                        backgroundColor: ui.fieldBg,
+                        color: ui.fieldText,
+                        '& .MuiSvgIcon-root': { color: ui.fieldLabel },
+                      }}
+                    >
+                      {VSM_VERSION_OPTIONS.map((v) => (
+                        <MenuItem key={v} value={v}>{v}</MenuItem>
+                      ))}
+                    </Select>
+                  </Tooltip>
+                </FormControl>
+
                 <SectionLabel ui={ui}>Quantiles</SectionLabel>
                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 1.75 }}>
                   <SelectionChip label="5%" active={vsmQChoice === '5%'} onClick={() => onVsmQChoiceChange('5%')} ui={ui} />
@@ -1001,7 +1035,7 @@ export function Sidebar({
                     }}
                   >
                     <Typography variant="caption" sx={{ flex: 1, color: ui.textMuted, lineHeight: 1.45 }}>
-                      Added: {addedVsmLayers.map((e) => `${e.year} (RH${e.rhIndex}, ${e.qChoice})`).join('; ')}
+                      Added: {addedVsmLayers.map((e) => `${e.year} (RH${e.rhIndex}, ${e.qChoice}${e.year === 2020 ? `, ${e.version}` : ''})`).join('; ')}
                     </Typography>
                     <IconButton size="small" onClick={() => setShowAddedInfo(false)} aria-label="Dismiss" sx={{ color: ui.textMuted, mt: -0.4, mr: -0.4 }}>
                       <CloseIcon fontSize="small" />

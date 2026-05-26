@@ -58,6 +58,8 @@ CR_LOCAL_BASE_PATH = os.environ.get("CR_LOCAL_BASE_PATH", "")
 DIVERSITY_INDICES_LOCAL_PATH = os.environ.get("DIVERSITY_INDICES_LOCAL_PATH", "")
 # Full path template for ALS COGs (contains {tile} placeholder).
 ALS_LOCAL_PATH = os.environ.get("ALS_LOCAL_PATH", "")
+# Full path template for LVIS COGs (contains {tile} placeholder).
+LVIS_LOCAL_PATH = os.environ.get("LVIS_LOCAL_PATH", "")
 GEDI_LOCAL_BASE_PATH = os.environ.get("GEDI_LOCAL_BASE_PATH", "")
 
 # Allowed values for the prediction `version` parameter (matches predictions.py).
@@ -305,6 +307,9 @@ class AuxiliaryDiversityIndicesRequest(BaseModel):
     version: VersionLiteral = "original"
 
 class AuxiliaryALSRequest(BaseModel):
+    tile_name: str
+
+class AuxiliaryLVISRequest(BaseModel):
     tile_name: str
 
 
@@ -584,6 +589,24 @@ async def load_als(request: AuxiliaryALSRequest):
 
 @router.options("/als")
 async def auxiliary_als_options():
+    return {"message": "OK"}
+
+
+@router.post("/lvis")
+async def load_lvis(request: AuxiliaryLVISRequest):
+    if not LVIS_LOCAL_PATH:
+        return {"success": False, "error": "LVIS_LOCAL_PATH env var is not set."}
+    try:
+        candidate = Path(LVIS_LOCAL_PATH.format(tile=request.tile_name))
+        if candidate.is_file():
+            return {"success": True, "url": str(candidate), "tile_name": request.tile_name, "layer_type": "lvis"}
+    except Exception:
+        pass
+    return {"success": False, "error": f"LVIS tile not found for {request.tile_name}."}
+
+
+@router.options("/lvis")
+async def auxiliary_lvis_options():
     return {"message": "OK"}
 
 

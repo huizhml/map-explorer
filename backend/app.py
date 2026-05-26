@@ -16,6 +16,7 @@ import io
 import os
 from PIL import Image
 
+import colormaps_extra  # noqa: F401  side-effect: register 'mako' globally
 from routes.sentinel2 import router as sentinel2_router
 from routes.predictions import router as predictions_router
 from routes.auxiliary import router as auxiliary_router
@@ -33,7 +34,7 @@ _ENV_KEYS = [
     "PREDICTIONS_LOCAL_VRT_PATH_TEMPLATE",
     "DISTANCE_MAPS_LOCAL_BASE_PATH", "S2_GRID_LOCAL_PATH",
     "CR_LOCAL_BASE_PATH",
-    "DIVERSITY_INDICES_LOCAL_PATH", "ALS_LOCAL_PATH",
+    "DIVERSITY_INDICES_LOCAL_PATH", "ALS_LOCAL_PATH", "LVIS_LOCAL_PATH",
     "GEDI_LOCAL_BASE_PATH",
     "SAVED_FEATURE_IMAGES_ROOT",
     "NATURALNESS_REF_DATA_PATH",
