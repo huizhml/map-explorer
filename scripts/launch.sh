@@ -235,10 +235,91 @@ setup_local_forward() {
   fi
 }
 
+# ======================== LITESTREAM (DB BACKUP) ========================
+#
+# Replicates backend/data/saved_features.db to Cloudflare R2 (see
+# backend/ops/litestream/). Lifecycle is coupled to the backend: started in
+# launch_backend, stopped in stop_all. Runs on the gateway (not the compute
+# node) — gateway has outbound internet, the DB file is on shared $HOME so
+# reading from the gateway works.
+
+start_litestream() {
+  local pid_file="$STATE_DIR/litestream_pid"
+  stop_litestream >/dev/null 2>&1 || true
+
+  log "Starting litestream backup on $SSH_HOST..."
+  local remote_pid
+  remote_pid=$(ssh "$SSH_HOST" \
+    "nohup bash ~/$PROJECT_DIR/backend/ops/litestream/supervise.sh >/dev/null 2>&1 & echo \$!")
+
+  if [[ -z "$remote_pid" ]]; then
+    warn "Litestream start failed"
+    return 1
+  fi
+
+  echo "$remote_pid" > "$pid_file"
+  sleep 2
+  if ssh "$SSH_HOST" "kill -0 $remote_pid 2>/dev/null"; then
+    ok "Litestream running (remote PID $remote_pid) — log: ~/litestream.log on $SSH_HOST"
+  else
+    warn "Litestream exited immediately — see ~/litestream.log on $SSH_HOST"
+    rm -f "$pid_file"
+    return 1
+  fi
+}
+
+stop_litestream() {
+  local pid_file="$STATE_DIR/litestream_pid"
+  [[ -f "$pid_file" ]] || return 0
+  local pid
+  pid=$(cat "$pid_file")
+  if [[ -n "$pid" ]] && check_master "$SSH_HOST" 2>/dev/null; then
+    ssh "$SSH_HOST" "kill $pid 2>/dev/null; pkill -f 'litestream replicate' 2>/dev/null" || true
+    ok "Stopped litestream (was PID $pid)"
+  fi
+  rm -f "$pid_file"
+}
+
+# If the DB file is missing on the remote, attempt to restore it from R2
+# BEFORE uvicorn starts. Otherwise FastAPI would create a new empty DB,
+# litestream would start a new R2 generation, and the old data would silently
+# age out of retention.
+ensure_db_present() {
+  local db="~/$PROJECT_DIR/backend/data/saved_features.db"
+  local lsctl="~/$PROJECT_DIR/backend/ops/litestream/lsctl.sh"
+
+  log "Checking DB on $SSH_HOST..."
+  if ssh "$SSH_HOST" "test -f $db"; then
+    ok "DB present"
+    return 0
+  fi
+
+  warn "DB file missing — checking R2 for backups"
+  local count
+  count=$(ssh "$SSH_HOST" "bash $lsctl snapshots $db 2>/dev/null | tail -n +2 | grep -c ." 2>/dev/null || echo 0)
+  count=${count:-0}
+
+  if [[ "$count" -gt 0 ]]; then
+    log "Found $count snapshot(s) in R2 — restoring..."
+    if ssh "$SSH_HOST" "mkdir -p ~/$PROJECT_DIR/backend/data && bash $lsctl restore -o $db $db"; then
+      ok "DB restored from R2"
+    else
+      die "Restore failed. Fix R2 access (~/.litestream.env) or create DB manually before launching."
+    fi
+  else
+    warn "No R2 snapshots found — first run? uvicorn will create a fresh empty DB"
+  fi
+}
+
 # ======================== SERVICES ========================
 
 launch_backend() {
   step "Backend"
+
+  # Restore DB from R2 if it's missing — must happen BEFORE uvicorn starts,
+  # otherwise FastAPI's CREATE TABLE IF NOT EXISTS would silently create an
+  # empty DB and litestream would lose track of the old generation.
+  ensure_db_present
 
   if ! submit_slurm_job "dex-backend" "32G" "16"; then
     fail "Backend allocation failed"
@@ -268,6 +349,9 @@ launch_backend() {
   else
     warn "Backend not responding yet — may need a moment to start"
   fi
+
+  # Start continuous DB backup to R2
+  start_litestream
 }
 
 launch_frontend() {
@@ -308,6 +392,10 @@ launch_frontend() {
 
 stop_all() {
   step "Tearing down"
+
+  # Stop litestream first so it flushes the final WAL frames before uvicorn
+  # (the writer) exits.
+  stop_litestream
 
   # Kill persistent srun sessions
   for pidfile in "$STATE_DIR"/proc_*_pid; do
@@ -422,6 +510,20 @@ show_status() {
       echo -e "    ${RED}●${RESET} $service — inactive"
     fi
   done
+
+  echo ""
+  echo -e "  ${BOLD}DB Backup (Litestream)${RESET}"
+  local ls_pid_file="$STATE_DIR/litestream_pid"
+  if [[ -f "$ls_pid_file" ]] && check_master "$SSH_HOST" 2>/dev/null; then
+    local ls_pid=$(cat "$ls_pid_file")
+    if ssh "$SSH_HOST" "kill -0 $ls_pid 2>/dev/null"; then
+      echo -e "    ${GREEN}●${RESET} litestream — running (remote PID $ls_pid)"
+    else
+      echo -e "    ${RED}●${RESET} litestream — PID file stale, not running"
+    fi
+  else
+    echo -e "    ${DIM}●${RESET} ${DIM}litestream — not running${RESET}"
+  fi
 
   echo ""
   echo -e "  ${BOLD}End-to-end${RESET}"
