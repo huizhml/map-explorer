@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +28,7 @@ from .db import (
 from .models import (
     FigureLayerSpec,
     GeometryLookupRequest,
+    RefreshAreaImageLayerRequest,
     RefreshAreaImagesRequest,
     RefreshPredictionSnapshotRequest,
     SaveAreaImagesRequest,
@@ -265,6 +267,13 @@ def _attach_feature_popup_snapshots(
                 "q_index": pred_q_index,
                 "year": pred_year,
                 "version": pred_version,
+                # MGRS tile + resolved source TIF path/URL so the saved
+                # record can locate the underlying tile file directly,
+                # without re-running the path resolver. `tile_file_path`
+                # is a local absolute path for 2020 (PREDICTIONS_LOCAL_PATH)
+                # and the COG URL otherwise.
+                "tile_name": pred_snapshot.get("tile_name"),
+                "tile_file_path": pred_snapshot.get("tile_file_path"),
             }
         else:
             metadata_payload["prediction_snapshot_status"] = "unavailable"
@@ -382,6 +391,35 @@ def _attach_vertical_profile(
         metadata_payload["vertical_profile_error"] = f"vertical_profile_exception: {exc}"[:300]
 
 
+def _collect_prediction_snapshots(image_exports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Pull tile-level RH prediction provenance out of `image_exports` into a
+    flat list suitable for ``metadata.prediction_snapshots``.
+
+    Each per-image entry produced by `_record_export(... tile_info=...)` in
+    `area_images.py` carries `tile_file_path` (and `tile_file_path_low` for
+    VSM interval layers). Surfacing those at the metadata level means the
+    saved feature can locate its underlying RH COG without traversing
+    plot_data.image_exports — the same affordance the point-save path
+    provides via `metadata.prediction_snapshot`.
+    """
+    snapshots: List[Dict[str, Any]] = []
+    for entry in image_exports:
+        path = entry.get("tile_file_path")
+        if not path:
+            continue
+        snapshot = {
+            "layer_id": entry.get("layer_id"),
+            "layer_name": entry.get("layer_name"),
+            "tile_name": entry.get("tile_name"),
+            "tile_file_path": path,
+            "year": entry.get("year"),
+        }
+        if entry.get("tile_file_path_low"):
+            snapshot["tile_file_path_low"] = entry.get("tile_file_path_low")
+        snapshots.append(snapshot)
+    return snapshots
+
+
 @router.post("/saved-features/area-images")
 async def create_area_images_feature(payload: SaveAreaImagesRequest) -> Dict[str, Any]:
     if len(payload.extent_3857) != 4:
@@ -440,6 +478,7 @@ async def create_area_images_feature(payload: SaveAreaImagesRequest) -> Dict[str
                     "format": "png",
                     "mime_type": "image/png",
                     "meta": sat_meta,
+                    "rendered_at": datetime.now(timezone.utc).isoformat(),
                 })
         except Exception as exc:
             render_errors.append({
@@ -477,6 +516,9 @@ async def create_area_images_feature(payload: SaveAreaImagesRequest) -> Dict[str
         "image_session_dir": session_dir_name,
         "errors": render_errors,
     }
+    prediction_snapshots = _collect_prediction_snapshots(image_exports)
+    if prediction_snapshots:
+        metadata["prediction_snapshots"] = prediction_snapshots
     if payload.tags:
         cleaned = normalize_tags(payload.tags)
         if cleaned:
@@ -706,7 +748,8 @@ async def refresh_saved_feature_area_images(
 
     # Prefer the caller-supplied extent (rare), then the feature's saved
     # extent_3857 (the common case for area_images), then bail.
-    extent_source = payload.extent_3857 or plot_data_payload.get("extent_3857") or metadata_payload.get("extent_3857")
+    stored_extent = plot_data_payload.get("extent_3857") or metadata_payload.get("extent_3857")
+    extent_source = payload.extent_3857 or stored_extent
     if not isinstance(extent_source, list) or len(extent_source) != 4:
         raise HTTPException(
             status_code=400,
@@ -717,11 +760,22 @@ async def refresh_saved_feature_area_images(
     except Exception:
         raise HTTPException(status_code=400, detail="Saved feature has invalid extent_3857.")
 
+    # The saved polygon for area_images is always a rectangular ring derived
+    # from extent_3857. When the caller supplies a different extent (e.g. the
+    # user moved/reshaped the polygon in the sidebar), rewrite the geometry
+    # alongside the new imagery so "Jump to feature" highlights the new spot.
+    geometry_changed = False
+    if payload.extent_3857 is not None and isinstance(stored_extent, list) and len(stored_extent) == 4:
+        try:
+            if [float(v) for v in stored_extent] != extent_3857:
+                geometry_changed = True
+        except Exception:
+            geometry_changed = True  # malformed stored extent — treat caller's as the new truth
+
     # Optionally crop to a square on the shortest side, centred on the original
     # extent. Done in EPSG:3857 (projected metres) so the square is true on the
     # ground, not just in lon/lat degrees. The geometry is rewritten further
     # below so the saved polygon matches the imagery.
-    geometry_changed = False
     if payload.square:
         x0, y0, x1, y1 = extent_3857
         cx = (x0 + x1) / 2.0
@@ -736,7 +790,7 @@ async def refresh_saved_feature_area_images(
         squared = [cx - half, cy - half, cx + half, cy + half]
         if squared != extent_3857:
             extent_3857 = squared
-            geometry_changed = True
+            geometry_changed = True  # square pass mutated the extent
 
     xmin, ymin, xmax, ymax = extent_3857
     wgs_bounds = transform_bounds("EPSG:3857", "EPSG:4326", xmin, ymin, xmax, ymax)
@@ -809,6 +863,7 @@ async def refresh_saved_feature_area_images(
                     "format": "png",
                     "mime_type": "image/png",
                     "meta": sat_meta,
+                    "rendered_at": datetime.now(timezone.utc).isoformat(),
                 })
         except Exception as exc:
             render_errors.append({
@@ -843,6 +898,11 @@ async def refresh_saved_feature_area_images(
     metadata_payload["image_root"] = str(IMAGE_ROOT)
     metadata_payload["image_session_dir"] = session_dir_name
     metadata_payload["errors"] = render_errors
+    prediction_snapshots = _collect_prediction_snapshots(image_exports)
+    if prediction_snapshots:
+        metadata_payload["prediction_snapshots"] = prediction_snapshots
+    else:
+        metadata_payload.pop("prediction_snapshots", None)
 
     with db_connect() as conn:
         if geometry_changed:
@@ -885,6 +945,173 @@ async def refresh_saved_feature_area_images(
                     feature_id,
                 ),
             )
+        conn.commit()
+        updated_row = conn.execute(
+            f"SELECT {FEATURE_COLUMNS} FROM saved_features WHERE id = ?",
+            (feature_id,),
+        ).fetchone()
+
+    if updated_row is None:
+        raise HTTPException(status_code=500, detail="Failed to load refreshed feature")
+    return {"feature": row_to_feature(updated_row), "errors": render_errors}
+
+
+@router.post("/saved-features/{feature_id}/refresh-area-image-layer")
+async def refresh_saved_feature_area_image_layer(
+    feature_id: int,
+    payload: RefreshAreaImageLayerRequest,
+) -> Dict[str, Any]:
+    """Re-render a single layer in a saved area_images feature with new
+    visualization parameters and persist the overrides back to layer_specs.
+
+    Unlike `refresh-area-images` (which re-renders everything from the stored
+    specs), this endpoint touches exactly one layer — useful when the user
+    wants to retune e.g. an RH98 layer's `rescale_min`/`rescale_max` without
+    re-rendering all the other images attached to the feature.
+    """
+    with db_connect() as conn:
+        row = conn.execute(
+            f"SELECT {FEATURE_COLUMNS} FROM saved_features WHERE id = ?",
+            (feature_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Saved feature not found")
+
+    metadata_payload: Dict[str, Any] = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+    if not isinstance(metadata_payload, dict):
+        metadata_payload = {}
+    plot_data_payload: Dict[str, Any] = json.loads(row["plot_data_json"]) if row["plot_data_json"] else {}
+    if not isinstance(plot_data_payload, dict):
+        plot_data_payload = {}
+
+    stored_specs = plot_data_payload.get("layer_specs")
+    if not isinstance(stored_specs, list) or len(stored_specs) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This feature has no stored layer specs (it was saved before "
+                "they were persisted). Re-save the area to enable in-place "
+                "per-layer edits."
+            ),
+        )
+
+    target_idx = next(
+        (
+            i for i, s in enumerate(stored_specs)
+            if isinstance(s, dict) and s.get("layer_id") == payload.layer_id
+        ),
+        -1,
+    )
+    if target_idx < 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"layer_id {payload.layer_id!r} not found in this feature's layer_specs",
+        )
+
+    # Patch the stored spec with only the fields the caller explicitly sent so
+    # render-time defaults (per-band overrides, etc.) stay intact.
+    target_spec: Dict[str, Any] = dict(stored_specs[target_idx])
+    if payload.rescale_min is not None:
+        target_spec["rescale_min"] = float(payload.rescale_min)
+    if payload.rescale_max is not None:
+        target_spec["rescale_max"] = float(payload.rescale_max)
+    if payload.colormap is not None:
+        target_spec["colormap"] = payload.colormap
+    if payload.include_colorbar is not None:
+        target_spec["include_colorbar"] = bool(payload.include_colorbar)
+    if payload.include_scale_bar is not None:
+        target_spec["include_scale_bar"] = bool(payload.include_scale_bar)
+
+    try:
+        layer_obj = FigureLayerSpec(**target_spec)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid layer spec: {exc}")
+
+    stored_extent = plot_data_payload.get("extent_3857") or metadata_payload.get("extent_3857")
+    if not isinstance(stored_extent, list) or len(stored_extent) != 4:
+        raise HTTPException(
+            status_code=400,
+            detail="Saved feature has no extent_3857; cannot refresh image layer.",
+        )
+    try:
+        extent_3857 = [float(v) for v in stored_extent]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Saved feature has invalid extent_3857.")
+
+    xmin, ymin, xmax, ymax = extent_3857
+    wgs_bounds = transform_bounds("EPSG:3857", "EPSG:4326", xmin, ymin, xmax, ymax)
+    center_lon = (wgs_bounds[0] + wgs_bounds[2]) / 2
+    center_lat = (wgs_bounds[1] + wgs_bounds[3]) / 2
+    location_tag = f"{center_lat:.4f}_{center_lon:.4f}".replace("-", "m")
+
+    stored_opts = plot_data_payload.get("render_options") or {}
+    if not isinstance(stored_opts, dict):
+        stored_opts = {}
+    resolved_format = (
+        stored_opts.get("format")
+        or metadata_payload.get("format")
+        or "png"
+    )
+
+    # Reuse the existing session directory so the untouched images stay valid;
+    # allocate a fresh one only for legacy saves that never had one.
+    session_dir_name = plot_data_payload.get("image_session_dir")
+    if isinstance(session_dir_name, str) and (IMAGE_ROOT / session_dir_name).is_dir():
+        session_dir = IMAGE_ROOT / session_dir_name
+    else:
+        session_dir, session_dir_name = new_session_dir()
+
+    # Delete previous files for this layer_id so a swap (e.g. different band
+    # filenames) doesn't leave orphans on disk.
+    for item in existing_image_exports(plot_data_payload):
+        if item.get("layer_id") == payload.layer_id:
+            unlink_export_file(item.get("relative_path"))
+
+    render_payload = SaveAreaImagesRequest(
+        extent_3857=extent_3857,
+        format=resolved_format,
+        layers=[layer_obj],
+    )
+    new_exports, render_errors = render_area_images(
+        render_payload, session_dir, session_dir_name, location_tag,
+    )
+    if not new_exports:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No image was generated. Errors: {render_errors[:3]}",
+        )
+
+    # Replace *all* entries with this layer_id (covers multi-band layers) and
+    # keep the order stable for everything else so the gallery doesn't reshuffle.
+    remaining = [
+        item for item in existing_image_exports(plot_data_payload)
+        if item.get("layer_id") != payload.layer_id
+    ]
+    plot_data_payload["image_exports"] = remaining + new_exports
+    plot_data_payload["image_session_dir"] = session_dir_name
+
+    new_specs = list(stored_specs)
+    new_specs[target_idx] = target_spec
+    plot_data_payload["layer_specs"] = new_specs
+
+    # The tile-level provenance flattened into metadata.prediction_snapshots is
+    # derived from image_exports; recompute it so a per-layer edit on an RH
+    # layer keeps it consistent with the new entries.
+    prediction_snapshots = _collect_prediction_snapshots(plot_data_payload["image_exports"])
+    if prediction_snapshots:
+        metadata_payload["prediction_snapshots"] = prediction_snapshots
+    else:
+        metadata_payload.pop("prediction_snapshots", None)
+
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE saved_features SET metadata_json = ?, plot_data_json = ? WHERE id = ?",
+            (
+                json.dumps(metadata_payload) if metadata_payload else None,
+                json.dumps(plot_data_payload),
+                feature_id,
+            ),
+        )
         conn.commit()
         updated_row = conn.execute(
             f"SELECT {FEATURE_COLUMNS} FROM saved_features WHERE id = ?",
@@ -1009,6 +1236,8 @@ async def refresh_saved_feature_prediction_snapshot(
             "q_index": pred_q_index,
             "year": pred_year,
             "version": pred_version,
+            "tile_name": pred_snapshot.get("tile_name"),
+            "tile_file_path": pred_snapshot.get("tile_file_path"),
         }
         # Echo the visualization actually used so the saved metadata reflects
         # the current render (useful when the user later wants to compare or

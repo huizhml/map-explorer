@@ -17,6 +17,7 @@ import io
 import math
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -354,10 +355,19 @@ def _extract_prediction_rh98_snapshot(
             "year": year,
             "q_index": q_index,
             "tile_name": resolved_tile,
+            # Resolved source TIF the snapshot was extracted from. Local
+            # absolute path for 2020, COG URL otherwise. Persisted so the
+            # saved record can re-open the underlying tile without re-running
+            # the resolver (which depends on env templates that may change).
+            "tile_file_path": path_or_url,
             "version": version,
             "rescale_min": lo,
             "rescale_max": hi,
             "colormap": cmap_name,
+            # Per-render timestamp used by the frontend as a cache-buster (the
+            # output filename is stable, so the URL is identical across re-renders
+            # — React + the browser would otherwise show the stale image).
+            "rendered_at": datetime.now(timezone.utc).isoformat(),
         }, None
     except Exception as exc:
         return None, f"{type(exc).__name__}:{exc}"

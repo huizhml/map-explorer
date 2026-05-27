@@ -16,6 +16,9 @@ import OLPoint from 'ol/geom/Point';
 import OLLineString from 'ol/geom/LineString';
 import OLPolygon from 'ol/geom/Polygon';
 
+import PointerInteraction from 'ol/interaction/Pointer';
+import { containsCoordinate } from 'ol/extent';
+
 import { unByKey } from 'ol/Observable';
 import { deserialize } from 'flatgeobuf/lib/mjs/ol';
 import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore';
@@ -31,6 +34,7 @@ import {
   updateSavedFeature,
   refreshPredictionSnapshot,
   refreshAreaImages,
+  refreshAreaImageLayer,
   type SavedFeature,
 } from '../services/savedFeaturesApi';
 import type { SavedFeatureDialogPrefill } from '../components/SavedFeatureDialog';
@@ -209,9 +213,31 @@ export function SidebarContainer() {
   const [refreshPredictionSnapshotError, setRefreshPredictionSnapshotError] = React.useState<{ id: number; message: string } | null>(null);
   const [refreshingAreaImagesId, setRefreshingAreaImagesId] = React.useState<number | null>(null);
   const [refreshAreaImagesError, setRefreshAreaImagesError] = React.useState<{ id: number; message: string } | null>(null);
+  // Per-image edit popover state. Distinct from the full-area-images refresh
+  // above so the spinner can target a single layer_id inside an open plot viewer.
+  const [updatingImageLayerId, setUpdatingImageLayerId] = React.useState<string | null>(null);
+  const [updateImageLayerError, setUpdateImageLayerError] = React.useState<{ layer_id: string; message: string } | null>(null);
   const [savedFeaturesLoading, setSavedFeaturesLoading] = React.useState(false);
   const [savedFeaturesError, setSavedFeaturesError] = React.useState<string | null>(null);
   const highlightLayerRef = React.useRef<VectorLayer<VectorSource> | null>(null);
+
+  // ---- Edit-shape mode (move/reshape a saved Polygon, then re-render) -----
+  // Only the editable polygon's *bbox in EPSG:3857* is sent to the backend.
+  // The saved geometry for area_images is always a rectangle derived from
+  // that bbox, so reshaping via Modify and translating via Translate are
+  // both lossless: the backend rewrites the ring from the new extent.
+  const editShapeLayerRef = React.useRef<VectorLayer<VectorSource> | null>(null);
+  const editShapeFeatureRef = React.useRef<OLFeature | null>(null);
+  // Global Shift tracker read by the rect-edit custom interaction. OL's
+  // synthesized pointerdrag events sometimes lose the modifier on the
+  // wrapped DOM event, so a direct window-level listener is the reliable
+  // way to know whether Shift is currently held.
+  const shiftHeldRef = React.useRef(false);
+  const editShapeInteractionsRef = React.useRef<Array<PointerInteraction>>([]);
+  const [editingGeometryFeatureId, setEditingGeometryFeatureId] = React.useState<number | null>(null);
+  const [editingGeometryDirty, setEditingGeometryDirty] = React.useState(false);
+  const [editingGeometrySaving, setEditingGeometrySaving] = React.useState(false);
+  const [editingGeometryError, setEditingGeometryError] = React.useState<string | null>(null);
 
   // Zustand store
   const {
@@ -1581,10 +1607,25 @@ export function SidebarContainer() {
   const exportableFigureLayers = React.useMemo(() => {
     return layers
       .filter((layer) => {
-        if (!layer.metadata?.url) return false;
+        const meta = layer.metadata ?? {};
         // Earth Engine layers expose their `{z}/{x}/{y}` tile URL as metadata.url
         // and are rendered server-side by stitching those tiles (imagery only).
-        return layer.type === 'prediction' || layer.type === 'sentinel2' || layer.type === 'earthengine';
+        const isSupportedType =
+          layer.type === 'prediction' || layer.type === 'sentinel2' || layer.type === 'earthengine';
+        if (!isSupportedType) return false;
+        if (meta.url) return true;
+        // Auto-loaded "Global …" prediction layers don't get a metadata.url
+        // until the /predictions/mosaic-url fetch resolves — and that fetch
+        // fails silently when the per-(rh, q, version) mosaic isn't built on
+        // disk (or PREDICTIONS_MOSAIC_REMOTE_URL is unset). Surface the layer
+        // anyway when it has enough fields to resolve a per-tile COG URL at
+        // save time via /predictions/load.
+        return (
+          layer.type === 'prediction'
+          && typeof meta.rhIndex === 'number'
+          && meta.qIndex !== undefined
+          && typeof meta.year === 'number'
+        );
       })
       .map((layer) => {
         const meta = layer.metadata ?? {};
@@ -1596,7 +1637,9 @@ export function SidebarContainer() {
           name: layer.name,
           layerType: String(layer.type),
           layerSubType: meta.layerType ? String(meta.layerType) : undefined,
-          url: String(meta.url),
+          // Empty string when the URL must be resolved at save time (see
+          // `resolveAreaPredictionUrl` in handleSaveFiguresToDb).
+          url: typeof meta.url === 'string' ? meta.url : '',
           // For VSM interval layers `url` is the high single-Q and `urlLow` is
           // the low single-Q — the backend subtracts them when both are set.
           urlLow: typeof meta.urlLow === 'string' ? meta.urlLow : undefined,
@@ -1607,6 +1650,10 @@ export function SidebarContainer() {
           selectedBand,
           rgbBands,
           year: typeof meta.year === 'number' ? meta.year : undefined,
+          // Resolution-relevant fields for prediction layers without a baked URL.
+          rhIndex: typeof meta.rhIndex === 'number' ? meta.rhIndex : undefined,
+          qIndex: meta.qIndex,
+          version: typeof meta.version === 'string' ? meta.version : undefined,
         };
       });
   }, [layers]);
@@ -1706,6 +1753,311 @@ export function SidebarContainer() {
     setDrawingActive(next);
   };
 
+  // Tear down any active edit-shape session: removes Translate/Modify
+  // interactions and the editable polygon layer from the map.
+  const cleanupEditShape = React.useCallback(() => {
+    if (!map) return;
+    for (const i of editShapeInteractionsRef.current) {
+      map.removeInteraction(i);
+    }
+    editShapeInteractionsRef.current = [];
+    if (editShapeLayerRef.current) {
+      map.removeLayer(editShapeLayerRef.current);
+      editShapeLayerRef.current = null;
+    }
+    editShapeFeatureRef.current = null;
+    // Reset any resize-affordance cursor we set via handleMoveEvent so the
+    // map doesn't keep showing 'move'/'nwse-resize' after edit mode ends.
+    const targetEl = map.getTargetElement() as HTMLElement | null;
+    if (targetEl) targetEl.style.cursor = '';
+  }, [map]);
+
+  const handleStartEditGeometry = React.useCallback((feature: SavedFeature) => {
+    if (!map) return;
+    if (feature.geometry.type !== 'Polygon') return;
+
+    cleanupEditShape();
+    // The non-interactive jump-to-feature highlight would visually duplicate
+    // the editable polygon — drop it for the duration of the edit session.
+    if (highlightLayerRef.current) {
+      map.removeLayer(highlightLayerRef.current);
+      highlightLayerRef.current = null;
+    }
+
+    // Normalize the loaded polygon to its bounding-box rectangle. Older saves
+    // (before the backend rewrote the ring on extent change) can still be
+    // non-rectangular even though the area_images render pipeline only ever
+    // uses the bbox — by snapping on entry, the user always edits a rectangle.
+    const coords = feature.geometry.coordinates as [number, number][][];
+    const projectedRing = coords[0].map((c) => fromLonLat(c));
+    const tmpPoly = new OLPolygon([projectedRing]);
+    const [x0Init, y0Init, x1Init, y1Init] = tmpPoly.getExtent();
+    const buildRectRing = (x0: number, y0: number, x1: number, y1: number): [number, number][] => [
+      [x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0],
+    ];
+    const poly = new OLPolygon([buildRectRing(x0Init, y0Init, x1Init, y1Init)]);
+    const olFeature = new OLFeature({ geometry: poly });
+
+    const source = new VectorSource({ features: [olFeature] });
+    const layer = new VectorLayer({
+      source,
+      // Polygon stays rectangular (normalized on load, constrained via Extent
+      // during edits), so its own stroke doubles as the visible edit box —
+      // no need for the Extent interaction to draw its own outline on top.
+      style: new Style({
+        stroke: new Stroke({ color: 'rgba(255, 90, 30, 0.95)', width: 3, lineDash: [6, 4] }),
+        fill: new Fill({ color: 'rgba(255, 90, 30, 0.15)' }),
+      }),
+      // VectorLayer defaults to `false` for both flags, which means the
+      // rectangle would freeze visually for the duration of any drag — the
+      // setCoordinates calls from `extentchanged` keep updating the data,
+      // but the layer doesn't repaint until the user releases. Opting in
+      // makes the resize feel live instead of "stuck until you let go".
+      updateWhileInteracting: true,
+      updateWhileAnimating: true,
+      zIndex: 9999,
+    });
+    map.addLayer(layer);
+
+    // Single custom interaction owns the whole rectangle: it decides on
+    // mousedown whether the click hits a corner, an edge, the body, or
+    // nothing, then drives all subsequent movement off the starting
+    // extent + cursor delta. Compared to layering Translate + Extent (which
+    // fight over the same pointer events and have asymmetric snap
+    // tolerances), this one-handler approach makes the resize/move feel
+    // continuous: a single drag stays in whichever mode it started in,
+    // until the user releases the mouse.
+    const HANDLE_HIT_PX = 14;
+    const pointToSegmentDistPx = (
+      p: [number, number],
+      a: [number, number],
+      b: [number, number],
+    ): number => {
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const len2 = dx * dx + dy * dy;
+      const t = len2 === 0
+        ? 0
+        : Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2));
+      const cx = a[0] + t * dx;
+      const cy = a[1] + t * dy;
+      return Math.hypot(p[0] - cx, p[1] - cy);
+    };
+
+    type RectMode = 'move' | 'tl' | 'tr' | 'bl' | 'br' | 't' | 'r' | 'b' | 'l';
+    /** Active drag mode, or null when not dragging. */
+    let mode: RectMode | null = null;
+    /** Cursor position in map coords at the start of the current drag. */
+    let dragAnchor: [number, number] | null = null;
+    /** Extent (EPSG:3857) at the start of the current drag — the fixed
+     *  reference for every move/resize calculation in this gesture. */
+    let dragStartExtent: [number, number, number, number] | null = null;
+
+    /** Decide which mode this pointer position would target. Returns null
+     *  when the cursor is outside the rectangle and far from any edge — in
+     *  that case the event falls through to default map interactions. */
+    const detectMode = (
+      px: [number, number],
+      coord: [number, number],
+      m: any,
+    ): RectMode | null => {
+      const ext = poly.getExtent() as [number, number, number, number];
+      const [x0, y0, x1, y1] = ext;
+      const tl = m.getPixelFromCoordinate([x0, y1]) as [number, number];
+      const tr = m.getPixelFromCoordinate([x1, y1]) as [number, number];
+      const bl = m.getPixelFromCoordinate([x0, y0]) as [number, number];
+      const br = m.getPixelFromCoordinate([x1, y0]) as [number, number];
+      const near = (a: [number, number], b: [number, number]) =>
+        Math.hypot(a[0] - b[0], a[1] - b[1]) < HANDLE_HIT_PX;
+      if (near(px, tl)) return 'tl';
+      if (near(px, tr)) return 'tr';
+      if (near(px, bl)) return 'bl';
+      if (near(px, br)) return 'br';
+      const dT = pointToSegmentDistPx(px, tl, tr);
+      const dR = pointToSegmentDistPx(px, tr, br);
+      const dB = pointToSegmentDistPx(px, bl, br);
+      const dL = pointToSegmentDistPx(px, tl, bl);
+      const minEdge = Math.min(dT, dR, dB, dL);
+      if (minEdge < HANDLE_HIT_PX) {
+        if (minEdge === dT) return 't';
+        if (minEdge === dR) return 'r';
+        if (minEdge === dB) return 'b';
+        return 'l';
+      }
+      if (containsCoordinate(ext, coord)) return 'move';
+      return null;
+    };
+
+    const cursorFor = (m: RectMode): string => {
+      switch (m) {
+        case 'tl': case 'br': return 'nwse-resize';
+        case 'tr': case 'bl': return 'nesw-resize';
+        case 't': case 'b': return 'ns-resize';
+        case 'l': case 'r': return 'ew-resize';
+        case 'move': return 'move';
+      }
+    };
+
+    const rectEdit = new PointerInteraction({
+      handleDownEvent: (event: any) => {
+        const m = detectMode(event.pixel, event.coordinate, event.map);
+        if (!m) return false;  // pass to default map pan
+        mode = m;
+        dragAnchor = [event.coordinate[0], event.coordinate[1]];
+        const ext = poly.getExtent();
+        dragStartExtent = [ext[0], ext[1], ext[2], ext[3]];
+        return true;
+      },
+      handleDragEvent: (event: any) => {
+        if (!mode || !dragAnchor || !dragStartExtent) return;
+        const [sx0, sy0, sx1, sy1] = dragStartExtent;
+        const cx = event.coordinate[0];
+        const cy = event.coordinate[1];
+        const dx = cx - dragAnchor[0];
+        const dy = cy - dragAnchor[1];
+        // Shift-modifier policy:
+        //   corner drag → square anchored at the opposite corner
+        //   edge drag   → square; the perpendicular dimension grows symmetrically around the original midline
+        //   body move   → translation locked to the dominant axis (horizontal OR vertical only)
+        const shift = shiftHeldRef.current
+          || !!(event.originalEvent && event.originalEvent.shiftKey);
+        let nx0 = sx0, ny0 = sy0, nx1 = sx1, ny1 = sy1;
+        switch (mode) {
+          case 'move': {
+            let mdx = dx, mdy = dy;
+            if (shift) {
+              if (Math.abs(dx) >= Math.abs(dy)) mdy = 0;
+              else mdx = 0;
+            }
+            nx0 = sx0 + mdx; ny0 = sy0 + mdy;
+            nx1 = sx1 + mdx; ny1 = sy1 + mdy;
+            break;
+          }
+          case 'tl': nx0 = cx; ny1 = cy; break;
+          case 'tr': nx1 = cx; ny1 = cy; break;
+          case 'bl': nx0 = cx; ny0 = cy; break;
+          case 'br': nx1 = cx; ny0 = cy; break;
+          case 't':  ny1 = cy; break;
+          case 'r':  nx1 = cx; break;
+          case 'b':  ny0 = cy; break;
+          case 'l':  nx0 = cx; break;
+        }
+        if (shift && (mode === 'tl' || mode === 'tr' || mode === 'bl' || mode === 'br')) {
+          // Anchor is the corner diagonally opposite the dragged one.
+          const anchorX = (mode === 'tl' || mode === 'bl') ? sx1 : sx0;
+          const anchorY = (mode === 'tl' || mode === 'tr') ? sy0 : sy1;
+          const dxA = cx - anchorX;
+          const dyA = cy - anchorY;
+          const size = Math.max(Math.abs(dxA), Math.abs(dyA));
+          const signX = Math.sign(dxA) || 1;
+          const signY = Math.sign(dyA) || 1;
+          const cornerX = anchorX + signX * size;
+          const cornerY = anchorY + signY * size;
+          if (mode === 'tl') { nx0 = cornerX; ny1 = cornerY; }
+          if (mode === 'tr') { nx1 = cornerX; ny1 = cornerY; }
+          if (mode === 'bl') { nx0 = cornerX; ny0 = cornerY; }
+          if (mode === 'br') { nx1 = cornerX; ny0 = cornerY; }
+        } else if (shift && (mode === 't' || mode === 'b')) {
+          const midX = (sx0 + sx1) / 2;
+          const halfW = Math.abs(ny1 - ny0) / 2;
+          nx0 = midX - halfW;
+          nx1 = midX + halfW;
+        } else if (shift && (mode === 'l' || mode === 'r')) {
+          const midY = (sy0 + sy1) / 2;
+          const halfH = Math.abs(nx1 - nx0) / 2;
+          ny0 = midY - halfH;
+          ny1 = midY + halfH;
+        }
+        // Normalize in case the user drags a side past the opposite edge.
+        const fx0 = Math.min(nx0, nx1);
+        const fx1 = Math.max(nx0, nx1);
+        const fy0 = Math.min(ny0, ny1);
+        const fy1 = Math.max(ny0, ny1);
+        poly.setCoordinates([buildRectRing(fx0, fy0, fx1, fy1)]);
+        setEditingGeometryDirty(true);
+      },
+      handleMoveEvent: (event: any) => {
+        // Idle hover: surface the affordance via the cursor.
+        const m = detectMode(event.pixel, event.coordinate, event.map);
+        const targetEl = event.map.getTargetElement() as HTMLElement | null;
+        if (!targetEl) return;
+        targetEl.style.cursor = m ? cursorFor(m) : '';
+      },
+      handleUpEvent: () => {
+        mode = null;
+        dragAnchor = null;
+        dragStartExtent = null;
+        return false;
+      },
+    });
+
+    map.addInteraction(rectEdit);
+
+    editShapeLayerRef.current = layer;
+    editShapeFeatureRef.current = olFeature;
+    editShapeInteractionsRef.current = [rectEdit];
+
+    setEditingGeometryFeatureId(feature.id);
+    setEditingGeometryDirty(false);
+    setEditingGeometryError(null);
+
+    map.getView().fit(source.getExtent(), {
+      padding: [80, 80, 80, 80],
+      duration: 500,
+      maxZoom: 16,
+    });
+  }, [map, cleanupEditShape]);
+
+  const handleCancelEditGeometry = React.useCallback(() => {
+    cleanupEditShape();
+    setEditingGeometryFeatureId(null);
+    setEditingGeometryDirty(false);
+    setEditingGeometryError(null);
+  }, [cleanupEditShape]);
+
+  const handleSaveEditGeometry = React.useCallback(async () => {
+    const featureId = editingGeometryFeatureId;
+    const olFeature = editShapeFeatureRef.current;
+    if (featureId == null || olFeature == null) return;
+    const geom = olFeature.getGeometry();
+    if (!geom) return;
+    // The polygon's EPSG:3857 extent is the new bbox the backend should use.
+    // refresh-area-images rewrites the saved Polygon to match this extent
+    // (rectangular ring), then re-renders every attached image.
+    const extent3857 = Array.from(geom.getExtent()) as number[];
+    setEditingGeometrySaving(true);
+    setEditingGeometryError(null);
+    try {
+      const { feature: refreshed } = await refreshAreaImages(featureId, {
+        extent_3857: extent3857,
+      });
+      setSavedMapFeatures((prev) => prev.map((f) => (f.id === featureId ? refreshed : f)));
+      cleanupEditShape();
+      setEditingGeometryFeatureId(null);
+      setEditingGeometryDirty(false);
+    } catch (err) {
+      setEditingGeometryError(err instanceof Error ? err.message : 'Failed to save geometry');
+    } finally {
+      setEditingGeometrySaving(false);
+    }
+  }, [editingGeometryFeatureId, cleanupEditShape, setSavedMapFeatures]);
+
+  React.useEffect(() => {
+    return () => {
+      cleanupEditShape();
+    };
+  }, [cleanupEditShape]);
+
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { shiftHeldRef.current = e.shiftKey; };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKey);
+    };
+  }, []);
+
   const handleRefreshAreaImages = React.useCallback(
     async (
       feature: SavedFeature,
@@ -1748,6 +2100,82 @@ export function SidebarContainer() {
         });
       } finally {
         setRefreshingAreaImagesId(null);
+      }
+    },
+    [setSavedMapFeatures],
+  );
+
+  const handleUpdateAreaImageLayer = React.useCallback(
+    async (
+      feature: SavedFeature,
+      layerId: string,
+      patch: { rescale_min?: number; rescale_max?: number; colormap?: string; include_colorbar?: boolean },
+    ) => {
+      setUpdatingImageLayerId(layerId);
+      setUpdateImageLayerError(null);
+      try {
+        const { feature: refreshed, errors } = await refreshAreaImageLayer(feature.id, {
+          layer_id: layerId,
+          ...(patch.rescale_min !== undefined ? { rescale_min: patch.rescale_min } : {}),
+          ...(patch.rescale_max !== undefined ? { rescale_max: patch.rescale_max } : {}),
+          ...(patch.colormap ? { colormap: patch.colormap } : {}),
+          ...(patch.include_colorbar !== undefined ? { include_colorbar: patch.include_colorbar } : {}),
+        });
+        setSavedMapFeatures((prev) => prev.map((f) => (f.id === feature.id ? refreshed : f)));
+        // Surface per-layer errors from the renderer (e.g. tile fetch failed)
+        // even when the request itself succeeded so the user sees what went
+        // wrong instead of silently keeping the old image.
+        const layerError = errors.find((e) => e.layer_id === layerId);
+        if (layerError?.error) {
+          setUpdateImageLayerError({ layer_id: layerId, message: layerError.error });
+        }
+      } catch (err) {
+        setUpdateImageLayerError({
+          layer_id: layerId,
+          message: err instanceof Error ? err.message : 'Failed to update image layer',
+        });
+      } finally {
+        setUpdatingImageLayerId(null);
+      }
+    },
+    [setSavedMapFeatures],
+  );
+
+  const handleUpdatePredictionSnapshotViz = React.useCallback(
+    async (
+      feature: SavedFeature,
+      patch: { rescale_min?: number; rescale_max?: number; colormap?: string },
+    ) => {
+      // Resolve the layer_id from the saved image (always `prediction_rh98_q<n>`
+      // for the point path) so the popover spinner shows on the right tile.
+      const layerId = (feature.plot_data?.image_exports ?? [])
+        .map((e) => e.layer_id)
+        .find((id) => typeof id === 'string' && id.startsWith('prediction_rh98_q'))
+        ?? 'prediction_rh98_q1';
+      setUpdatingImageLayerId(layerId);
+      setUpdateImageLayerError(null);
+      try {
+        const refreshed = await refreshPredictionSnapshot(feature.id, {
+          ...(patch.rescale_min !== undefined ? { rescale_min: patch.rescale_min } : {}),
+          ...(patch.rescale_max !== undefined ? { rescale_max: patch.rescale_max } : {}),
+          ...(patch.colormap ? { colormap: patch.colormap } : {}),
+        });
+        setSavedMapFeatures((prev) => prev.map((f) => (f.id === feature.id ? refreshed : f)));
+        // The endpoint can return 200 with snapshot_status="unavailable" when
+        // the underlying tile is missing — bubble that up like the sidebar
+        // handler does so the popover shows the same kind of error.
+        const status = refreshed.metadata?.prediction_snapshot_status;
+        if (status && status !== 'ok') {
+          const reason = refreshed.metadata?.prediction_snapshot_error || status;
+          setUpdateImageLayerError({ layer_id: layerId, message: String(reason) });
+        }
+      } catch (err) {
+        setUpdateImageLayerError({
+          layer_id: layerId,
+          message: err instanceof Error ? err.message : 'Failed to update prediction snapshot',
+        });
+      } finally {
+        setUpdatingImageLayerId(null);
       }
     },
     [setSavedMapFeatures],
@@ -1877,6 +2305,75 @@ export function SidebarContainer() {
       setFiguresToDbError('No exportable layers found for image extraction.');
       return;
     }
+
+    // Auto-loaded "Global …" RH prediction layers don't carry metadata.url
+    // when the per-(rh, q, version) mosaic isn't built on disk (or the
+    // remote mosaic URL env var is unset). Resolve the underlying per-tile
+    // COG URL for the area's center via /predictions/load before sending —
+    // the backend (area_images.py) opens whatever URL we pass through
+    // rasterio. The S2 grid (fgbLayer) provides the MGRS tile name at the
+    // chosen coordinate.
+    const resolveAreaPredictionUrl = async (
+      layer: typeof layersToUse[number],
+      extent3857: number[],
+    ): Promise<{ url: string; urlLow?: string; tileName: string } | null> => {
+      const source = fgbLayer?.getSource?.();
+      if (!source) return null;
+      const cx = (extent3857[0] + extent3857[2]) / 2;
+      const cy = (extent3857[1] + extent3857[3]) / 2;
+      let tileName: string | null = null;
+      // `getFeaturesAtCoordinate` is exact; fall back to the closest feature
+      // when the center is on a tile boundary or seam.
+      const atCenter = source.getFeaturesAtCoordinate?.([cx, cy]) as Array<any> | undefined;
+      tileName = atCenter?.[0]?.get?.('Name') ?? null;
+      if (!tileName) {
+        const closest = source.getClosestFeatureToCoordinate?.([cx, cy]) as any;
+        tileName = closest?.get?.('Name') ?? null;
+      }
+      if (!tileName) return null;
+
+      const post = (q: number | string) =>
+        fetch(apiUrl('/predictions/load'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            year: layer.year,
+            tile_name: tileName,
+            rh_index: layer.rhIndex,
+            q_index: q,
+            version: layer.version ?? 'original',
+          }),
+        }).then((r) => r.json()).catch(() => null);
+
+      const qStr = String(layer.qIndex ?? '');
+      // `getQIndexForApi` encodes intervals as "{highQ}-Q{lowQ}" (e.g. "0-Q2").
+      const intervalMatch = qStr.match(/^(\d+)-Q(\d+)$/);
+      if (intervalMatch) {
+        const [, high, low] = intervalMatch;
+        const [dh, dl] = await Promise.all([post(Number(high)), post(Number(low))]);
+        if (!dh?.success || !dl?.success || !dh.url || !dl.url) return null;
+        return { url: String(dh.url), urlLow: String(dl.url), tileName };
+      }
+      const d = await post(layer.qIndex as number | string);
+      if (!d?.success || !d.url) return null;
+      return { url: String(d.url), tileName };
+    };
+
+    const resolvedUrls = new Map<string, { url: string; urlLow?: string; tileName: string }>();
+    for (const layer of layersToUse) {
+      if (layer.url) continue;
+      const resolved = await resolveAreaPredictionUrl(layer, figureSelectionExtent);
+      if (!resolved) {
+        setFiguresToDbError(
+          `Couldn't resolve a tile-level COG for "${layer.name}" at the selection center. `
+          + 'Make sure the S2 tile grid covers the area and the per-tile COG exists for '
+          + `RH${layer.rhIndex ?? '?'} Q${String(layer.qIndex ?? '?')} ${layer.year ?? ''}.`,
+        );
+        return;
+      }
+      resolvedUrls.set(layer.id, resolved);
+    }
+
     try {
       setSavingFiguresToDb(true);
       const response = await fetch(apiUrl('/saved-features/area-images'), {
@@ -1898,14 +2395,24 @@ export function SidebarContainer() {
             const rmin = ovr?.rescaleMin !== undefined ? ovr.rescaleMin : layer.rescaleMin;
             const rmax = ovr?.rescaleMax !== undefined ? ovr.rescaleMax : layer.rescaleMax;
             const hasBands = ovr?.selectedBands && ovr.selectedBands.length > 0;
+            const resolved = resolvedUrls.get(layer.id);
+            const url = resolved?.url ?? layer.url;
+            const urlLow = resolved?.urlLow ?? layer.urlLow;
+            // For auto-loaded "Global …" layers we resolved a specific MGRS
+            // tile's COG — surface that tile name in the saved image's label
+            // so the gallery shows e.g. "12SWD (RH98 median, 2020 · original)"
+            // instead of "Global (...)".
+            const name = resolved
+              ? layer.name.replace(/^Global\b/, resolved.tileName)
+              : layer.name;
             return {
               layer_id: layer.id,
-              name: layer.name,
+              name,
               layer_type: layer.layerType,
               layer_subtype: layer.layerSubType,
               year: layer.year,
-              url: layer.url,
-              url_low: layer.urlLow,
+              url,
+              url_low: urlLow,
               rgb_bands: layer.rgbBands,
               colormap: cmap,
               rescale_min: rmin,
@@ -1955,6 +2462,7 @@ export function SidebarContainer() {
   }, [
     addSavedMapFeature,
     exportableFigureLayers,
+    fgbLayer,
     figureFormat,
     figureLayerOverrides,
     figureSelectionExtent,
@@ -2026,6 +2534,17 @@ export function SidebarContainer() {
       refreshingAreaImagesId={refreshingAreaImagesId}
       refreshAreaImagesError={refreshAreaImagesError}
       onRefreshAreaImages={handleRefreshAreaImages}
+      onUpdateAreaImageLayer={handleUpdateAreaImageLayer}
+      onUpdatePredictionSnapshotViz={handleUpdatePredictionSnapshotViz}
+      updatingImageLayerId={updatingImageLayerId}
+      updateImageLayerError={updateImageLayerError}
+      editingGeometryFeatureId={editingGeometryFeatureId}
+      editingGeometryDirty={editingGeometryDirty}
+      editingGeometrySaving={editingGeometrySaving}
+      editingGeometryError={editingGeometryError}
+      onStartEditGeometry={handleStartEditGeometry}
+      onSaveEditGeometry={handleSaveEditGeometry}
+      onCancelEditGeometry={handleCancelEditGeometry}
       onDeleteSavedFeature={handleDeleteSavedFeature}
       onUpdateSavedFeature={handleUpdateSavedFeature}
       onJumpToFeature={handleJumpToFeature}

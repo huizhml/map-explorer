@@ -3,8 +3,19 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   Box,
   Button,
+  Checkbox,
+  CircularProgress,
+  Dialog,
+  DialogContent,
+  FormControlLabel,
   IconButton,
+  MenuItem,
   Paper,
+  Popover,
+  Stack,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography,
   useTheme,
@@ -15,7 +26,14 @@ import { ChartsReferenceLine } from '@mui/x-charts/ChartsReferenceLine';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import CheckIcon from '@mui/icons-material/Check';
 import SaveAltIcon from '@mui/icons-material/SaveAlt';
-import type { SavedFeaturePlotData } from '../services/savedFeaturesApi';
+import ViewModuleIcon from '@mui/icons-material/ViewModule';
+import GridViewIcon from '@mui/icons-material/GridView';
+import ViewCarouselIcon from '@mui/icons-material/ViewCarousel';
+import NavigateBeforeIcon from '@mui/icons-material/NavigateBefore';
+import NavigateNextIcon from '@mui/icons-material/NavigateNext';
+import CloseIcon from '@mui/icons-material/Close';
+import TuneIcon from '@mui/icons-material/Tune';
+import type { SavedFeature, SavedFeaturePlotData } from '../services/savedFeaturesApi';
 import type { VerticalProfilePoint, VerticalProfileCurvePoint } from '../stores/mapStore';
 import { apiUrl } from '../utils/apiBase';
 import { TransectExportDialog } from './TransectExportDialog';
@@ -1389,13 +1407,60 @@ export function TransectMetricsChart({
   );
 }
 
+/** Visualization parameters editable per saved image via the inline popover.
+ *  Mirrors the optional fields accepted by `refreshAreaImageLayer` /
+ *  `refreshPredictionSnapshot`. */
+export type SavedImageLayerEdit = {
+  rescale_min?: number;
+  rescale_max?: number;
+  colormap?: string;
+  /** Draw the colorbar on single-band (colormapped) renders. Only honoured by
+   *  the area-images path — point RH98 snapshots have no colorbar to begin with. */
+  include_colorbar?: boolean;
+};
+
+/** Colormap choices offered in the edit popover. The first entry is the
+ *  "no override" sentinel — picking it falls back to whatever the backend has
+ *  stored for the layer. Names match the keys accepted by `_TITILER_TO_MPL_CMAP`
+ *  on the backend (and titiler in general). */
+const COLORMAP_CHOICES: Array<{ label: string; value: string }> = [
+  { label: 'viridis', value: 'viridis' },
+  { label: 'inferno', value: 'inferno' },
+  { label: 'magma', value: 'magma' },
+  { label: 'plasma', value: 'plasma' },
+  { label: 'cividis', value: 'cividis' },
+  { label: 'Greens', value: 'greens' },
+  { label: 'YlGn', value: 'ylgn' },
+  { label: 'RdYlGn', value: 'rdylgn' },
+  { label: 'Spectral', value: 'spectral' },
+  { label: 'Greys', value: 'greys' },
+];
+
 export function SavedFeaturePlots({
   plotData,
   featureName,
+  feature,
+  onUpdateAreaImageLayer,
+  onUpdatePredictionSnapshot,
+  updatingImageLayerId,
+  updateImageLayerError,
 }: {
   plotData?: SavedFeaturePlotData | null;
   /** Display name of the saved feature; used as the default export filename. */
   featureName?: string;
+  /** Required to drive the per-image edit popover. When omitted, the gallery
+   *  renders without edit affordances (legacy callers). */
+  feature?: SavedFeature | null;
+  /** Update a single saved image's visualization params (rescale/colormap)
+   *  for an area_images polygon feature. */
+  onUpdateAreaImageLayer?: (feature: SavedFeature, layerId: string, patch: SavedImageLayerEdit) => Promise<void> | void;
+  /** Update the RH98 prediction snapshot's visualization params on a saved
+   *  Point feature. Uses the existing /refresh-prediction-snapshot endpoint. */
+  onUpdatePredictionSnapshot?: (feature: SavedFeature, patch: SavedImageLayerEdit) => Promise<void> | void;
+  /** layer_id currently being re-rendered, so the popover can show a spinner. */
+  updatingImageLayerId?: string | null;
+  /** Last error from a per-image edit, scoped to the layer_id that failed. */
+  updateImageLayerError?: { layer_id: string; message: string } | null;
 }) {
   const diversityHeightBinM = useMapStore((s) => s.diversityHeightBinM);
   const transectHeatmapSampleIndex = useMapStore((s) => s.transectHeatmapSampleIndex);
@@ -1433,8 +1498,205 @@ export function SavedFeaturePlots({
 
   const [transectMetricXAxis, setTransectMetricXAxis] = useState<'lon' | 'lat'>('lon');
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [imageLayoutMode, setImageLayoutMode] = useState<'grid' | 'compact' | 'carousel'>('grid');
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [carouselIndex, setCarouselIndex] = useState(0);
+  /** Per-image edit popover state. `anchorEl` drives Popover open/close; the
+   *  current layer_id is also stored on state so we can render the right form
+   *  values + spinner regardless of where the user clicked. */
+  const [editAnchorEl, setEditAnchorEl] = useState<HTMLElement | null>(null);
+  const [editLayerId, setEditLayerId] = useState<string | null>(null);
+  // `include_colorbar` is tri-state: true / false / null (= "no override").
+  // We track it as a nullable boolean so the patch only carries the value when
+  // the user has explicitly touched the checkbox.
+  const [editForm, setEditForm] = useState<{
+    rescale_min: string;
+    rescale_max: string;
+    colormap: string;
+    include_colorbar: boolean | null;
+  }>({
+    rescale_min: '',
+    rescale_max: '',
+    colormap: '',
+    include_colorbar: null,
+  });
+
+  // Left/right arrow keys step the carousel (and the lightbox while it's open).
+  // Skip when typing in a form field so we don't hijack normal text editing.
+  useEffect(() => {
+    const total = Array.isArray(plotData?.image_exports) ? plotData!.image_exports!.length : 0;
+    if (total <= 1) return;
+    const lightboxOpen = lightboxIndex != null;
+    if (imageLayoutMode !== 'carousel' && !lightboxOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      e.preventDefault();
+      const delta = e.key === 'ArrowRight' ? 1 : -1;
+      if (lightboxOpen) {
+        setLightboxIndex((idx) => (idx == null ? null : (idx + delta + total) % total));
+      } else {
+        setCarouselIndex((idx) => (idx + delta + total) % total);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [imageLayoutMode, lightboxIndex, plotData?.image_exports]);
+
   if (!plotData) return null;
   const imageExports = Array.isArray(plotData.image_exports) ? plotData.image_exports : [];
+  /** Per-image cache buster: the backend writes re-renders to the same on-disk
+   *  filename (and so the same URL), so React/browsers would keep displaying
+   *  the cached PNG. The backend stamps each render with `rendered_at`, which
+   *  we append as `?v=...` to force a fresh fetch when the user updates a layer. */
+  const withCacheBuster = (url: string, img: typeof imageExports[number]): string => {
+    if (!url) return url;
+    const stamp = (img as any).rendered_at;
+    if (typeof stamp !== 'string' || stamp === '') return url;
+    return url + (url.includes('?') ? '&' : '?') + 'v=' + encodeURIComponent(stamp);
+  };
+  const buildImageUrl = (img: typeof imageExports[number]) => {
+    const base = img.url
+      ? apiUrl(img.url)
+      : img.relative_path
+        ? apiUrl(`/saved-features/image/${img.relative_path}`)
+        : '';
+    return withCacheBuster(base, img);
+  };
+  /** URL of the rasterized PNG sibling generated alongside the PDF, when present.
+   *  Used for inline preview so browsers don't clip the embedded PDF page. */
+  const buildPreviewUrl = (img: typeof imageExports[number]) => {
+    const base = img.preview_url
+      ? apiUrl(img.preview_url)
+      : img.preview_relative_path
+        ? apiUrl(`/saved-features/image/${img.preview_relative_path}`)
+        : '';
+    return withCacheBuster(base, img);
+  };
+  const isPdfImage = (img: typeof imageExports[number]) => (
+    img.mime_type === 'application/pdf'
+    || (img.filename || '').toLowerCase().endsWith('.pdf')
+  );
+  /** Source for inline preview: PNG sibling if available, otherwise the
+   *  primary URL (PDFs without a sibling still fall back to <embed>). */
+  const inlinePreviewSrc = (img: typeof imageExports[number]) => (
+    buildPreviewUrl(img) || buildImageUrl(img)
+  );
+  const hasInlineImage = (img: typeof imageExports[number]) => (
+    !isPdfImage(img) || Boolean(buildPreviewUrl(img))
+  );
+  const imageLabel = (img: typeof imageExports[number]) => (
+    `${img.layer_name || img.filename}${img.band_name ? ` - ${img.band_name}` : ''}`
+  );
+  const safeCarouselIndex = Math.min(Math.max(carouselIndex, 0), Math.max(imageExports.length - 1, 0));
+  const lightboxImage = lightboxIndex != null ? imageExports[lightboxIndex] : null;
+
+  /** Inline edit popover plumbing. The popover is only available when the
+   *  caller wired `feature` + one of the update handlers — otherwise the icon
+   *  is hidden so legacy callers keep the old gallery behaviour. */
+  const layerSpecs: any[] = Array.isArray((plotData as any)?.layer_specs)
+    ? ((plotData as any).layer_specs as any[])
+    : [];
+  const findLayerSpec = (layerId: string | undefined) => {
+    if (!layerId) return undefined;
+    return layerSpecs.find((s) => s && s.layer_id === layerId);
+  };
+  /** Point-feature RH98 snapshot uses the prediction-snapshot endpoint; every
+   *  other layer goes through the per-area-image endpoint. Detect from the
+   *  feature's source + the image's layer_id. */
+  const isPredictionSnapshotImage = (img: typeof imageExports[number]) => (
+    feature?.metadata?.source === 'feature_popup'
+    && typeof img.layer_id === 'string'
+    && img.layer_id.startsWith('prediction_rh98_q')
+  );
+  /** Editing is available when:
+   *   - we have a feature and an appropriate handler
+   *   - and either the image is the point's RH98 snapshot (always editable via
+   *     the prediction-snapshot endpoint) or it has a matching layer_spec entry
+   *     with a colormap (the per-area-image endpoint only touches colormapped
+   *     single-band renders; baked-in tile imagery like EOX / EE / Google Sat
+   *     ignores rescale/colormap, so showing the inputs would mislead). */
+  const isImageEditable = (img: typeof imageExports[number]) => {
+    if (!feature) return false;
+    if (isPredictionSnapshotImage(img)) return Boolean(onUpdatePredictionSnapshot);
+    if (!onUpdateAreaImageLayer) return false;
+    const spec = findLayerSpec(img.layer_id);
+    if (!spec) return false;
+    return typeof spec.colormap === 'string' && spec.colormap.length > 0;
+  };
+  const editingImage = editLayerId != null
+    ? imageExports.find((img) => img.layer_id === editLayerId)
+    : undefined;
+
+  const openEditPopover = (
+    event: ReactMouseEvent<HTMLElement>,
+    img: typeof imageExports[number],
+  ) => {
+    if (!img.layer_id) return;
+    event.stopPropagation();  // don't trigger lightbox-on-image-click
+    let initial: { rescale_min: string; rescale_max: string; colormap: string; include_colorbar: boolean | null } = {
+      rescale_min: '', rescale_max: '', colormap: '', include_colorbar: null,
+    };
+    if (isPredictionSnapshotImage(img)) {
+      const viz = (feature?.metadata as any)?.prediction_visualization;
+      if (viz && typeof viz === 'object') {
+        if (Number.isFinite(Number(viz.rescale_min))) initial.rescale_min = String(viz.rescale_min);
+        if (Number.isFinite(Number(viz.rescale_max))) initial.rescale_max = String(viz.rescale_max);
+        if (typeof viz.colormap === 'string') initial.colormap = viz.colormap;
+      }
+    } else {
+      const spec = findLayerSpec(img.layer_id);
+      if (spec) {
+        if (Number.isFinite(Number(spec.rescale_min))) initial.rescale_min = String(spec.rescale_min);
+        if (Number.isFinite(Number(spec.rescale_max))) initial.rescale_max = String(spec.rescale_max);
+        if (typeof spec.colormap === 'string') initial.colormap = spec.colormap;
+        // Default to true (matches the backend FigureLayerSpec default) when
+        // the stored spec doesn't carry the field — older saves predate it.
+        initial.include_colorbar = typeof spec.include_colorbar === 'boolean'
+          ? spec.include_colorbar
+          : true;
+      }
+    }
+    setEditForm(initial);
+    setEditLayerId(img.layer_id);
+    setEditAnchorEl(event.currentTarget);
+  };
+  const closeEditPopover = () => {
+    setEditAnchorEl(null);
+    setEditLayerId(null);
+  };
+  /** Build the patch payload from the form. Empty strings → undefined so the
+   *  backend keeps the stored value untouched for that field. */
+  const buildEditPatch = (): SavedImageLayerEdit => {
+    const patch: SavedImageLayerEdit = {};
+    const min = editForm.rescale_min.trim();
+    const max = editForm.rescale_max.trim();
+    const cmap = editForm.colormap.trim();
+    if (min !== '' && Number.isFinite(Number(min))) patch.rescale_min = Number(min);
+    if (max !== '' && Number.isFinite(Number(max))) patch.rescale_max = Number(max);
+    if (cmap !== '') patch.colormap = cmap;
+    if (editForm.include_colorbar !== null) patch.include_colorbar = editForm.include_colorbar;
+    return patch;
+  };
+  const applyEdit = async () => {
+    if (!feature || !editingImage || !editLayerId) return;
+    const patch = buildEditPatch();
+    if (Object.keys(patch).length === 0) {
+      closeEditPopover();  // nothing to do
+      return;
+    }
+    if (isPredictionSnapshotImage(editingImage) && onUpdatePredictionSnapshot) {
+      await onUpdatePredictionSnapshot(feature, patch);
+    } else if (onUpdateAreaImageLayer) {
+      await onUpdateAreaImageLayer(feature, editLayerId, patch);
+    }
+    closeEditPopover();
+  };
+  const editingInFlight = updatingImageLayerId != null && updatingImageLayerId === editLayerId;
+  const editError = updateImageLayerError && editLayerId && updateImageLayerError.layer_id === editLayerId
+    ? updateImageLayerError.message
+    : null;
 
   const transect = plotData.transect;
   const transectHeatmapMaxHeight = transect?.heatmap_max_height ?? DEFAULT_HEATMAP_MAX_HEIGHT_M;
@@ -1454,83 +1716,466 @@ export function SavedFeaturePlots({
   const hasVerticalMetrics = Boolean(verticalMetricsData && [verticalMetricsData.fhd, verticalMetricsData.enl1d, verticalMetricsData.enl2d, verticalMetricsData.cr].some((v) => v != null && Number.isFinite(v)));
   const hasVerticalCurve = Boolean(verticalCurveData && verticalCurveData.length > 0);
 
+  /** Fetch the image as a blob and trigger a browser download with the saved
+   *  filename. Mirrors the "Download all" loop — going through `fetch` + blob
+   *  is what makes the download work cross-origin (the `download` attribute
+   *  on a bare anchor is ignored when the URL is a different origin). */
+  const downloadOne = async (img: typeof imageExports[number]) => {
+    const url = buildImageUrl(img);
+    if (!url) return;
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = img.filename || 'image';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objUrl);
+    } catch {
+      // Swallow per-image failures; the user can still click "Open image" → save-as.
+    }
+  };
+
   return (
     <Box sx={{ mt: 1.1 }}>
       {imageExports.length > 0 && (
         <Box sx={{ mb: 1.25 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5, gap: 1, flexWrap: 'wrap' }}>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
               Saved images ({imageExports.length})
             </Typography>
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={async () => {
-                for (const img of imageExports) {
-                  const url = img.url
-                    ? apiUrl(img.url)
-                    : img.relative_path
-                      ? apiUrl(`/saved-features/image/${img.relative_path}`)
-                      : '';
-                  if (!url) continue;
-                  try {
-                    const resp = await fetch(url);
-                    if (!resp.ok) continue;
-                    const blob = await resp.blob();
-                    const objUrl = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = objUrl;
-                    a.download = img.filename || 'image';
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(objUrl);
-                  } catch {
-                    // Skip failures; continue downloading the rest.
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+              <ToggleButtonGroup
+                size="small"
+                exclusive
+                value={imageLayoutMode}
+                onChange={(_, v) => v && setImageLayoutMode(v)}
+                sx={{ '& .MuiToggleButton-root': { py: 0.25, px: 0.75, lineHeight: 1 } }}
+              >
+                <ToggleButton value="grid" aria-label="Grid layout">
+                  <Tooltip title="Grid"><ViewModuleIcon fontSize="small" /></Tooltip>
+                </ToggleButton>
+                <ToggleButton value="compact" aria-label="Compact thumbnails">
+                  <Tooltip title="Compact"><GridViewIcon fontSize="small" /></Tooltip>
+                </ToggleButton>
+                <ToggleButton value="carousel" aria-label="Carousel">
+                  <Tooltip title="Carousel"><ViewCarouselIcon fontSize="small" /></Tooltip>
+                </ToggleButton>
+              </ToggleButtonGroup>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={async () => {
+                  for (const img of imageExports) {
+                    const url = buildImageUrl(img);
+                    if (!url) continue;
+                    try {
+                      const resp = await fetch(url);
+                      if (!resp.ok) continue;
+                      const blob = await resp.blob();
+                      const objUrl = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = objUrl;
+                      a.download = img.filename || 'image';
+                      document.body.appendChild(a);
+                      a.click();
+                      a.remove();
+                      URL.revokeObjectURL(objUrl);
+                    } catch {
+                      // Skip failures; continue downloading the rest.
+                    }
                   }
-                }
-              }}
-              sx={{ textTransform: 'none', py: 0, minHeight: 0 }}
-            >
-              Download all
-            </Button>
+                }}
+                sx={{ textTransform: 'none', py: 0, minHeight: 0 }}
+              >
+                Download all
+              </Button>
+            </Box>
           </Box>
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1 }}>
-            {imageExports.map((img, idx) => {
-              const url = img.url ? apiUrl(img.url) : (img.relative_path ? apiUrl(`/saved-features/image/${img.relative_path}`) : '');
-              // PDFs can't be displayed in an <img> tag — fall back to an
-              // <embed> preview so vector exports still show inline.
-              const isPdf = img.mime_type === 'application/pdf'
-                || (img.filename || '').toLowerCase().endsWith('.pdf');
-              return (
-                <Box key={`${img.filename}-${idx}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, p: 0.75 }}>
-                  <Typography variant="caption" sx={{ display: 'block', mb: 0.5, color: 'text.secondary' }}>
-                    {img.layer_name || img.filename}{img.band_name ? ` - ${img.band_name}` : ''}
-                  </Typography>
-                  {url && (isPdf ? (
+
+          {imageLayoutMode === 'grid' && (
+            <Box sx={{
+              display: 'grid',
+              // Auto-fill responsive grid: as many columns as fit at ≥160 px
+              // each, so a wide sidebar gets 3–4 columns instead of being
+              // locked to 2 with oversized tiles.
+              gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+              gap: 1,
+            }}>
+              {imageExports.map((img, idx) => {
+                const url = buildImageUrl(img);
+                const isPdf = isPdfImage(img);
+                const inlineSrc = inlinePreviewSrc(img);
+                const canShowInline = hasInlineImage(img);
+                const editable = isImageEditable(img);
+                const isUpdating = editable && updatingImageLayerId === img.layer_id;
+                return (
+                  <Box key={`${img.filename}-${idx}`} sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, p: 0.75, position: 'relative' }}>
+                    <Typography variant="caption" sx={{ display: 'block', mb: 0.5, color: 'text.secondary' }}>
+                      {imageLabel(img)}
+                    </Typography>
+                    {editable && (
+                      <Tooltip title="Edit visualization (min / max / colormap)">
+                        <IconButton
+                          size="small"
+                          onClick={(e) => openEditPopover(e, img)}
+                          sx={{
+                            position: 'absolute',
+                            top: 4,
+                            right: 4,
+                            zIndex: 1,
+                            bgcolor: 'rgba(255,255,255,0.85)',
+                            '&:hover': { bgcolor: 'rgba(255,255,255,1)' },
+                            p: 0.5,
+                          }}
+                        >
+                          {isUpdating ? <CircularProgress size={14} /> : <TuneIcon fontSize="small" />}
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                    {url && (canShowInline ? (
+                      <Box
+                        component="img"
+                        src={inlineSrc}
+                        alt={img.filename}
+                        onClick={() => setLightboxIndex(idx)}
+                        sx={{ width: '100%', borderRadius: 1, border: 1, borderColor: 'divider', mb: 0.5, cursor: 'zoom-in' }}
+                      />
+                    ) : (
+                      <Box
+                        component="embed"
+                        src={url}
+                        type="application/pdf"
+                        sx={{ width: '100%', height: 240, borderRadius: 1, border: 1, borderColor: 'divider', mb: 0.5 }}
+                      />
+                    ))}
+                    {url && (
+                      <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <Button size="small" component="a" href={url} target="_blank" rel="noreferrer" sx={{ px: 0.5, minWidth: 0 }}>
+                          {isPdf ? 'Open PDF' : 'Open image'}
+                        </Button>
+                        <Tooltip title={`Download ${img.filename || 'image'}`}>
+                          <Button
+                            size="small"
+                            onClick={() => downloadOne(img)}
+                            startIcon={<SaveAltIcon fontSize="small" />}
+                            sx={{ px: 0.5, minWidth: 0, textTransform: 'none' }}
+                          >
+                            Download
+                          </Button>
+                        </Tooltip>
+                      </Box>
+                    )}
+                  </Box>
+                );
+              })}
+            </Box>
+          )}
+
+          {imageLayoutMode === 'compact' && (
+            // CSS multi-column flow: tiles pack into vertical columns and
+            // each <img> renders at its natural aspect ratio (width: 100%,
+            // height: auto). Pinterest-style masonry — wide transect strips
+            // stay short, square satellite images stay square, and the
+            // browser fits as many ~110-px columns as the sidebar allows.
+            <Box sx={{
+              columns: '110px',
+              columnGap: '6px',
+            }}>
+              {imageExports.map((img, idx) => {
+                const url = buildImageUrl(img);
+                const inlineSrc = inlinePreviewSrc(img);
+                const canShowInline = hasInlineImage(img);
+                return (
+                  <Tooltip key={`${img.filename}-${idx}`} title={imageLabel(img)}>
                     <Box
-                      component="embed"
-                      src={url}
-                      type="application/pdf"
-                      sx={{ width: '100%', height: 240, borderRadius: 1, border: 1, borderColor: 'divider', mb: 0.5 }}
+                      onClick={() => canShowInline && url && setLightboxIndex(idx)}
+                      sx={{
+                        border: 1,
+                        borderColor: 'divider',
+                        borderRadius: 1,
+                        overflow: 'hidden',
+                        cursor: canShowInline ? 'zoom-in' : 'default',
+                        bgcolor: 'background.default',
+                        position: 'relative',
+                        breakInside: 'avoid',
+                        mb: '6px',
+                      }}
+                    >
+                      {url && (canShowInline ? (
+                        <Box
+                          component="img"
+                          src={inlineSrc}
+                          alt={img.filename}
+                          sx={{ display: 'block', width: '100%', height: 'auto' }}
+                        />
+                      ) : (
+                        <Box
+                          component="a"
+                          href={url}
+                          target="_blank"
+                          rel="noreferrer"
+                          sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            height: 60,
+                            color: 'text.secondary',
+                            fontSize: 11,
+                            textDecoration: 'none',
+                          }}
+                        >
+                          PDF
+                        </Box>
+                      ))}
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          display: 'block',
+                          px: 0.5,
+                          py: 0.25,
+                          fontSize: 9.5,
+                          color: 'text.secondary',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          borderTop: 1,
+                          borderColor: 'divider',
+                        }}
+                      >
+                        {imageLabel(img)}
+                      </Typography>
+                    </Box>
+                  </Tooltip>
+                );
+              })}
+            </Box>
+          )}
+
+          {imageLayoutMode === 'carousel' && imageExports.length > 0 && (() => {
+            const current = imageExports[safeCarouselIndex];
+            const currentUrl = buildImageUrl(current);
+            const currentInlineSrc = inlinePreviewSrc(current);
+            const currentCanShowInline = hasInlineImage(current);
+            return (
+              <Box>
+                <Box sx={{ position: 'relative', border: 1, borderColor: 'divider', borderRadius: 1.5, p: 0.75, mb: 0.75 }}>
+                  <Typography variant="caption" sx={{ display: 'block', mb: 0.5, color: 'text.secondary' }}>
+                    {imageLabel(current)} ({safeCarouselIndex + 1}/{imageExports.length})
+                  </Typography>
+                  {currentUrl && (currentCanShowInline ? (
+                    <Box
+                      component="img"
+                      src={currentInlineSrc}
+                      alt={current.filename}
+                      onClick={() => setLightboxIndex(safeCarouselIndex)}
+                      sx={{ display: 'block', width: '100%', maxHeight: 360, objectFit: 'contain', borderRadius: 1, border: 1, borderColor: 'divider', cursor: 'zoom-in' }}
                     />
                   ) : (
                     <Box
-                      component="img"
-                      src={url}
-                      alt={img.filename}
-                      sx={{ width: '100%', borderRadius: 1, border: 1, borderColor: 'divider', mb: 0.5 }}
+                      component="embed"
+                      src={currentUrl}
+                      type="application/pdf"
+                      sx={{ width: '100%', height: 360, borderRadius: 1, border: 1, borderColor: 'divider' }}
                     />
                   ))}
-                  {url && (
-                    <Button size="small" component="a" href={url} target="_blank" rel="noreferrer" sx={{ px: 0.5, minWidth: 0 }}>
-                      {isPdf ? 'Open PDF' : 'Open image'}
-                    </Button>
+                  {imageExports.length > 1 && (
+                    <>
+                      <IconButton
+                        size="small"
+                        onClick={() => setCarouselIndex((safeCarouselIndex - 1 + imageExports.length) % imageExports.length)}
+                        sx={{ position: 'absolute', top: '50%', left: 4, transform: 'translateY(-50%)', bgcolor: 'rgba(0,0,0,0.45)', color: 'common.white', '&:hover': { bgcolor: 'rgba(0,0,0,0.65)' } }}
+                      >
+                        <NavigateBeforeIcon fontSize="small" />
+                      </IconButton>
+                      <IconButton
+                        size="small"
+                        onClick={() => setCarouselIndex((safeCarouselIndex + 1) % imageExports.length)}
+                        sx={{ position: 'absolute', top: '50%', right: 4, transform: 'translateY(-50%)', bgcolor: 'rgba(0,0,0,0.45)', color: 'common.white', '&:hover': { bgcolor: 'rgba(0,0,0,0.65)' } }}
+                      >
+                        <NavigateNextIcon fontSize="small" />
+                      </IconButton>
+                    </>
                   )}
                 </Box>
-              );
-            })}
-          </Box>
+                <Box sx={{ display: 'flex', gap: 0.5, overflowX: 'auto', pb: 0.5 }}>
+                  {imageExports.map((img, idx) => {
+                    const thumbSrc = inlinePreviewSrc(img);
+                    const canShowInline = hasInlineImage(img);
+                    const isActive = idx === safeCarouselIndex;
+                    return (
+                      <Box
+                        key={`thumb-${img.filename}-${idx}`}
+                        onClick={() => setCarouselIndex(idx)}
+                        sx={{
+                          flex: '0 0 auto',
+                          width: 72,
+                          height: 56,
+                          border: 2,
+                          borderColor: isActive ? 'primary.main' : 'divider',
+                          borderRadius: 1,
+                          overflow: 'hidden',
+                          cursor: 'pointer',
+                          bgcolor: 'background.default',
+                        }}
+                      >
+                        {thumbSrc && canShowInline ? (
+                          <Box component="img" src={thumbSrc} alt={img.filename} sx={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', fontSize: 10, color: 'text.secondary' }}>PDF</Box>
+                        )}
+                      </Box>
+                    );
+                  })}
+                </Box>
+              </Box>
+            );
+          })()}
+
+          <Popover
+            open={Boolean(editAnchorEl) && editingImage != null}
+            anchorEl={editAnchorEl}
+            onClose={closeEditPopover}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+            slotProps={{ paper: { sx: { p: 1.5, minWidth: 260 } } }}
+          >
+            <Stack spacing={1.25}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                Edit visualization
+              </Typography>
+              {editingImage && (
+                <Typography variant="caption" color="text.secondary" noWrap title={imageLabel(editingImage)}>
+                  {imageLabel(editingImage)}
+                </Typography>
+              )}
+              <Stack direction="row" spacing={1}>
+                <TextField
+                  size="small"
+                  label="Min"
+                  type="number"
+                  value={editForm.rescale_min}
+                  onChange={(e) => setEditForm((f) => ({ ...f, rescale_min: e.target.value }))}
+                  inputProps={{ step: 'any' }}
+                  fullWidth
+                  disabled={editingInFlight}
+                />
+                <TextField
+                  size="small"
+                  label="Max"
+                  type="number"
+                  value={editForm.rescale_max}
+                  onChange={(e) => setEditForm((f) => ({ ...f, rescale_max: e.target.value }))}
+                  inputProps={{ step: 'any' }}
+                  fullWidth
+                  disabled={editingInFlight}
+                />
+              </Stack>
+              <TextField
+                size="small"
+                label="Colormap"
+                select
+                value={editForm.colormap}
+                onChange={(e) => setEditForm((f) => ({ ...f, colormap: e.target.value }))}
+                disabled={editingInFlight}
+              >
+                <MenuItem value="">
+                  <em>(unchanged)</em>
+                </MenuItem>
+                {COLORMAP_CHOICES.map((c) => (
+                  <MenuItem key={c.value} value={c.value}>{c.label}</MenuItem>
+                ))}
+              </TextField>
+              {/* Colorbar toggle: only the area-images render path honours this
+                  flag (the point RH98 snapshot has no colorbar to begin with),
+                  so we hide the checkbox for the prediction-snapshot case. */}
+              {editingImage && !isPredictionSnapshotImage(editingImage) && (
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={editForm.include_colorbar === true}
+                      onChange={(e) => setEditForm((f) => ({ ...f, include_colorbar: e.target.checked }))}
+                      disabled={editingInFlight}
+                    />
+                  }
+                  label={<Typography variant="caption">Show colorbar</Typography>}
+                  sx={{ ml: 0 }}
+                />
+              )}
+              {editError && (
+                <Typography variant="caption" color="error">
+                  {editError}
+                </Typography>
+              )}
+              <Stack direction="row" spacing={1} justifyContent="flex-end">
+                <Button size="small" onClick={closeEditPopover} disabled={editingInFlight}>
+                  Cancel
+                </Button>
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={applyEdit}
+                  disabled={editingInFlight}
+                  startIcon={editingInFlight ? <CircularProgress size={12} color="inherit" /> : null}
+                >
+                  {editingInFlight ? 'Applying…' : 'Apply'}
+                </Button>
+              </Stack>
+            </Stack>
+          </Popover>
+
+          <Dialog
+            open={lightboxImage != null}
+            onClose={() => setLightboxIndex(null)}
+            maxWidth="lg"
+            fullWidth
+          >
+            <DialogContent sx={{ p: 1, bgcolor: 'background.default', position: 'relative' }}>
+              <IconButton
+                size="small"
+                onClick={() => setLightboxIndex(null)}
+                sx={{ position: 'absolute', top: 6, right: 6, zIndex: 1, bgcolor: 'rgba(0,0,0,0.45)', color: 'common.white', '&:hover': { bgcolor: 'rgba(0,0,0,0.65)' } }}
+              >
+                <CloseIcon fontSize="small" />
+              </IconButton>
+              {lightboxImage && lightboxIndex != null && imageExports.length > 1 && (
+                <>
+                  <IconButton
+                    size="small"
+                    onClick={() => setLightboxIndex((lightboxIndex - 1 + imageExports.length) % imageExports.length)}
+                    sx={{ position: 'absolute', top: '50%', left: 6, transform: 'translateY(-50%)', zIndex: 1, bgcolor: 'rgba(0,0,0,0.45)', color: 'common.white', '&:hover': { bgcolor: 'rgba(0,0,0,0.65)' } }}
+                  >
+                    <NavigateBeforeIcon />
+                  </IconButton>
+                  <IconButton
+                    size="small"
+                    onClick={() => setLightboxIndex((lightboxIndex + 1) % imageExports.length)}
+                    sx={{ position: 'absolute', top: '50%', right: 6, transform: 'translateY(-50%)', zIndex: 1, bgcolor: 'rgba(0,0,0,0.45)', color: 'common.white', '&:hover': { bgcolor: 'rgba(0,0,0,0.65)' } }}
+                  >
+                    <NavigateNextIcon />
+                  </IconButton>
+                </>
+              )}
+              {lightboxImage && (
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    {imageLabel(lightboxImage)} {imageExports.length > 1 && lightboxIndex != null ? `(${lightboxIndex + 1}/${imageExports.length})` : ''}
+                  </Typography>
+                  <Box
+                    component="img"
+                    src={inlinePreviewSrc(lightboxImage)}
+                    alt={lightboxImage.filename}
+                    sx={{ display: 'block', maxWidth: '100%', maxHeight: '80vh', objectFit: 'contain' }}
+                  />
+                </Box>
+              )}
+            </DialogContent>
+          </Dialog>
         </Box>
       )}
       {transect?.samples && transect.samples.length > 0 && (

@@ -138,6 +138,22 @@ class RefreshAreaImagesRequest(BaseModel):
     square: Optional[bool] = None
 
 
+class RefreshAreaImageLayerRequest(BaseModel):
+    """Re-render a single layer in a saved area_images feature with new
+    visualization parameters (rescale, colormap, decorations). Other images
+    attached to the feature are left untouched, and the override is written
+    back to the stored `layer_specs` so a later full refresh reproduces it.
+    """
+
+    # Required: which layer in `layer_specs` to update (matches FigureLayerSpec.layer_id).
+    layer_id: str
+    rescale_min: Optional[float] = None
+    rescale_max: Optional[float] = None
+    colormap: Optional[str] = None
+    include_colorbar: Optional[bool] = None
+    include_scale_bar: Optional[bool] = None
+
+
 class TransectSatelliteRequest(BaseModel):
     min_lon: float
     max_lon: float

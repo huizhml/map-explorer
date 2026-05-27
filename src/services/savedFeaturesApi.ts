@@ -46,6 +46,10 @@ export type SavedFeaturePlotData = {
     url?: string;
     format?: string;
     mime_type?: string;
+    preview_filename?: string;
+    preview_relative_path?: string;
+    preview_url?: string;
+    preview_mime_type?: string;
   }>;
   image_session_dir?: string;
   layers?: Array<{
@@ -266,6 +270,37 @@ export async function refreshAreaImages(
   const data = (await response.json()) as { feature?: SavedFeature; errors?: Array<{ layer_id?: string; name?: string; error?: string }> };
   if (!data.feature) {
     throw new Error('API did not return refreshed feature');
+  }
+  return { feature: data.feature, errors: Array.isArray(data.errors) ? data.errors : [] };
+}
+
+/** Re-render exactly one layer attached to a saved area_images polygon with
+ *  new visualization parameters (rescale/colormap/decorations). Other images
+ *  on the feature are left untouched, and the override is persisted back to
+ *  the stored layer_specs so a later full refresh reproduces it. */
+export async function refreshAreaImageLayer(
+  id: number,
+  patch: {
+    layer_id: string;
+    rescale_min?: number;
+    rescale_max?: number;
+    colormap?: string;
+    include_colorbar?: boolean;
+    include_scale_bar?: boolean;
+  },
+): Promise<{ feature: SavedFeature; errors: Array<{ layer_id?: string; name?: string; error?: string }> }> {
+  const response = await fetch(apiUrl(`/saved-features/${id}/refresh-area-image-layer`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Failed to update image layer (${response.status})`);
+  }
+  const data = (await response.json()) as { feature?: SavedFeature; errors?: Array<{ layer_id?: string; name?: string; error?: string }> };
+  if (!data.feature) {
+    throw new Error('API did not return updated feature');
   }
   return { feature: data.feature, errors: Array.isArray(data.errors) ? data.errors : [] };
 }

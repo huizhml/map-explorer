@@ -43,6 +43,7 @@ import {
   DarkModeOutlined as DarkModeOutlinedIcon,
   OpenInFull as OpenInFullIcon,
   EditOutlined as EditOutlinedIcon,
+  OpenWith as OpenWithIcon,
 } from '@mui/icons-material';
 import type { VsmQChoice, VsmVersion } from '../constants/predictions';
 import { VSM_VERSION_OPTIONS } from '../constants/predictions';
@@ -162,6 +163,41 @@ interface SidebarProps {
     includeGoogleSatelliteScaleBar?: boolean;
     includeEoxScaleBar?: boolean;
   }) => void;
+  /** Re-render exactly one layer attached to a saved area_images feature with
+   *  new visualization parameters (rescale_min/max, colormap). Wired into the
+   *  per-image edit popover in the plot viewer. */
+  onUpdateAreaImageLayer: (
+    feature: SavedFeature,
+    layerId: string,
+    patch: { rescale_min?: number; rescale_max?: number; colormap?: string; include_colorbar?: boolean },
+  ) => Promise<void> | void;
+  /** Re-render the RH98 prediction snapshot on a saved Point feature with the
+   *  popover-supplied viz overrides (instead of reading from the live map like
+   *  the sidebar "Update" button does). */
+  onUpdatePredictionSnapshotViz: (
+    feature: SavedFeature,
+    patch: { rescale_min?: number; rescale_max?: number; colormap?: string },
+  ) => Promise<void> | void;
+  /** layer_id currently being re-rendered via the per-image edit popover; used
+   *  to render an inline spinner. Null when no per-image update is in flight. */
+  updatingImageLayerId: string | null;
+  /** Last per-image update failure, scoped to a single layer_id. */
+  updateImageLayerError: { layer_id: string; message: string } | null;
+  /** Polygon area_images feature currently being edited via the on-map
+   *  Translate/Modify interactions. `null` when no edit session is active. */
+  editingGeometryFeatureId: number | null;
+  /** True once the user has translated or reshaped the editable polygon. */
+  editingGeometryDirty: boolean;
+  /** True while the refresh-area-images call is in flight after Save. */
+  editingGeometrySaving: boolean;
+  /** Surfaces save failures inside the edit-shape banner. */
+  editingGeometryError: string | null;
+  /** Begin editing: load the polygon onto the map as a translatable/modifiable feature. */
+  onStartEditGeometry: (feature: SavedFeature) => void;
+  /** Commit the edited polygon: POST the new bbox to refresh-area-images. */
+  onSaveEditGeometry: () => void;
+  /** Discard the edit and tear down the on-map interactions. */
+  onCancelEditGeometry: () => void;
   onDeleteSavedFeature: (id: number) => void;
   onUpdateSavedFeature: (id: number, payload: { name: string; description: string; tags: string[] }) => Promise<void>;
   onJumpToFeature: (feature: SavedFeature) => void;
@@ -506,6 +542,17 @@ export function Sidebar({
   refreshingAreaImagesId,
   refreshAreaImagesError,
   onRefreshAreaImages,
+  onUpdateAreaImageLayer,
+  onUpdatePredictionSnapshotViz,
+  updatingImageLayerId,
+  updateImageLayerError,
+  editingGeometryFeatureId,
+  editingGeometryDirty,
+  editingGeometrySaving,
+  editingGeometryError,
+  onStartEditGeometry,
+  onSaveEditGeometry,
+  onCancelEditGeometry,
   onDeleteSavedFeature,
   onUpdateSavedFeature,
   onJumpToFeature,
@@ -691,6 +738,16 @@ export function Sidebar({
 
   const ui = SIDEBAR_THEME[surfaceMode];
   const plotViewerUi = SIDEBAR_THEME.light;
+  // Keep the open plot viewer mirrored to the latest savedMapFeatures snapshot
+  // so a per-image edit (or any refresh) updates the gallery in place without
+  // the user having to close + reopen the dialog.
+  useEffect(() => {
+    if (plotViewerFeature == null) return;
+    const latest = savedMapFeatures.find((f) => f.id === plotViewerFeature.id);
+    if (latest && latest !== plotViewerFeature) {
+      setPlotViewerFeature(latest);
+    }
+  }, [savedMapFeatures, plotViewerFeature]);
   const openPlotViewer = useCallback((feature: SavedFeature) => {
     const width = Math.max(520, Math.round(window.innerWidth * 0.5));
     const height = Math.max(400, Math.round(window.innerHeight * 0.5));
@@ -1460,6 +1517,16 @@ export function Sidebar({
                     const isDeleting = deletingSavedFeatureId === feature.id;
                     const isUpdating = updatingSavedFeatureId === feature.id;
                     const isEditing = editingSavedId === feature.id;
+                    const isEditingShape = editingGeometryFeatureId === feature.id;
+                    const otherShapeEditActive = editingGeometryFeatureId !== null && !isEditingShape;
+                    // Edit-shape is only meaningful for area_images polygons:
+                    // refresh-area-images is the endpoint that re-renders images
+                    // at a new bbox, and the saved polygon for that flow is
+                    // always a rectangular ring derived from extent_3857.
+                    const isAreaImagesPolygon = feature.geometry.type === 'Polygon'
+                      && (feature.metadata?.source === 'area_images'
+                        || (Array.isArray(feature.plot_data?.image_exports)
+                          && (feature.plot_data?.image_exports?.length ?? 0) > 0));
                     const tags = Array.isArray(feature.metadata?.tags) ? feature.metadata?.tags : [];
                     return (
                       <Box
@@ -1504,7 +1571,7 @@ export function Sidebar({
                           <Tooltip title="Edit" placement="top" arrow>
                             <IconButton
                               size="small"
-                              disabled={isDeleting || isUpdating}
+                              disabled={isDeleting || isUpdating || isEditingShape}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setConfirmDeleteId(null);
@@ -1519,6 +1586,26 @@ export function Sidebar({
                               <EditOutlinedIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
+                          {isAreaImagesPolygon && (
+                            <Tooltip title={isEditingShape ? 'Editing shape' : 'Edit shape on map'} placement="top" arrow>
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  disabled={isDeleting || isUpdating || otherShapeEditActive}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setConfirmDeleteId(null);
+                                    setEditingSavedId(null);
+                                    setExpandedSavedId(feature.id);
+                                    onStartEditGeometry(feature);
+                                  }}
+                                  sx={{ color: isEditingShape ? ui.accent : ui.textMuted, flexShrink: 0 }}
+                                >
+                                  <OpenWithIcon fontSize="small" />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                          )}
 
                           {isConfirmingDelete ? (
                             <>
@@ -1554,6 +1641,41 @@ export function Sidebar({
                             </Tooltip>
                           )}
                         </Box>
+
+                        {/* Edit-shape banner — visible while this feature is being
+                            reshaped on the map, regardless of card expansion. */}
+                        {isEditingShape && (
+                          <Box sx={{ px: 1.2, py: 0.85, borderTop: `1px solid ${ui.accentBorder}`, background: ui.panelBg }}>
+                            <Typography sx={{ fontSize: '0.78rem', color: ui.textSecondary, mb: 0.65, lineHeight: 1.35 }}>
+                              Drag the polygon to move it, or drag a corner/edge to resize. Hold Shift to constrain to a square. Save re-renders all images at the new bounds.
+                            </Typography>
+                            {editingGeometryError && (
+                              <Typography sx={{ fontSize: '0.74rem', color: '#f08080', mb: 0.5 }}>
+                                {editingGeometryError}
+                              </Typography>
+                            )}
+                            <Box sx={{ display: 'flex', gap: 0.5 }}>
+                              <Button
+                                size="small"
+                                variant="contained"
+                                disabled={!editingGeometryDirty || editingGeometrySaving}
+                                onClick={(e) => { e.stopPropagation(); onSaveEditGeometry(); }}
+                                sx={{ minWidth: 0, px: 1.2, py: 0.25, fontSize: '0.75rem', textTransform: 'none' }}
+                              >
+                                {editingGeometrySaving ? <CircularProgress size={13} /> : 'Save'}
+                              </Button>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                disabled={editingGeometrySaving}
+                                onClick={(e) => { e.stopPropagation(); onCancelEditGeometry(); }}
+                                sx={{ minWidth: 0, px: 1.2, py: 0.25, fontSize: '0.75rem', textTransform: 'none', borderColor: ui.border, color: ui.textSecondary }}
+                              >
+                                Cancel
+                              </Button>
+                            </Box>
+                          </Box>
+                        )}
 
                         {/* Expanded: details */}
                         {isExpanded && (
@@ -2473,6 +2595,11 @@ export function Sidebar({
               <SavedFeaturePlots
                 plotData={plotViewerFeature.plot_data}
                 featureName={plotViewerFeature.name}
+                feature={plotViewerFeature}
+                onUpdateAreaImageLayer={onUpdateAreaImageLayer}
+                onUpdatePredictionSnapshot={onUpdatePredictionSnapshotViz}
+                updatingImageLayerId={updatingImageLayerId}
+                updateImageLayerError={updateImageLayerError}
               />
             </Box>
 

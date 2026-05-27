@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,6 +40,62 @@ def _resolve_cmap(name: Optional[str]) -> str:
     if not name:
         return "viridis"
     return _TITILER_TO_MPL_CMAP.get(name, name)
+
+
+# MGRS tile identifier embedded in RH prediction COG paths (e.g.
+# `.../2020/original/12SWD/RH98_Q1.tif` or `…/12-2022/12SWD/RH98_Q1.tif`).
+# Matched anywhere in the URL/path so we can attach tile traceability to
+# the saved per-image record without re-running the lat/lon → MGRS resolver.
+_MGRS_TILE_IN_PATH_RE = re.compile(
+    r"(?<![A-Z0-9])"
+    r"(\d{1,3}[CDEFGHJKLMNPQRSTUVWX][ABCDEFGHJKLMNPQRSTUVWXYZ]{2})"
+    r"(?![A-Z0-9])"
+)
+
+
+def _extract_mgrs_tile_from_path(path_or_url: Optional[str]) -> Optional[str]:
+    """Best-effort MGRS tile extraction from a prediction COG path or URL.
+
+    Returns the matched tile in canonical form (zero-padded 2-digit zone)
+    or None when no tile-shaped segment is present.
+    """
+    if not path_or_url:
+        return None
+    m = _MGRS_TILE_IN_PATH_RE.search(path_or_url.upper())
+    if not m:
+        return None
+    candidate = m.group(1)
+    if len(candidate) >= 4 and candidate[1].isdigit():
+        return candidate  # 3-digit zone (rare)
+    return f"{int(candidate[:1]):02d}{candidate[1:]}" if len(candidate) == 4 else candidate
+
+
+def _save_fig_with_preview(
+    fig,
+    fmt: str,
+    save_kwargs: Optional[Dict[str, Any]] = None,
+) -> Tuple[bytes, Optional[bytes]]:
+    """Save `fig` to `fmt`; if `fmt == "pdf"`, also rasterize the same figure
+    to PNG (using identical layout kwargs) and return it as a sibling preview.
+    Closes the figure either way.
+
+    Browser PDF embeds clip the page and add toolbars/scrollbars, which made
+    multi-panel saved PDFs unreadable in the gallery. The sibling PNG renders
+    inline cleanly at natural aspect while the PDF stays as the download
+    artifact.
+    """
+    import matplotlib.pyplot as plt
+
+    kwargs = dict(save_kwargs or {})
+    primary_buf = io.BytesIO()
+    fig.savefig(primary_buf, format=fmt, **kwargs)
+    preview_bytes: Optional[bytes] = None
+    if fmt == "pdf":
+        preview_buf = io.BytesIO()
+        fig.savefig(preview_buf, format="png", **kwargs)
+        preview_bytes = preview_buf.getvalue()
+    plt.close(fig)
+    return primary_buf.getvalue(), preview_bytes
 
 
 def _read_as_float(src, window, indexes=None) -> np.ndarray:
@@ -198,7 +255,7 @@ def render_xyz_tile_figure(
     draw_scale_bar: bool = True,
     max_width_px: int = 4096,
     max_zoom: int = 18,
-) -> bytes:
+) -> Tuple[bytes, Optional[bytes]]:
     """Stitch a Web-Mercator XYZ tile layer for a WGS84 bbox and render it to
     `fmt` (png/jpg/pdf) via matplotlib, with an optional vector scale bar.
 
@@ -247,13 +304,10 @@ def render_xyz_tile_figure(
         except Exception:
             pass  # scale bar is decorative; never block the export
 
-    buf = io.BytesIO()
     save_kwargs: Dict[str, Any] = {"pad_inches": 0}
     if fmt == "png":
         save_kwargs["transparent"] = True  # keep the EE nodata mask transparent
-    fig.savefig(buf, format=fmt, **save_kwargs)
-    plt.close(fig)
-    return buf.getvalue()
+    return _save_fig_with_preview(fig, fmt, save_kwargs)
 
 
 def render_area_images(
@@ -279,7 +333,7 @@ def render_area_images(
         prefer_sentinel_rgb: bool = False, rgb_bands: Optional[List[int]] = None,
         is_rh_metric: bool = False, include_colorbar: bool = True,
         precomputed_data: Optional[np.ndarray] = None,
-    ) -> bytes:
+    ) -> Tuple[bytes, Optional[bytes]]:
         # Higher dpi for PDF — vector elements stay sharp regardless, but the
         # embedded raster (the imshow of the data) inherits the figure dpi.
         render_dpi = 300 if payload.format == "pdf" else 160
@@ -316,10 +370,7 @@ def render_area_images(
             ax = fig.add_axes([0, 0, 1, 1])  # axes fills figure → no margins
             ax.set_axis_off()
             ax.imshow(rendered, aspect="auto")
-            buf = io.BytesIO()
-            fig.savefig(buf, format=payload.format, pad_inches=0)
-            plt.close(fig)
-            return buf.getvalue()
+            return _save_fig_with_preview(fig, payload.format, {"pad_inches": 0})
         else:
             data = _read_as_float(src, window, indexes=1)
 
@@ -339,13 +390,10 @@ def render_area_images(
             ax = fig.add_axes([0, 0, 1, 1])  # axes fills figure → no margins
             ax.set_axis_off()
             ax.imshow(data, cmap=_resolve_cmap(cmap), vmin=low, vmax=high, aspect="auto")
-            buf = io.BytesIO()
             save_kwargs: Dict[str, Any] = {"pad_inches": 0}
             if payload.format == "png":
                 save_kwargs["transparent"] = True
-            fig.savefig(buf, format=payload.format, **save_kwargs)
-            plt.close(fig)
-            return buf.getvalue()
+            return _save_fig_with_preview(fig, payload.format, save_kwargs)
 
         # Single-band path keeps the original layout because the colorbar
         # needs the right-hand margin matplotlib reserves by default.
@@ -366,10 +414,10 @@ def render_area_images(
             cbar.set_ticks([low, high])
             cbar.set_ticklabels([f"{low:g}", f"{high:g}"])
         cbar.ax.tick_params(labelsize=20)
-        buf = io.BytesIO()
-        fig.savefig(buf, format=payload.format, bbox_inches="tight", pad_inches=0.05)
-        plt.close(fig)
-        return buf.getvalue()
+        return _save_fig_with_preview(
+            fig, payload.format,
+            {"bbox_inches": "tight", "pad_inches": 0.05},
+        )
 
     image_exports: List[Dict[str, Any]] = []
     render_errors: List[Dict[str, str]] = []
@@ -380,7 +428,13 @@ def render_area_images(
     else:
         mime_type = f"image/{payload.format}"
 
-    def _record_export(file_name: str, layer: FigureLayerSpec, band_name: Optional[str] = None) -> None:
+    def _record_export(
+        file_name: str,
+        layer: FigureLayerSpec,
+        band_name: Optional[str] = None,
+        preview_file_name: Optional[str] = None,
+        tile_info: Optional[Dict[str, Any]] = None,
+    ) -> None:
         relative_path = str(Path(session_dir_name) / file_name)
         entry: Dict[str, Any] = {
             "layer_id": layer.layer_id,
@@ -390,16 +444,48 @@ def render_area_images(
             "url": image_url_for(relative_path),
             "format": payload.format,
             "mime_type": mime_type,
+            # Per-render timestamp used by the frontend as a cache-buster. The
+            # output filename is intentionally stable (so the on-disk file is
+            # overwritten in place on re-render), which means `url` is identical
+            # across renders — React + the browser would keep showing the stale
+            # cached image without an explicit version stamp.
+            "rendered_at": datetime.now(timezone.utc).isoformat(),
         }
         if band_name is not None:
             entry["band_name"] = band_name
+        if preview_file_name is not None:
+            preview_rel = str(Path(session_dir_name) / preview_file_name)
+            entry["preview_filename"] = preview_file_name
+            entry["preview_relative_path"] = preview_rel
+            entry["preview_url"] = image_url_for(preview_rel)
+            entry["preview_mime_type"] = "image/png"
+        # Tile-level provenance for RH prediction layers: lets the saved
+        # record point back at the underlying COG without re-running the
+        # PREDICTIONS_LOCAL_PATH / PREDICTIONS_REMOTE_PATH resolver later.
+        if tile_info:
+            for k, v in tile_info.items():
+                if v is not None:
+                    entry[k] = v
         image_exports.append(entry)
+
+    def _write_with_preview(
+        file_name: str,
+        image_bytes: bytes,
+        preview_bytes: Optional[bytes],
+    ) -> Optional[str]:
+        """Persist the primary bytes and, when present, a PNG preview sibling."""
+        (session_dir / file_name).write_bytes(image_bytes)
+        if preview_bytes is None:
+            return None
+        preview_file_name = f"{Path(file_name).stem}.preview.png"
+        (session_dir / preview_file_name).write_bytes(preview_bytes)
+        return preview_file_name
 
     wgs_xmin, wgs_ymin, wgs_xmax, wgs_ymax = transform_bounds(
         "EPSG:3857", "EPSG:4326", xmin, ymin, xmax, ymax,
     )
 
-    def _render_eox_mosaic_bytes(year: int, draw_scale_bar: bool = True) -> bytes:
+    def _render_eox_mosaic_bytes(year: int, draw_scale_bar: bool = True) -> Tuple[bytes, Optional[bytes]]:
         """Stitch the EOX s2cloudless mosaic for the selection and render via
         matplotlib so the saved file honours `payload.format` (png/jpg/pdf).
         A matplotlib-drawn scale bar sits in the lower-left corner — vector
@@ -445,10 +531,7 @@ def render_area_images(
         # short end ticks, label centred above. Sized in axes fractions so it
         # stays restrained regardless of source-image resolution.
         if not draw_scale_bar:
-            buf = io.BytesIO()
-            fig.savefig(buf, format=payload.format, pad_inches=0)
-            plt.close(fig)
-            return buf.getvalue()
+            return _save_fig_with_preview(fig, payload.format, {"pad_inches": 0})
         try:
             min_lon = float(sat_meta.get("min_lon", wgs_xmin))
             max_lon = float(sat_meta.get("max_lon", wgs_xmax))
@@ -523,13 +606,10 @@ def render_area_images(
         except Exception:
             pass  # Scale bar is decorative; never block the export.
 
-        buf = io.BytesIO()
         # `bbox_inches="tight"` would re-introduce the white margin we just
         # eliminated by aspect-matching the figure to the EOX stitch — use
         # the figure's actual extent and zero padding instead.
-        fig.savefig(buf, format=payload.format, pad_inches=0)
-        plt.close(fig)
-        return buf.getvalue()
+        return _save_fig_with_preview(fig, payload.format, {"pad_inches": 0})
 
     _EOX_URL_RE = re.compile(r"tiles\.maps\.eox\.at/.+/s2cloudless-(\d{4})_3857/")
 
@@ -586,9 +666,9 @@ def render_area_images(
                     f"draw_bar={draw_bar} -> {file_name}",
                     flush=True,
                 )
-                image_bytes = _render_eox_mosaic_bytes(year, draw_scale_bar=draw_bar)
-                (session_dir / file_name).write_bytes(image_bytes)
-                _record_export(file_name, layer)
+                image_bytes, preview_bytes = _render_eox_mosaic_bytes(year, draw_scale_bar=draw_bar)
+                preview_file_name = _write_with_preview(file_name, image_bytes, preview_bytes)
+                _record_export(file_name, layer, preview_file_name=preview_file_name)
                 print(
                     f"[area_images] EOX layer rendered: {len(image_bytes)} bytes "
                     f"-> image_exports now {len(image_exports)} entries",
@@ -612,14 +692,14 @@ def render_area_images(
                     f"draw_bar={draw_bar} -> {file_name}",
                     flush=True,
                 )
-                image_bytes = render_xyz_tile_figure(
+                image_bytes, preview_bytes = render_xyz_tile_figure(
                     layer.url,
                     float(wgs_xmin), float(wgs_xmax),
                     float(wgs_ymin), float(wgs_ymax),
                     payload.format, draw_scale_bar=draw_bar,
                 )
-                (session_dir / file_name).write_bytes(image_bytes)
-                _record_export(file_name, layer)
+                preview_file_name = _write_with_preview(file_name, image_bytes, preview_bytes)
+                _record_export(file_name, layer, preview_file_name=preview_file_name)
                 print(
                     f"[area_images] EE layer rendered: {len(image_bytes)} bytes "
                     f"-> image_exports now {len(image_exports)} entries",
@@ -657,15 +737,28 @@ def render_area_images(
                         f"{sanitize_name(layer.name)}_"
                         f"{sanitize_name(location_tag)}.{payload.format}"
                     )
-                    image_bytes = _render_one_bytes(
+                    image_bytes, preview_bytes = _render_one_bytes(
                         src, window, layer.name, file_name,
                         layer.colormap, layer.rescale_min, layer.rescale_max,
                         None, is_sentinel, layer.rgb_bands,
                         is_rh_metric=is_rh_layer, include_colorbar=include_colorbar,
                         precomputed_data=diff,
                     )
-                    (session_dir / file_name).write_bytes(image_bytes)
-                    _record_export(file_name, layer)
+                    preview_file_name = _write_with_preview(file_name, image_bytes, preview_bytes)
+                    tile_info = (
+                        {
+                            "tile_name": _extract_mgrs_tile_from_path(layer.url),
+                            "tile_file_path": layer.url,
+                            "tile_file_path_low": layer.url_low,
+                            "year": layer.year,
+                        }
+                        if is_rh_layer else None
+                    )
+                    _record_export(
+                        file_name, layer,
+                        preview_file_name=preview_file_name,
+                        tile_info=tile_info,
+                    )
                     continue
 
                 if layer.bands and len(layer.bands) > 0:
@@ -677,7 +770,7 @@ def render_area_images(
                             f"{sanitize_name(location_tag)}_"
                             f"{sanitize_name(band_name)}.{payload.format}"
                         )
-                        image_bytes = _render_one_bytes(
+                        image_bytes, preview_bytes = _render_one_bytes(
                             src, window, title, file_name,
                             band.colormap if band.colormap is not None else layer.colormap,
                             band.rescale_min if band.rescale_min is not None else layer.rescale_min,
@@ -685,21 +778,33 @@ def render_area_images(
                             band.band_index, is_sentinel, layer.rgb_bands,
                             is_rh_metric=False, include_colorbar=include_colorbar,
                         )
-                        (session_dir / file_name).write_bytes(image_bytes)
-                        _record_export(file_name, layer, band_name=band_name)
+                        preview_file_name = _write_with_preview(file_name, image_bytes, preview_bytes)
+                        _record_export(file_name, layer, band_name=band_name, preview_file_name=preview_file_name)
                 else:
                     file_name = (
                         f"{sanitize_name(layer.name)}_"
                         f"{sanitize_name(location_tag)}.{payload.format}"
                     )
-                    image_bytes = _render_one_bytes(
+                    image_bytes, preview_bytes = _render_one_bytes(
                         src, window, layer.name, file_name,
                         layer.colormap, layer.rescale_min, layer.rescale_max,
                         None, is_sentinel, layer.rgb_bands,
                         is_rh_metric=is_rh_layer, include_colorbar=include_colorbar,
                     )
-                    (session_dir / file_name).write_bytes(image_bytes)
-                    _record_export(file_name, layer)
+                    preview_file_name = _write_with_preview(file_name, image_bytes, preview_bytes)
+                    tile_info = (
+                        {
+                            "tile_name": _extract_mgrs_tile_from_path(layer.url),
+                            "tile_file_path": layer.url,
+                            "year": layer.year,
+                        }
+                        if is_rh_layer else None
+                    )
+                    _record_export(
+                        file_name, layer,
+                        preview_file_name=preview_file_name,
+                        tile_info=tile_info,
+                    )
         except Exception as exc:
             import traceback as _tb
             print(
