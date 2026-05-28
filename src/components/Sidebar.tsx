@@ -19,6 +19,8 @@ import {
   Alert,
   Collapse,
   Tooltip,
+  Autocomplete,
+  Chip,
 } from '@mui/material';
 import {
   Layers as LayersIcon,
@@ -599,6 +601,7 @@ export function Sidebar({
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [savedCategoryFilter, setSavedCategoryFilter] = useState<string>('');
   const [savedTypeFilter, setSavedTypeFilter] = useState<string>('');
+  const [savedTagsFilter, setSavedTagsFilter] = useState<string[]>([]);
   // Feature ids whose "square" checkbox is ticked — when set, the area-image
   // Update will crop the polygon to a square on its shortest side.
   const [squareAreaFeatureIds, setSquareAreaFeatureIds] = useState<Set<number>>(new Set());
@@ -611,14 +614,36 @@ export function Sidebar({
   const [editingSavedId, setEditingSavedId] = useState<number | null>(null);
   const [editSavedName, setEditSavedName] = useState('');
   const [editSavedDescription, setEditSavedDescription] = useState('');
-  const [editSavedTags, setEditSavedTags] = useState('');
+  const [editSavedTags, setEditSavedTags] = useState<string[]>([]);
   const [openDbSaveDialog, setOpenDbSaveDialog] = useState(false);
 
   const savedCategories = Array.from(new Set(savedMapFeatures.map((f) => f.category).filter(Boolean))) as string[];
 
+  // Build tag options case-insensitively, preserving first-seen casing.
+  const savedTagOptions = (() => {
+    const seen = new Map<string, string>();
+    for (const f of savedMapFeatures) {
+      const tags = Array.isArray(f.metadata?.tags) ? f.metadata?.tags : [];
+      for (const t of tags ?? []) {
+        if (typeof t !== 'string') continue;
+        const trimmed = t.trim();
+        if (!trimmed) continue;
+        const key = trimmed.toLocaleLowerCase();
+        if (!seen.has(key)) seen.set(key, trimmed);
+      }
+    }
+    return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
+  })();
+
   const filteredSavedFeatures = savedMapFeatures.filter((f) => {
     if (savedTypeFilter && f.geometry.type !== savedTypeFilter) return false;
     if (savedCategoryFilter && f.category !== savedCategoryFilter) return false;
+    if (savedTagsFilter.length > 0) {
+      const featureTags = Array.isArray(f.metadata?.tags) ? f.metadata?.tags ?? [] : [];
+      const featureKeys = new Set(featureTags.map((t) => String(t).toLocaleLowerCase()));
+      const matchesAny = savedTagsFilter.some((t) => featureKeys.has(t.toLocaleLowerCase()));
+      if (!matchesAny) return false;
+    }
     if (savedSearch.trim()) {
       const q = savedSearch.trim().toLowerCase();
       try {
@@ -1498,6 +1523,76 @@ export function Sidebar({
                   </FormControl>
                 </Box>
 
+                {/* Filter by tags (multi-select, matches any selected tag) */}
+                <Autocomplete
+                  multiple
+                  size="small"
+                  fullWidth
+                  options={savedTagOptions}
+                  value={savedTagsFilter}
+                  onChange={(_, value) => {
+                    // Dedupe case-insensitively, preserve first-seen casing.
+                    const seen = new Map<string, string>();
+                    for (const raw of value as string[]) {
+                      const trimmed = String(raw).trim();
+                      if (!trimmed) continue;
+                      const key = trimmed.toLocaleLowerCase();
+                      if (!seen.has(key)) seen.set(key, trimmed);
+                    }
+                    setSavedTagsFilter(Array.from(seen.values()));
+                  }}
+                  filterOptions={(options, state) => {
+                    const selectedKeys = new Set(savedTagsFilter.map((t) => t.toLocaleLowerCase()));
+                    const query = state.inputValue.trim().toLocaleLowerCase();
+                    return options.filter((opt) => {
+                      const key = opt.toLocaleLowerCase();
+                      if (selectedKeys.has(key)) return false;
+                      return !query || key.includes(query);
+                    });
+                  }}
+                  isOptionEqualToValue={(opt, val) => opt.toLocaleLowerCase() === String(val).toLocaleLowerCase()}
+                  renderTags={(value, getTagProps) =>
+                    value.map((option, index) => {
+                      const { key, ...tagProps } = getTagProps({ index });
+                      return (
+                        <Chip
+                          key={key}
+                          size="small"
+                          label={option}
+                          {...tagProps}
+                          sx={{
+                            height: 22,
+                            fontSize: '0.72rem',
+                            backgroundColor: ui.accentSoft,
+                            color: ui.accent,
+                            '& .MuiChip-deleteIcon': { color: ui.accent },
+                          }}
+                        />
+                      );
+                    })
+                  }
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      placeholder={savedTagsFilter.length === 0
+                        ? (savedTagOptions.length > 0 ? 'Filter by tags…' : 'No tags yet')
+                        : ''}
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          backgroundColor: ui.fieldBg,
+                          color: ui.fieldText,
+                          fontSize: '0.82rem',
+                          py: 0.25,
+                          '& fieldset': { borderColor: ui.border },
+                          '&:hover fieldset': { borderColor: ui.borderStrong },
+                        },
+                        '& .MuiOutlinedInput-input::placeholder': { color: ui.textMuted, opacity: 1 },
+                      }}
+                    />
+                  )}
+                  disabled={savedTagOptions.length === 0 && savedTagsFilter.length === 0}
+                />
+
                 {savedMapFeatures.length === 0 && !savedFeaturesLoading && !savedFeaturesError && (
                   <Typography variant="body2" sx={{ color: ui.textMuted }}>
                     No saved locations yet. Use inspect tools and save from the panel.
@@ -1579,7 +1674,7 @@ export function Sidebar({
                                 setEditingSavedId(feature.id);
                                 setEditSavedName(feature.name ?? '');
                                 setEditSavedDescription(feature.description ?? '');
-                                setEditSavedTags(tags.join(', '));
+                                setEditSavedTags(tags.slice());
                               }}
                               sx={{ color: ui.textMuted, flexShrink: 0 }}
                             >
@@ -1688,6 +1783,10 @@ export function Sidebar({
                                   value={editSavedName}
                                   onChange={(e) => setEditSavedName(e.target.value)}
                                   fullWidth
+                                  sx={{
+                                    '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
+                                    '& .MuiInputLabel-root': { color: ui.fieldLabel },
+                                  }}
                                 />
                                 <TextField
                                   size="small"
@@ -1697,13 +1796,71 @@ export function Sidebar({
                                   fullWidth
                                   multiline
                                   minRows={2}
+                                  sx={{
+                                    '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
+                                    '& .MuiInputLabel-root': { color: ui.fieldLabel },
+                                  }}
                                 />
-                                <TextField
+                                <Autocomplete
+                                  multiple
+                                  freeSolo
                                   size="small"
-                                  label="Tags (comma-separated)"
-                                  value={editSavedTags}
-                                  onChange={(e) => setEditSavedTags(e.target.value)}
                                   fullWidth
+                                  options={savedTagOptions}
+                                  value={editSavedTags}
+                                  onChange={(_, value) => {
+                                    // Dedupe case-insensitively, preserve first-seen casing.
+                                    const seen = new Map<string, string>();
+                                    for (const raw of value as string[]) {
+                                      const trimmed = String(raw).trim();
+                                      if (!trimmed) continue;
+                                      const key = trimmed.toLocaleLowerCase();
+                                      if (!seen.has(key)) seen.set(key, trimmed);
+                                    }
+                                    setEditSavedTags(Array.from(seen.values()));
+                                  }}
+                                  filterOptions={(options, state) => {
+                                    const selectedKeys = new Set(editSavedTags.map((t) => t.toLocaleLowerCase()));
+                                    const query = state.inputValue.trim().toLocaleLowerCase();
+                                    return options.filter((opt) => {
+                                      const key = opt.toLocaleLowerCase();
+                                      if (selectedKeys.has(key)) return false;
+                                      return !query || key.includes(query);
+                                    });
+                                  }}
+                                  isOptionEqualToValue={(opt, val) => opt.toLocaleLowerCase() === String(val).toLocaleLowerCase()}
+                                  renderTags={(value, getTagProps) =>
+                                    value.map((option, index) => {
+                                      const { key, ...tagProps } = getTagProps({ index });
+                                      return (
+                                        <Chip
+                                          key={key}
+                                          size="small"
+                                          label={option}
+                                          {...tagProps}
+                                          sx={{
+                                            height: 22,
+                                            fontSize: '0.72rem',
+                                            backgroundColor: ui.accentSoft,
+                                            color: ui.accent,
+                                            '& .MuiChip-deleteIcon': { color: ui.accent },
+                                          }}
+                                        />
+                                      );
+                                    })
+                                  }
+                                  renderInput={(params) => (
+                                    <TextField
+                                      {...params}
+                                      label="Tags"
+                                      placeholder={editSavedTags.length === 0 ? 'Add tags…' : ''}
+                                      sx={{
+                                        '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
+                                        '& .MuiInputLabel-root': { color: ui.fieldLabel },
+                                        '& .MuiOutlinedInput-input::placeholder': { color: ui.textMuted, opacity: 1 },
+                                      }}
+                                    />
+                                  )}
                                 />
                                 <Box sx={{ display: 'flex', gap: 0.8, justifyContent: 'flex-end' }}>
                                   <Button
@@ -1720,7 +1877,6 @@ export function Sidebar({
                                     disabled={isUpdating || !editSavedName.trim()}
                                     onClick={async () => {
                                       const tagList = editSavedTags
-                                        .split(',')
                                         .map((t) => t.trim())
                                         .filter(Boolean);
                                       await onUpdateSavedFeature(feature.id, {
