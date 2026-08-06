@@ -39,6 +39,20 @@ fi
 export SAVED_FEATURES_DB_PATH="${SAVED_FEATURES_DB_PATH:-$STATE_DIR/saved_features.db}"
 export SAVED_FEATURE_IMAGES_ROOT="${SAVED_FEATURE_IMAGES_ROOT:-$STATE_DIR/saved_feature_images}"
 
+# The Sentinel-2 / deploy-status grid. Read-only, so it is served straight out
+# of the image rather than staged into $STATE_DIR.
+#
+# This is not just another optional layer: useAutoLoadVSM derives the set of
+# visible MGRS tiles from this grid's `Name` attribute, and bails out when the
+# set is empty. Without it, *no* prediction tile is ever requested and the map
+# stays blank at every zoom level.
+if [ -f "$APP_DIR/data/s2_grid.fgb" ]; then
+  export S2_GRID_LOCAL_PATH="${S2_GRID_LOCAL_PATH:-$APP_DIR/data/s2_grid.fgb}"
+  echo "[entrypoint] S2 grid: $S2_GRID_LOCAL_PATH"
+else
+  echo "[entrypoint] WARNING: no data/s2_grid.fgb — VSM tiles will never load"
+fi
+
 cd "$APP_DIR/backend"
 
 # --workers 1 is deliberate: RENDER_LOCK (backend/routes/saved_features/render_lock.py)

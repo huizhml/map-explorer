@@ -36,4 +36,8 @@ __pycache__
 # Deployment state pulled from the internal host — never commit the DB or images.
 deploy/data/*
 !deploy/data/.gitkeep
+# The MGRS/deploy-status grid is a build input, not user state: without it the
+# frontend cannot work out which prediction tiles to request and the map stays
+# blank. Tracked so a fresh clone can reproduce the deployment.
+!deploy/data/s2_grid.fgb
 deploy/hf-space/.space-repo/
