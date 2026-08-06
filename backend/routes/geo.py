@@ -17,6 +17,23 @@ NATURALNESS_REF_DATA_PATH = os.environ.get("NATURALNESS_REF_DATA_PATH", "")
 NATURALNESS_REF_DATA_VAL_PATH = os.environ.get("NATURALNESS_REF_DATA_VAL_PATH", "")
 NATURALNESS_MAP_PATH = os.environ.get("NATURALNESS_MAP_PATH", "")
 
+# 8 KB chunks meant one ASGI send() per 8 KB. Through the middleware stack that
+# measured ~0.15 s each, so streaming the 5 MB MGRS grid stalled entirely.
+# Streaming cost here is dominated by per-chunk round-trips, not chunk size.
+FGB_CHUNK_SIZE = 1024 * 1024
+
+# Below this, read the bytes and return one plain Response instead of streaming.
+#
+# StreamingResponse has to pass through CustomCORSMiddleware, which is a
+# BaseHTTPMiddleware; that bridges each chunk over an anyio memory stream and
+# reliably wedges partway through a multi-megabyte body — the 5 MB MGRS grid
+# stalled at ~4 MB every time, on both the range and the full-body path, while
+# a 2 MB range completed in 8 s. A single-body Response never enters that path.
+#
+# 32 MiB of buffer per in-flight request is affordable at --concurrency 8 on a
+# 2 GiB instance; anything larger still streams and takes its chances.
+INMEMORY_MAX_BYTES = 32 * 1024 * 1024
+
 # ---------------------------------------------------------------------------
 # GeoParquet
 # ---------------------------------------------------------------------------
@@ -96,7 +113,7 @@ async def proxy_fgb(url: str, request: Request):
             status_code = 200
 
         def generate():
-            for chunk in response.iter_content(chunk_size=8192):
+            for chunk in response.iter_content(chunk_size=FGB_CHUNK_SIZE):
                 if chunk:
                     yield chunk
 
@@ -136,12 +153,21 @@ def _serve_fgb_file(request: Request, file_path: str, missing_error: str):
         end = min(end, file_size - 1)
         length = end - start + 1
 
+        if length <= INMEMORY_MAX_BYTES:
+            with open(file_path, "rb") as f:
+                f.seek(start)
+                payload = f.read(length)
+            return Response(
+                content=payload, status_code=206, media_type="application/octet-stream",
+                headers={**cors, "Content-Range": f"bytes {start}-{end}/{file_size}"},
+            )
+
         def generate():
             with open(file_path, "rb") as f:
                 f.seek(start)
                 remaining = length
                 while remaining > 0:
-                    data = f.read(min(8192, remaining))
+                    data = f.read(min(FGB_CHUNK_SIZE, remaining))
                     if not data:
                         break
                     remaining -= len(data)
@@ -149,10 +175,15 @@ def _serve_fgb_file(request: Request, file_path: str, missing_error: str):
 
         return StreamingResponse(generate(), status_code=206, media_type="application/octet-stream", headers={**cors, "Content-Length": str(length), "Content-Range": f"bytes {start}-{end}/{file_size}"})
     else:
+        if file_size <= INMEMORY_MAX_BYTES:
+            with open(file_path, "rb") as f:
+                payload = f.read()
+            return Response(content=payload, media_type="application/octet-stream", headers=cors)
+
         def generate():
             with open(file_path, "rb") as f:
                 while True:
-                    data = f.read(8192)
+                    data = f.read(FGB_CHUNK_SIZE)
                     if not data:
                         break
                     yield data
