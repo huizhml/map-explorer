@@ -33,3 +33,7 @@ backend/data/saved_features.db-*  # SQLite WAL / journal sidecars
 .vscode
 __pycache__
 *.pyc
+# Deployment state pulled from the internal host — never commit the DB or images.
+deploy/data/*
+!deploy/data/.gitkeep
+deploy/hf-space/.space-repo/

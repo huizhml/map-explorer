@@ -17,6 +17,7 @@ import os
 from PIL import Image
 
 import colormaps_extra  # noqa: F401  side-effect: register 'mako' globally
+from deploy_guard import install_public_guard, readonly_enabled
 from routes.sentinel2 import router as sentinel2_router
 from routes.predictions import router as predictions_router
 from routes.auxiliary import router as auxiliary_router
@@ -92,13 +93,25 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(title="Canopy Height – TiTiler with Mosaic + Viewer")
 app.add_middleware(CustomCORSMiddleware)
+# No-op unless PUBLIC_READONLY is set, so the internal deployment is unaffected.
+install_public_guard(app)
 init_saved_features_db()
 
 cog = TilerFactory(extensions=[cogViewerExtension()])
 app.include_router(cog.router, prefix="/cog", tags=["cog"])
 
-mosaic = MosaicTilerFactory()
-app.include_router(mosaic.router, tags=["mosaicjson"])
+# The frontend never calls /mosaicjson/* — the app's "mosaic" is a single
+# pre-built COG whose path comes from /predictions/mosaic-url and is then
+# rendered through /cog/tiles. So this router is optional, and newer
+# titiler.mosaic releases require a `backend=` argument that older ones did not.
+# Register it when the installed version allows, skip it otherwise, rather than
+# pinning every deployment to one titiler release.
+try:
+    mosaic = MosaicTilerFactory()
+    app.include_router(mosaic.router, tags=["mosaicjson"])
+    print("[app] mosaicjson router registered")
+except TypeError as exc:
+    print(f"[app] skipping mosaicjson router (unused by the frontend): {exc}")
 
 # ---------------------------------------------------------------------------
 # Exception handler — transparent tile for out-of-bounds
@@ -122,7 +135,9 @@ async def tile_outside_bounds_handler(request: Request, exc: TileOutsideBounds):
 
 @app.get("/deploy/status")
 async def get_deploy_status():
-    return {"message": "Hello World"}
+    # `read_only` lets the frontend hide save/edit/delete affordances instead of
+    # letting the user click them and collect a 403.
+    return {"message": "Hello World", "read_only": readonly_enabled()}
 
 # ---------------------------------------------------------------------------
 # Route modules

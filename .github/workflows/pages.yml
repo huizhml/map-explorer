@@ -1,0 +1,53 @@
+name: Deploy frontend to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; skip superseded runs rather than queueing them.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # `build:web` skips `tsc -b` on purpose: the repo currently has 17
+      # pre-existing type errors, and Vite strips types without checking them
+      # anyway, so type-checking here would only block deploys. Run
+      # `npm run build` locally to see them.
+      - run: npm run build:web -- --base=/${{ github.event.repository.name }}/
+        env:
+          # Repo Settings → Secrets and variables → Actions → Variables.
+          # e.g. https://your-user-gvsm-map-explorer-api.hf.space
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

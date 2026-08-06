@@ -1,0 +1,22 @@
+# Uploaded to Cloud Build on every deploy. Keep it to what the Dockerfile COPYs.
+#
+# NOTE: once this file exists, gcloud stops honouring .gitignore — so anything
+# secret that .gitignore was protecting has to be repeated here.
+.git/
+.github/
+.vscode/
+.claude/
+node_modules/
+dist/
+src/
+public/
+app/
+scripts/
+**/__pycache__/
+*.pyc
+deploy/hf-space/
+*.html
+test_*.py
+.env*
+keys/
+*.log

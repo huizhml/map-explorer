@@ -10,7 +10,6 @@ Dependencies: numpy, rasterio, gdal, scipy, psutil
 Optional: stackstac, pystac, xarray, rioxarray (for STAC-based workflow)
 """
 
-from osgeo import gdal
 import glob
 import rasterio
 from rasterio.windows import Window
@@ -406,6 +405,10 @@ class ProgressMonitor:
 
 
 def create_vrt(tile_dir, vrt_path, q_idx="1"):
+    # Imported lazily: the osgeo bindings need a system GDAL, which the slim
+    # deployment image doesn't ship. This is the only function that needs them.
+    from osgeo import gdal
+
     tile_dir = Path(tile_dir).expanduser()
     vrt_path = Path(vrt_path).expanduser()
     vrt_path.parent.mkdir(parents=True, exist_ok=True)

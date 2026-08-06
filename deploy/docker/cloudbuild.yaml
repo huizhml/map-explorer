@@ -1,0 +1,26 @@
+# Build the backend image with our own Dockerfile.
+#
+# Needed because `gcloud run deploy --source .` only picks up a Dockerfile at
+# the *root* of the source. Ours lives in deploy/docker/, so that command
+# silently fell back to Buildpacks, which then tried to build the repo as a
+# Node app (package.json is at the root) and failed.
+#
+# The build context stays the repo root — the Dockerfile's COPY paths are
+# repo-root-relative.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file=deploy/docker/Dockerfile
+      - --tag=${_IMAGE}
+      - .
+
+images:
+  - ${_IMAGE}
+
+# The default 10-minute build timeout is not enough: the image pulls ~1.5 GB of
+# wheels (rasterio, geopandas, matplotlib, titiler) on a cold cache.
+timeout: 3600s
+
+options:
+  logging: CLOUD_LOGGING_ONLY

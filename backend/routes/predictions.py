@@ -65,6 +65,29 @@ def _to_jsonable(v):
 # PREDICTIONS_LOCAL_ORIGINAL_BASE_PATH + PREDICTIONS_LOCAL_PATH_TEMPLATE trio.
 PREDICTIONS_LOCAL_PATH = os.environ.get("PREDICTIONS_LOCAL_PATH", "")
 PREDICTIONS_BASE_URL = os.environ.get("PREDICTIONS_BASE_URL", "")
+
+# Years served from local disk; every other year is fetched over HTTP from
+# PREDICTIONS_BASE_URL. Purely declarative — the source is decided by config,
+# never by probing the filesystem, so the same code behaves identically on the
+# internal host and on a public deployment.
+#
+#   internal (hendrix/lumi): PREDICTIONS_LOCAL_YEARS=2020
+#   public deployment      : leave unset — everything comes from source.coop
+def _parse_local_years(raw: str) -> frozenset[int]:
+    out = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except ValueError:
+            print(f"[predictions] ignoring non-integer PREDICTIONS_LOCAL_YEARS entry: {part!r}")
+    return frozenset(out)
+
+
+PREDICTIONS_LOCAL_YEARS = _parse_local_years(os.environ.get("PREDICTIONS_LOCAL_YEARS", ""))
+print(f"[predictions] local years: {sorted(PREDICTIONS_LOCAL_YEARS) or 'none (all remote)'}")
 PREDICTIONS_REMOTE_PATH_TEMPLATE = os.environ.get("PREDICTIONS_REMOTE_PATH_TEMPLATE", "{zone}-{year}/{tile}/RH{rh}_Q{q}.tif")
 VERTICAL_PROFILE_WORKERS = max(4, min(48, int(os.environ.get("VERTICAL_PROFILE_WORKERS", "28"))))
 
@@ -179,7 +202,7 @@ def _build_profile_paths(year: int, version: str, q_index: int, tile_name: str):
     zone = tile_name[:3].lower() if len(tile_name) >= 3 else tile_name.lower()
     fmt_base = dict(zone=zone, year=year, tile=tile_name, q=q_index, version=version)
 
-    if year == 2020:
+    if year in PREDICTIONS_LOCAL_YEARS:
         if not PREDICTIONS_LOCAL_PATH:
             return None, fmt_base, "PREDICTIONS_LOCAL_PATH not set."
         return PREDICTIONS_LOCAL_PATH, fmt_base, None
@@ -191,7 +214,7 @@ def _build_profile_paths(year: int, version: str, q_index: int, tile_name: str):
 
 def _path_for_rh(year: int, local_tpl: Optional[str], fmt_base: Dict[str, Union[str, int]], rh: int) -> Optional[str]:
     fmt_rh = {**fmt_base, "rh": rh}
-    if year == 2020:
+    if year in PREDICTIONS_LOCAL_YEARS:
         if not local_tpl:
             return None
         try:
@@ -231,7 +254,7 @@ def _compute_profile_at_point(
         p = _path_for_rh(year, local_tpl, fmt_base, rh)
         if not p:
             return rh, None, True
-        if year == 2020 and not os.path.isfile(p):
+        if year in PREDICTIONS_LOCAL_YEARS and not os.path.isfile(p):
             return rh, None, True
         return rh, _sample_rh_geotiff(p, lon, lat), False
 
@@ -395,7 +418,7 @@ async def get_mosaic_url(
 ):
     fmt = dict(year=year, rh=rh_index, q=q_index, version=version)
 
-    if year == 2020:
+    if year in PREDICTIONS_LOCAL_YEARS:
         template = os.environ.get("PREDICTIONS_MOSAIC_LOCAL_PATH", "")
         if not template:
             return {"success": False, "error": "PREDICTIONS_MOSAIC_LOCAL_PATH env var is not set"}
@@ -425,7 +448,7 @@ async def load_predictions(request: PredictionsRequest):
         rh=request.rh_index, q=request.q_index, version=request.version,
     )
 
-    if request.year == 2020:
+    if request.year in PREDICTIONS_LOCAL_YEARS:
         if not PREDICTIONS_LOCAL_PATH:
             return {"success": False, "error": "PREDICTIONS_LOCAL_PATH env var is not set."}
         try:
@@ -595,7 +618,7 @@ async def predictions_vertical_profile_line(request: VerticalProfileLineRequest)
                 p = _path_for_rh(request.year, local_tpl, fmt_base, rh)
                 if not p:
                     return rh, [None] * len(tile_points), True
-                if request.year == 2020 and not os.path.isfile(p):
+                if request.year in PREDICTIONS_LOCAL_YEARS and not os.path.isfile(p):
                     return rh, [None] * len(tile_points), True
                 vals = _sample_rh_geotiff_many(p, tile_points)
                 return rh, vals, False

@@ -196,8 +196,12 @@ def _prediction_rh98_url_for_point(
     remote_base = os.environ.get("PREDICTIONS_BASE_URL", "")
     zone = tile[:3].lower() if len(tile) >= 3 else tile.lower()
 
+    # Same local-vs-remote rule as the prediction routes; see
+    # routes/predictions.py for PREDICTIONS_LOCAL_YEARS.
+    from routes.predictions import PREDICTIONS_LOCAL_YEARS
+
     try:
-        if year == 2020:
+        if year in PREDICTIONS_LOCAL_YEARS:
             if not local_tpl:
                 return None, tile, "predictions_local_path_not_set"
             path = local_tpl.format(tile=tile, rh=rh_index, q=q_index, version=version, year=year)

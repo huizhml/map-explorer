@@ -1,0 +1,37 @@
+# Runtime deps for the public Space. Deliberately narrower than
+# backend/requirements.txt: pystac / hydra / cogeo-mosaic / ipdb are only used
+# by the standalone scripts (create_stac_collection.py, stac_to_list.py), and
+# GDAL's osgeo bindings are no longer needed at import time.
+#
+# rasterio is pinned because its bundled GDAL is what decodes LERC_ZSTD;
+# 1.4.3 (GDAL 3.9.3) is verified against the source.coop COGs.
+# After the first successful build, `pip freeze` inside the container and pin
+# the rest too, so a reviewer six months from now gets the same stack.
+
+fastapi
+uvicorn[standard]
+pydantic
+
+titiler.core
+titiler.mosaic
+titiler.extensions
+rio-tiler
+rasterio==1.4.3
+
+numpy
+pandas
+geopandas
+shapely
+pyproj
+pyarrow
+duckdb
+scipy
+psutil
+mgrs
+requests
+
+matplotlib
+seaborn
+pillow
+
+earthengine-api
