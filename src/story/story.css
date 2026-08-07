@@ -1,0 +1,286 @@
+/* Story page styling. Deliberately free of any UI framework — this page must
+   not pull in MUI or antd, or it stops being cheap to load. */
+
+:root {
+  --story-bg: #0b0f0e;
+  --story-fg: #eef2f0;
+  --story-muted: #97a5a0;
+  --story-accent: #7ee0a6;
+  --story-rule: #1e2a26;
+  --story-measure: 34rem;
+}
+
+.story {
+  background: var(--story-bg);
+  color: var(--story-fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------------------------------------------------------------- nav ---- */
+
+.story-nav {
+  position: fixed;
+  top: 50%;
+  right: 1.5rem;
+  transform: translateY(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.story-nav a {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-decoration: none;
+  color: var(--story-muted);
+  font-size: 0.78rem;
+}
+
+.story-nav__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  flex: none;
+  transition: background-color 0.2s, transform 0.2s;
+}
+
+.story-nav a.is-active {
+  color: var(--story-accent);
+}
+.story-nav a.is-active .story-nav__dot {
+  background: currentColor;
+  transform: scale(1.35);
+}
+
+/* Labels would crowd the viewport; reveal on hover/focus only. */
+.story-nav__label {
+  opacity: 0;
+  transform: translateX(0.4rem);
+  transition: opacity 0.2s, transform 0.2s;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.story-nav a:hover .story-nav__label,
+.story-nav a:focus-visible .story-nav__label {
+  opacity: 1;
+  transform: none;
+}
+
+/* --------------------------------------------------------------- hero ---- */
+
+.story-hero {
+  min-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 6vw;
+  max-width: 60rem;
+}
+
+.story-hero__eyebrow {
+  color: var(--story-accent);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  margin: 0 0 1.5rem;
+}
+
+.story-hero h1 {
+  font-size: clamp(2.4rem, 7vw, 5rem);
+  line-height: 1.05;
+  margin: 0 0 1.5rem;
+  letter-spacing: -0.02em;
+}
+
+.story-hero__lede {
+  font-size: clamp(1.05rem, 2vw, 1.4rem);
+  color: var(--story-muted);
+  max-width: var(--story-measure);
+  margin: 0 0 2.5rem;
+}
+
+/* --------------------------------------------------------------- body ---- */
+
+.story-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4vw;
+  padding: 0 6vw;
+  align-items: start;
+}
+
+.story-sticky {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.story-chapter {
+  min-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  max-width: var(--story-measure);
+  scroll-margin-top: 10vh;
+}
+
+.story-chapter__eyebrow {
+  color: var(--story-accent);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  margin: 0 0 0.75rem;
+}
+
+.story-chapter h2 {
+  font-size: clamp(1.6rem, 3.4vw, 2.4rem);
+  line-height: 1.15;
+  margin: 0 0 1.25rem;
+  letter-spacing: -0.01em;
+}
+
+.story-chapter p {
+  color: #cfd8d4;
+  margin: 0 0 1.1rem;
+}
+
+/* Inline copy of the visual, shown only when the sticky column is gone. */
+.story-chapter__visual {
+  display: none;
+  margin-top: 1.5rem;
+}
+
+/* ------------------------------------------------------------- visuals ---- */
+
+.story-figure {
+  margin: 0;
+  width: 100%;
+}
+.story-figure img {
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  background: #121a17;
+}
+.story-figure figcaption {
+  color: var(--story-muted);
+  font-size: 0.8rem;
+  margin-top: 0.7rem;
+}
+
+.story-placeholder {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border: 1px dashed #2c3a34;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  text-align: center;
+  color: var(--story-muted);
+  font-size: 0.85rem;
+}
+
+.story-stat {
+  text-align: center;
+}
+.story-stat__value {
+  font-size: clamp(3rem, 9vw, 6rem);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--story-accent);
+  font-variant-numeric: tabular-nums;
+}
+.story-stat__unit {
+  font-size: 0.3em;
+  margin-left: 0.4em;
+  color: var(--story-muted);
+  font-weight: 500;
+}
+.story-stat__label {
+  color: var(--story-muted);
+  margin-top: 0.9rem;
+  font-size: 0.9rem;
+}
+
+/* -------------------------------------------------------------- outro ---- */
+
+.story-outro {
+  min-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 0 6vw;
+  border-top: 1px solid #1b2a24;
+  margin-top: 6rem;
+}
+.story-outro h2 {
+  font-size: clamp(1.8rem, 4vw, 3rem);
+  margin: 0 0 1rem;
+}
+.story-outro p {
+  color: var(--story-muted);
+  max-width: var(--story-measure);
+  margin: 0 0 2rem;
+}
+
+.story-cta {
+  display: inline-block;
+  padding: 0.85rem 1.6rem;
+  border-radius: 999px;
+  background: var(--story-accent);
+  color: #06231a;
+  font-weight: 600;
+  text-decoration: none;
+  align-self: flex-start;
+  transition: transform 0.15s, filter 0.15s;
+}
+.story-cta:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+.story-cta--ghost {
+  background: transparent;
+  color: var(--story-fg);
+  border: 1px solid #2c3a34;
+}
+
+/* --------------------------------------------------------- responsive ---- */
+
+@media (max-width: 860px) {
+  .story-body {
+    grid-template-columns: 1fr;
+  }
+  /* One column: the sticky visual has nowhere to stick, so each chapter shows
+     its own inline copy instead. */
+  .story-sticky {
+    display: none;
+  }
+  .story-chapter__visual {
+    display: block;
+  }
+  .story-chapter {
+    min-height: 0;
+    padding: 3rem 0;
+  }
+  .story-nav {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .story-cta,
+  .story-nav__dot,
+  .story-nav__label {
+    transition: none;
+  }
+}

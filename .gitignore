@@ -41,3 +41,8 @@ deploy/data/*
 # blank. Tracked so a fresh clone can reproduce the deployment.
 !deploy/data/s2_grid.fgb
 deploy/hf-space/.space-repo/
+
+# NOTE: public/examples/ is deliberately NOT ignored. The story's transect
+# figures are produced by scripts/generate-transect-examples.mjs, which needs a
+# running backend and takes minutes; the Pages workflow has neither. Same rule
+# as deploy/data/s2_grid.fgb — if CI cannot regenerate it, it belongs in git.

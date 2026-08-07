@@ -91,6 +91,25 @@ Why the flags in that script are what they are:
 - `--timeout 300` — a cold 3D transect render takes tens of seconds.
 - `--max-instances 4` — a cap, so a crawler cannot fan out into a real bill.
 
+## The three pages
+
+The frontend is a Vite multi-page build, not a single app with routes, so each
+page ships only what it uses:
+
+| Entry | Page | Weight (gzip) |
+|---|---|---|
+| `index.html` | Story — narrative intro | ~64 KB |
+| `explore.html` | Simple map — what reviewers get | ~137 KB |
+| `dev.html` | Full app — the working tool | ~746 KB |
+
+`dev.html` is built and deployed but **deliberately not linked from anywhere**.
+On the public backend most of what it offers (upload, saving, auxiliary layers,
+directory browsing) is blocked or unconfigured, so a reviewer who wandered into
+it would meet a wall of 403s and 503s. Reaching it requires knowing the URL.
+
+Keep it that way: adding a link is the easy mistake, and nothing in the reviewer
+flow needs it.
+
 ## Earth Engine
 
 `backend/routes/earthengine.py` only accepts a **service-account** key — it never
