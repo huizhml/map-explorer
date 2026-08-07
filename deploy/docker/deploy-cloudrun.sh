@@ -60,7 +60,7 @@ gcloud run deploy "$SERVICE" \
   --timeout 300 \
   --min-instances 0 \
   --max-instances 4 \
-  --set-env-vars "^|^PUBLIC_READONLY=1|ALLOWED_DATA_URL_PREFIXES=${DATA_URL_PREFIX}|PREDICTIONS_BASE_URL=https://data.source.coop/geoai-ucph/gvsm|PREDICTIONS_REMOTE_PATH_TEMPLATE={year}/{tile}/RH{rh}_Q{q}.tif|PREDICTIONS_MOSAIC_REMOTE_URL=https://data.source.coop/geoai-ucph/gvsm/mosaics/{year}/RH{rh}_Q{q}.tif|VERTICAL_PROFILE_WORKERS=12" \
+  --set-env-vars "^|^PUBLIC_READONLY=1|ALLOWED_DATA_URL_PREFIXES=${DATA_URL_PREFIX}|PREDICTIONS_BASE_URL=https://data.source.coop/geoai-ucph/gvsm|PREDICTIONS_REMOTE_PATH_TEMPLATE={year}/{tile}/RH{rh}_Q{q}.tif|PREDICTIONS_MOSAIC_REMOTE_URL=https://data.source.coop/geoai-ucph/gvsm/mosaics/{year}/RH{rh}_Q{q}.tif|VERTICAL_PROFILE_WORKERS=48" \
   "${SECRET_ARGS[@]}"
 
 # ^ One flag, not five: repeated --set-env-vars replace rather than accumulate.

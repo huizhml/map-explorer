@@ -15,7 +15,7 @@ The same set on every host; only how you set them differs:
 | `PREDICTIONS_BASE_URL` | `https://data.source.coop/geoai-ucph/gvsm` | Base for remote COGs. |
 | `PREDICTIONS_REMOTE_PATH_TEMPLATE` | `{year}/{tile}/RH{rh}_Q{q}.tif` | Matches the actual layout on source.coop (the default in `predictions.py` has a `{zone}-{year}` prefix, which is the internal layout — it does **not** match). |
 | `PREDICTIONS_MOSAIC_REMOTE_URL` | `https://data.source.coop/geoai-ucph/gvsm/mosaics/{year}/RH{rh}_Q{q}.tif` | Global ~1 km overview (0.01°, EPSG:4326, COG/ZSTD), shown below the per-tile zoom threshold. 101 RH levels, **Q1 only** — Q0/Q2 and interval halves 404, and `/predictions/mosaic-url` now reports that instead of returning a URL that renders as blank tiles. |
-| `VERTICAL_PROFILE_WORKERS` | `12` | Default is 28. Each worker opens a separate COG over HTTP; 28 concurrent /vsicurl readers on 2 vCPU is counterproductive. |
+| `VERTICAL_PROFILE_WORKERS` | `48` | A point profile opens **101 COGs** — one per RH level — so this is the batch width. The work is HTTP latency, not CPU, so raising it from 12 to 48 (the backend's cap) cut a point read from 21 s to 14 s. The remaining time is source.coop's ~2-4 s per request × 3 batches; only a data-layout change (one 101-band COG per tile instead of 101 files) would go materially below it. |
 | `PREDICTIONS_LOCAL_YEARS` | *(leave unset)* | Years served from local disk. Unset → every year comes from `PREDICTIONS_BASE_URL`, which is what a public deployment wants. |
 
 > ### ⚠️ This one also affects the internal deployment
