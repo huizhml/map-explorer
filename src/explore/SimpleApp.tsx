@@ -95,6 +95,35 @@ export default function SimpleApp() {
     [setMap, setLayerManager],
   );
 
+  // Stop the world shrinking inside the viewport.
+  //
+  // Map.tsx is shared with the full app and sets no minZoom; that app gets away
+  // with it because its sidebar leaves a narrower map pane. Here the pane is
+  // wide enough that zoom 2 leaves the globe floating in empty space.
+  //
+  // The floor depends on the viewport, so it cannot be a constant: in EPSG:3857
+  // the world is 256 px at zoom 0, so it fills a pane of W×H once zoom reaches
+  // log2(max(W, H) / 256). Recomputed on resize.
+  useEffect(() => {
+    if (!map) return;
+
+    const applyMinZoom = () => {
+      const size = map.getSize();
+      if (!size || !size[0] || !size[1]) return;
+      const view = map.getView();
+      const minZoom = Math.log2(Math.max(size[0], size[1]) / 256);
+      view.setMinZoom(minZoom);
+      const current = view.getZoom();
+      if (current !== undefined && current < minZoom) view.setZoom(minZoom);
+    };
+
+    applyMinZoom();
+    const observer = new ResizeObserver(applyMinZoom);
+    const target = map.getTargetElement();
+    if (target) observer.observe(target);
+    return () => observer.disconnect();
+  }, [map]);
+
   // The MGRS grid is not decoration here — useAutoLoadVSM reads the visible
   // tile names out of it (`getFeaturesInExtent` → `Name`) and returns early
   // when the set is empty. Without it nothing is ever requested above the
