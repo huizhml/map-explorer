@@ -437,6 +437,19 @@ async def get_mosaic_url(
             url = template.format(**fmt)
         except Exception as e:
             return {"success": False, "error": f"Invalid PREDICTIONS_MOSAIC_REMOTE_URL: {e}"}
+
+        # Confirm the object exists, the same way /predictions/load does.
+        # The published mosaics only cover Q1, so a request for Q0/Q2 (or for
+        # either half of an interval) formats a URL that 404s. Returning
+        # success=True for it would hand the frontend a layer that renders as
+        # silent blank tiles; the caller checks `success`, so failing here makes
+        # the gap visible instead.
+        try:
+            resp = requests.head(url, timeout=10)
+            resp.raise_for_status()
+        except Exception as e:
+            return {"success": False, "error": f"Mosaic not available: {e}", "url": url}
+
         return {"success": True, "url": url, "year": year, "location": "remote"}
 
 

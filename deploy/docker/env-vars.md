@@ -14,6 +14,7 @@ The same set on every host; only how you set them differs:
 | `ALLOWED_DATA_URL_PREFIXES` | `https://data.source.coop/geoai-ucph/gvsm/` | Whitelist for `url` / `url_high` / `url_low`. Without it TiTiler will happily open `/etc/passwd` or an internal address. Comma-separate to add more. |
 | `PREDICTIONS_BASE_URL` | `https://data.source.coop/geoai-ucph/gvsm` | Base for remote COGs. |
 | `PREDICTIONS_REMOTE_PATH_TEMPLATE` | `{year}/{tile}/RH{rh}_Q{q}.tif` | Matches the actual layout on source.coop (the default in `predictions.py` has a `{zone}-{year}` prefix, which is the internal layout — it does **not** match). |
+| `PREDICTIONS_MOSAIC_REMOTE_URL` | `https://data.source.coop/geoai-ucph/gvsm/mosaics/{year}/RH{rh}_Q{q}.tif` | Global ~1 km overview (0.01°, EPSG:4326, COG/ZSTD), shown below the per-tile zoom threshold. 101 RH levels, **Q1 only** — Q0/Q2 and interval halves 404, and `/predictions/mosaic-url` now reports that instead of returning a URL that renders as blank tiles. |
 | `VERTICAL_PROFILE_WORKERS` | `12` | Default is 28. Each worker opens a separate COG over HTTP; 28 concurrent /vsicurl readers on 2 vCPU is counterproductive. |
 | `PREDICTIONS_LOCAL_YEARS` | *(leave unset)* | Years served from local disk. Unset → every year comes from `PREDICTIONS_BASE_URL`, which is what a public deployment wants. |
 
