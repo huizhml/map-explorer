@@ -21,7 +21,8 @@ import {
   type VsmLayerEntry,
   type VsmQChoice,
 } from '../constants/predictions';
-import { SimpleControls, BASEMAPS, type BasemapId } from './SimpleControls';
+import { SimpleControls, type BasemapId } from './SimpleControls';
+import { BasemapControl } from './BasemapControl';
 import './explore.css';
 
 const SATELLITE_URL =
@@ -171,22 +172,14 @@ export default function SimpleApp() {
       />
 
       <div className="ex-map">
-        <MapComponent onMapInit={handleMapInit} />
-
-        {/* Basemap sits on the map, bottom-right, out of the way of the
-            scale bar (bottom-left) and the reading card. */}
-        <div className="ex-basemap" role="group" aria-label="Basemap">
-          {BASEMAPS.map((b) => (
-            <button
-              key={b.id}
-              type="button"
-              className={b.id === basemap ? 'is-active' : undefined}
-              onClick={() => setBasemap(b.id)}
-            >
-              {b.label}
-            </button>
-          ))}
+        {/* Wrapper so the "fill the container" sizing rule applies to the
+            OpenLayers canvas only. Applied to every direct child, it stretched
+            the overlays to full size too. */}
+        <div className="ex-map__canvas">
+          <MapComponent onMapInit={handleMapInit} />
         </div>
+
+        <BasemapControl value={basemap} onChange={setBasemap} />
 
         {/* The grid gates every tile request, so its state is worth surfacing
             rather than leaving the user staring at an empty map. */}
