@@ -227,6 +227,11 @@ body {
   padding: 0.75rem 2rem 0.75rem 0.9rem;
   box-shadow: 0 6px 22px rgba(0, 0, 0, 0.12);
   min-width: 200px;
+  /* Two charts make this much taller than a bare reading — cap it against the
+     viewport rather than letting it run off the top of the map. */
+  max-width: min(560px, calc(100vw - 360px));
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
 }
 .ex-reading__close {
   position: absolute;
@@ -262,4 +267,75 @@ body {
     border-right: 0;
     border-bottom: 1px solid #e3e8e5;
   }
+}
+
+/* -------------------------------------------------------- point profile ---- */
+
+.ex-profile {
+  margin-top: 0.7rem;
+}
+
+.ex-profile__note {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #6b7a74;
+}
+
+.ex-profile__charts {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.ex-profile__charts figure {
+  margin: 0;
+  flex: 1 1 220px;
+}
+.ex-profile__charts figcaption {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #47544e;
+  margin-bottom: 0.15rem;
+}
+
+.ex-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.ex-chart__tick {
+  font-size: 8px;
+  fill: #8b9993;
+}
+.ex-chart__axis {
+  font-size: 8.5px;
+  fill: #6b7a74;
+}
+.ex-chart__empty {
+  font-size: 0.72rem;
+  color: #9aa8a2;
+  padding: 1rem 0;
+}
+
+.ex-profile__metrics {
+  display: flex;
+  gap: 1.1rem;
+  margin: 0.5rem 0 0;
+  padding-top: 0.5rem;
+  border-top: 1px solid #eef2f0;
+}
+.ex-profile__metrics div {
+  display: flex;
+  flex-direction: column;
+}
+.ex-profile__metrics dt {
+  font-size: 0.66rem;
+  color: #8b9993;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ex-profile__metrics dd {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }

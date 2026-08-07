@@ -23,12 +23,22 @@ import {
 } from '../constants/predictions';
 import { SimpleControls, type BasemapId } from './SimpleControls';
 import { BasemapControl } from './BasemapControl';
+import { RhProfileChart, VerticalProfileChart } from './ProfileCharts';
+import { fetchVerticalProfile, type VerticalProfileResponse } from '../utils/verticalProfile';
 import './explore.css';
 
 const SATELLITE_URL =
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 
-type PointReading = { lon: number; lat: number; rows: InspectLayerRow[]; loading: boolean };
+type PointReading = {
+  lon: number;
+  lat: number;
+  rows: InspectLayerRow[];
+  loading: boolean;
+  profile?: VerticalProfileResponse;
+  profileLoading: boolean;
+  profileError?: string;
+};
 
 /**
  * inspectPointAtLonLat stores TiTiler's whole /cog/point response as `value`
@@ -164,11 +174,36 @@ export default function SimpleApp() {
     if (!map) return;
     const onClick = async (evt: any) => {
       const [lon, lat] = toLonLat(evt.coordinate);
-      setReading({ lon, lat, rows: [], loading: true });
-      // Reuses the same sampler the full app uses, so a value read here and a
-      // value read there can never disagree.
-      const rows = await inspectPointAtLonLat(useMapStore.getState().layerManager, lon, lat);
-      setReading({ lon, lat, rows, loading: false });
+      setReading({ lon, lat, rows: [], loading: true, profileLoading: true });
+
+      // Two requests with very different costs, so they are issued separately
+      // and rendered as they land: the pixel read is one COG open, while the
+      // profile opens 101 of them and takes ~20 s. Waiting on both would make
+      // the fast one feel as slow as the slow one.
+      inspectPointAtLonLat(useMapStore.getState().layerManager, lon, lat).then((rows) =>
+        setReading((prev) => (prev && prev.lon === lon && prev.lat === lat ? { ...prev, rows, loading: false } : prev)),
+      );
+
+      fetchVerticalProfile(lon, lat, year)
+        .then((profile) =>
+          setReading((prev) =>
+            prev && prev.lon === lon && prev.lat === lat
+              ? {
+                  ...prev,
+                  profileLoading: false,
+                  profile: profile.success ? profile : undefined,
+                  profileError: profile.success ? undefined : (profile.error ?? 'Profile unavailable'),
+                }
+              : prev,
+          ),
+        )
+        .catch((err) =>
+          setReading((prev) =>
+            prev && prev.lon === lon && prev.lat === lat
+              ? { ...prev, profileLoading: false, profileError: String(err) }
+              : prev,
+          ),
+        );
     };
     map.on('singleclick', onClick);
     return () => map.un('singleclick', onClick);
@@ -227,6 +262,54 @@ export default function SimpleApp() {
                     {row.error ? `Error: ${row.error}` : formatHeight(row.value, rhIndex)}
                   </div>
                 ))
+              )}
+            </div>
+
+            <div className="ex-profile">
+              {reading.profileLoading && (
+                <p className="ex-profile__note">
+                  Building profile… reads 101 layers, ~20 s
+                </p>
+              )}
+              {reading.profileError && <p className="ex-profile__note">{reading.profileError}</p>}
+
+              {reading.profile?.profile && reading.profile.profile.length > 0 && (
+                <>
+                  <div className="ex-profile__charts">
+                    <figure>
+                      <figcaption>RH profile</figcaption>
+                      <RhProfileChart profile={reading.profile.profile} />
+                    </figure>
+                    {reading.profile.vertical_profile_curve &&
+                      reading.profile.vertical_profile_curve.length > 1 && (
+                        <figure>
+                          <figcaption>Vertical profile</figcaption>
+                          <VerticalProfileChart curve={reading.profile.vertical_profile_curve} />
+                        </figure>
+                      )}
+                  </div>
+
+                  <dl className="ex-profile__metrics">
+                    {reading.profile.fhd != null && (
+                      <div>
+                        <dt title="Foliage height diversity">FHD</dt>
+                        <dd>{reading.profile.fhd.toFixed(2)}</dd>
+                      </div>
+                    )}
+                    {reading.profile.cr != null && (
+                      <div>
+                        <dt title="Canopy ratio">CR</dt>
+                        <dd>{reading.profile.cr.toFixed(2)}</dd>
+                      </div>
+                    )}
+                    {reading.profile.tile_name && (
+                      <div>
+                        <dt>Tile</dt>
+                        <dd>{reading.profile.tile_name}</dd>
+                      </div>
+                    )}
+                  </dl>
+                </>
               )}
             </div>
           </div>
