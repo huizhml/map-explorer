@@ -25,6 +25,7 @@ import {
 import { SimpleControls, type BasemapId } from './SimpleControls';
 import { BasemapControl } from './BasemapControl';
 import { RhProfileChart, VerticalProfileChart } from './ProfileCharts';
+import { RandomSite } from './RandomSite';
 import { fetchVerticalProfile, type VerticalProfileResponse } from '../utils/verticalProfile';
 import './explore.css';
 
@@ -271,6 +272,7 @@ export default function SimpleApp() {
         </div>
 
         <BasemapControl value={basemap} onChange={setBasemap} />
+        <RandomSite map={map} />
 
         {/* The grid gates every tile request, so its state is worth surfacing
             rather than leaving the user staring at an empty map. */}

@@ -62,6 +62,11 @@ from .utils import (
 
 router = APIRouter(tags=["saved_features"])
 
+# Curated-subset export lives in its own module; mounted on the same router so
+# app.py keeps importing a single `router` from this package.
+from .publish import router as _publish_router  # noqa: E402
+router.include_router(_publish_router)
+
 
 # ---------------------------------------------------------------------------
 # Saved-features CRUD
