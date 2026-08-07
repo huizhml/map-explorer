@@ -1,5 +1,21 @@
 /* Story page styling. Deliberately free of any UI framework — this page must
-   not pull in MUI or antd, or it stops being cheap to load. */
+   not pull in MUI or antd, or it stops being cheap to load.
+   That also means it inherits no reset from index.css, so it carries its own. */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  /* The background lives on html too: with it only on .story, the browser's
+     overscroll area and any gap below short content show through as white. */
+  background: #0b0f0e;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
 
 :root {
   --story-bg: #0b0f0e;

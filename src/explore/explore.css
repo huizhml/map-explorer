@@ -1,5 +1,21 @@
 /* Reviewer-facing map page. Plain CSS on purpose: pulling MUI in here would add
-   a UI framework to a page with six controls. */
+   a UI framework to a page with six controls — and no index.css either, so the
+   reset lives here.
+   Without it the UA's default `body { margin: 8px }` both draws a white gutter
+   and pushes the 100vw/100vh layout past the viewport, producing scrollbars. */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
 
 .ex-root {
   display: flex;
