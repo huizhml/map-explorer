@@ -8,7 +8,8 @@ import {
 import './explore.css';
 
 /**
- * The reviewer-facing control surface: pick a layer, toggle it, switch basemap.
+ * The reviewer-facing control surface: pick a layer and toggle it. The basemap
+ * switch lives on the map itself (SimpleApp), bottom-right.
  *
  * Deliberately not a slimmed-down copy of Sidebar.tsx. That file is ~3,000 lines
  * of upload / export / saved-feature / auxiliary-layer machinery, none of which
@@ -28,7 +29,7 @@ const YEARS = [2020] as const;
 
 export type BasemapId = 'osm' | 'satellite' | 'none';
 
-const BASEMAPS: { id: BasemapId; label: string }[] = [
+export const BASEMAPS: { id: BasemapId; label: string }[] = [
   { id: 'osm', label: 'Map' },
   { id: 'satellite', label: 'Satellite' },
   { id: 'none', label: 'None' },
@@ -43,8 +44,6 @@ type Props = {
   onQChoice: (q: VsmQChoice) => void;
   visible: boolean;
   onVisible: (v: boolean) => void;
-  basemap: BasemapId;
-  onBasemap: (b: BasemapId) => void;
 };
 
 export function SimpleControls(props: Props) {
@@ -126,21 +125,7 @@ export function SimpleControls(props: Props) {
         />
       </section>
 
-      <section className="ex-field">
-        <label>Basemap</label>
-        <div className="ex-segmented" role="group" aria-label="Basemap">
-          {BASEMAPS.map((b) => (
-            <button
-              key={b.id}
-              type="button"
-              className={b.id === props.basemap ? 'is-active' : undefined}
-              onClick={() => props.onBasemap(b.id)}
-            >
-              {b.label}
-            </button>
-          ))}
-        </div>
-      </section>
+      {/* Basemap lives on the map itself, bottom-right — see SimpleApp. */}
 
       <p className="ex-tip">Click the map to read the profile at that point.</p>
 

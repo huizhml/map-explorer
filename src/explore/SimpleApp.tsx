@@ -5,9 +5,14 @@ import OSM from 'ol/source/OSM';
 import XYZ from 'ol/source/XYZ';
 import { toLonLat } from 'ol/proj';
 
+import VectorLayer from 'ol/layer/Vector';
+import VectorSource from 'ol/source/Vector';
+import { deserialize } from 'flatgeobuf/lib/mjs/ol';
+
 import { MapComponent } from '../components/Map';
 import { LayerManager } from '../utils/LayerManager';
 import { useMapStore } from '../stores/mapStore';
+import { API_BASE_URL } from '../utils/apiBase';
 import { useAutoLoadVSM } from '../hooks/useAutoLoadVSM';
 import { inspectPointAtLonLat, type InspectLayerRow } from '../utils/inspectPoint';
 import {
@@ -16,7 +21,7 @@ import {
   type VsmLayerEntry,
   type VsmQChoice,
 } from '../constants/predictions';
-import { SimpleControls, type BasemapId } from './SimpleControls';
+import { SimpleControls, BASEMAPS, type BasemapId } from './SimpleControls';
 import './explore.css';
 
 const SATELLITE_URL =
@@ -34,6 +39,8 @@ export default function SimpleApp() {
   const [visible, setVisible] = useState(true);
   const [basemap, setBasemap] = useState<BasemapId>('osm');
   const [reading, setReading] = useState<PointReading | null>(null);
+  const [gridReady, setGridReady] = useState(false);
+  const [gridError, setGridError] = useState(false);
 
   // Same wiring App.tsx uses — the auto-loader drives everything off the store,
   // so the simple page gets identical layer behaviour for free.
@@ -60,6 +67,44 @@ export default function SimpleApp() {
     },
     [setMap, setLayerManager],
   );
+
+  // The MGRS grid is not decoration here — useAutoLoadVSM reads the visible
+  // tile names out of it (`getFeaturesInExtent` → `Name`) and returns early
+  // when the set is empty. Without it nothing is ever requested above the
+  // mosaic's zoom threshold, and the map just stays empty.
+  //
+  // Kept invisible: 18,181 tile outlines would be noise, and feature lookup
+  // does not care about visibility.
+  useEffect(() => {
+    if (!map || useMapStore.getState().fgbLayer) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const resp = await fetch(`${API_BASE_URL}/fgb/local`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const buffer = new Uint8Array(await resp.arrayBuffer());
+        if (cancelled) return;
+
+        const source = new VectorSource();
+        const iter = deserialize(buffer, undefined, undefined, false, {}, false, 'EPSG:4326', 'EPSG:3857');
+        for await (const feature of iter) source.addFeature(feature as any);
+        if (cancelled) return;
+
+        const layer = new VectorLayer({ source, visible: false, zIndex: 1 });
+        map.addLayer(layer);
+        useMapStore.getState().setFgbLayer(layer);
+        setGridReady(true);
+      } catch (err) {
+        console.error('[explore] MGRS grid failed to load — no tiles will render', err);
+        setGridError(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [map]);
 
   // One VSM layer at a time: swap the store entry whenever the selection
   // changes and let useAutoLoadVSM add/remove the actual OpenLayers layers.
@@ -123,12 +168,36 @@ export default function SimpleApp() {
         onQChoice={setQChoice}
         visible={visible}
         onVisible={setVisible}
-        basemap={basemap}
-        onBasemap={setBasemap}
       />
 
       <div className="ex-map">
         <MapComponent onMapInit={handleMapInit} />
+
+        {/* Basemap sits on the map, bottom-right, out of the way of the
+            scale bar (bottom-left) and the reading card. */}
+        <div className="ex-basemap" role="group" aria-label="Basemap">
+          {BASEMAPS.map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              className={b.id === basemap ? 'is-active' : undefined}
+              onClick={() => setBasemap(b.id)}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+
+        {/* The grid gates every tile request, so its state is worth surfacing
+            rather than leaving the user staring at an empty map. */}
+        {!gridReady && !gridError && (
+          <div className="ex-status">Loading tile index…</div>
+        )}
+        {gridError && (
+          <div className="ex-status ex-status--error">
+            Tile index unavailable — layers cannot load
+          </div>
+        )}
 
         {reading && (
           <div className="ex-reading">
