@@ -30,6 +30,22 @@ const SATELLITE_URL =
 
 type PointReading = { lon: number; lat: number; rows: InspectLayerRow[]; loading: boolean };
 
+/**
+ * inspectPointAtLonLat stores TiTiler's whole /cog/point response as `value`
+ * — `{ coordinates, values, band_names }` — not a bare number. Reading it as a
+ * number yields undefined and renders as "no data" over perfectly good pixels.
+ *
+ * Values are int16 decimetres with 32767 as nodata.
+ */
+function formatHeight(value: unknown, rhIndex: number): string {
+  if (!value || typeof value !== 'object') return 'no data';
+  const values = (value as { values?: unknown }).values;
+  if (!Array.isArray(values) || values.length === 0) return 'no data';
+  const raw = values[0];
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw >= 32767) return 'no data';
+  return `RH${rhIndex} · ${(raw / 10).toFixed(1)} m`;
+}
+
 export default function SimpleApp() {
   const { map, setMap, layerManager, setLayerManager, setLayers, addVsmLayer, removeVsmLayerByLayerId } =
     useMapStore();
@@ -206,17 +222,11 @@ export default function SimpleApp() {
               ) : reading.rows.length === 0 ? (
                 'No layer to sample'
               ) : (
-                reading.rows.map((row) => {
-                  // Values are stored in decimetres; report metres.
-                  const v = typeof row.value === 'number' ? row.value : null;
-                  return (
-                    <div key={row.id}>
-                      {row.error ? `${row.name}: ${row.error}`
-                        : v === null ? `${row.name}: no data`
-                        : `RH${rhIndex} · ${(v / 10).toFixed(1)} m`}
-                    </div>
-                  );
-                })
+                reading.rows.map((row) => (
+                  <div key={row.id}>
+                    {row.error ? `Error: ${row.error}` : formatHeight(row.value, rhIndex)}
+                  </div>
+                ))
               )}
             </div>
           </div>
