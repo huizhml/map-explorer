@@ -4,6 +4,7 @@ import TileLayer from 'ol/layer/Tile';
 import OSM from 'ol/source/OSM';
 import XYZ from 'ol/source/XYZ';
 import { toLonLat } from 'ol/proj';
+import View from 'ol/View';
 
 import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
@@ -26,6 +27,9 @@ import { BasemapControl } from './BasemapControl';
 import { RhProfileChart, VerticalProfileChart } from './ProfileCharts';
 import { fetchVerticalProfile, type VerticalProfileResponse } from '../utils/verticalProfile';
 import './explore.css';
+
+/** EPSG:3857 bounds of the published mosaics: 82.8529°N .. −56.0371°S. */
+const DATA_EXTENT_3857 = [-20037508.34, -7565801.1, 20037508.34, 17688947.9];
 
 const SATELLITE_URL =
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
@@ -95,33 +99,40 @@ export default function SimpleApp() {
     [setMap, setLayerManager],
   );
 
-  // Stop the world shrinking inside the viewport.
+  // Keep the viewport inside the data, not inside the world.
   //
-  // Map.tsx is shared with the full app and sets no minZoom; that app gets away
-  // with it because its sidebar leaves a narrower map pane. Here the pane is
-  // wide enough that zoom 2 leaves the globe floating in empty space.
+  // The mosaic covers 82.85°N to 56.04°S — 63% of the Web Mercator square — so
+  // simply flooring the zoom still leaves a blank band along the bottom where
+  // there is imagery in the basemap but no prediction. Constraining the view to
+  // the data extent instead means the furthest zoom-out is the one where that
+  // extent covers the pane, and panning cannot leave it.
   //
-  // The floor depends on the viewport, so it cannot be a constant: in EPSG:3857
-  // the world is 256 px at zoom 0, so it fills a pane of W×H once zoom reaches
-  // log2(max(W, H) / 256). Recomputed on resize.
+  // Map.tsx builds the view without an extent and is shared with the full app,
+  // so the view is replaced here rather than changed there.
   useEffect(() => {
     if (!map) return;
 
-    const applyMinZoom = () => {
-      const size = map.getSize();
-      if (!size || !size[0] || !size[1]) return;
-      const view = map.getView();
-      const minZoom = Math.log2(Math.max(size[0], size[1]) / 256);
-      view.setMinZoom(minZoom);
-      const current = view.getZoom();
-      if (current !== undefined && current < minZoom) view.setZoom(minZoom);
-    };
+    const view = map.getView();
+    if (view.get('exploreConstrained')) return;
 
-    applyMinZoom();
-    const observer = new ResizeObserver(applyMinZoom);
-    const target = map.getTargetElement();
-    if (target) observer.observe(target);
-    return () => observer.disconnect();
+    const previousCenter = view.getCenter();
+    const previousZoom = view.getZoom();
+
+    const constrained = new View({
+      // EPSG:3857 bounds of the published mosaics.
+      extent: DATA_EXTENT_3857,
+      // Default (false) keeps the whole viewport inside the extent rather than
+      // just the centre point — that is what removes the empty band.
+      constrainOnlyCenter: false,
+      // Left at the default (false) deliberately: enabling it would permit the
+      // zoom level where the whole extent is visible, which reintroduces the
+      // letterboxing this is meant to remove whenever the pane's aspect ratio
+      // differs from the data's 1.59:1.
+      center: previousCenter ?? [0, 0],
+      zoom: previousZoom ?? 2,
+    });
+    constrained.set('exploreConstrained', true);
+    map.setView(constrained);
   }, [map]);
 
   // The MGRS grid is not decoration here — useAutoLoadVSM reads the visible
