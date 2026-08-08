@@ -34,7 +34,7 @@ export S2_GRID_LOCAL_PATH="$_REPO_ROOT/deploy/data/s2_grid.fgb"
 # Defaults already resolve to backend/data/, but set them explicitly so it is
 # obvious which database is being written to.
 export SAVED_FEATURES_DB_PATH="$_REPO_ROOT/backend/data/saved_features.db"
-export SAVED_FEATURE_IMAGES_ROOT="$_REPO_ROOT/backend/data/saved_feature_images"
+export SAVED_FEATURE_IMAGES_ROOT="$_REPO_ROOT/backend/data/app_saved_images"
 
 # --- Performance -----------------------------------------------------------
 # A point profile opens 101 COGs; the cost is HTTP latency, not CPU, so a wide
