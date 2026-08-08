@@ -15,9 +15,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CONFIG="${HERE}/litestream.yml"
 ENV_FILE="${HOME}/.litestream.env"
 LITESTREAM_BIN="${HOME}/bin/litestream"
-# Same source of truth as litestream.yml — a hardcoded copy here is how the
-# config drifted from the database the app actually writes.
-LIVE_DB="${SAVED_FEATURES_DB_PATH:?Set SAVED_FEATURES_DB_PATH (see litestream.env.example)}"
 
 if [ -f "$ENV_FILE" ]; then
   set -a
@@ -25,6 +22,11 @@ if [ -f "$ENV_FILE" ]; then
   . "$ENV_FILE"
   set +a
 fi
+
+# Resolved after the env file is sourced, since that is where it is defined.
+# Same source of truth as litestream.yml — a private copy of the path here is
+# exactly how the config drifted from the database the app actually writes.
+LIVE_DB="${SAVED_FEATURES_DB_PATH:?Set SAVED_FEATURES_DB_PATH in ~/.litestream.env (see litestream.env.example)}"
 
 OUT="${1:-${HOME}/saved_features.restored.db}"
 shift || true
