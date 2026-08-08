@@ -10,6 +10,13 @@
 # Deliberately NOT set: PUBLIC_READONLY. This is the authoring environment;
 # saving features has to work.
 
+# Resolve the repo root without $BASH_SOURCE: zsh does not set it, and this
+# file is sourced, so $0 is the shell. Getting this wrong is quiet and nasty —
+# the paths below end up one directory too high, SQLite happily creates an
+# empty database at the bad path, and the app reports no saved features and a
+# blank map with no error anywhere.
+_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
 # --- Predictions: all years from source.coop -------------------------------
 # PREDICTIONS_LOCAL_YEARS is left unset, so every year resolves remotely.
 # Set it to "2020" only if you also point PREDICTIONS_LOCAL_PATH at a local copy.
@@ -21,12 +28,11 @@ export PREDICTIONS_MOSAIC_REMOTE_URL="https://data.source.coop/geoai-ucph/gvsm/m
 # Not optional: useAutoLoadVSM derives the visible tile names from this layer
 # and requests nothing when it is missing, so the map stays blank without it.
 # The copy committed for the deployment doubles as the local one.
-export S2_GRID_LOCAL_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/deploy/data/s2_grid.fgb"
+export S2_GRID_LOCAL_PATH="$_REPO_ROOT/deploy/data/s2_grid.fgb"
 
 # --- Saved features --------------------------------------------------------
 # Defaults already resolve to backend/data/, but set them explicitly so it is
 # obvious which database is being written to.
-_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export SAVED_FEATURES_DB_PATH="$_REPO_ROOT/backend/data/saved_features.db"
 export SAVED_FEATURE_IMAGES_ROOT="$_REPO_ROOT/backend/data/saved_feature_images"
 
@@ -54,6 +60,19 @@ export MPLBACKEND=Agg
 # Google basemap in transect figures falls back through providers without a
 # key, so this is only needed if those fallbacks start failing.
 # export GOOGLE_STATIC_MAPS_API_KEY="..."
+
+# Fail loudly rather than exporting paths that do not exist.
+_bad=0
+for _p in "$_REPO_ROOT/backend/app.py" "$S2_GRID_LOCAL_PATH"; do
+  [ -e "$_p" ] || { echo "  MISSING: $_p" >&2; _bad=1; }
+done
+if [ "$_bad" = "1" ]; then
+  echo "env.local.sh: repo root resolved to '$_REPO_ROOT' — run this from inside the repo." >&2
+  echo "Nothing was exported." >&2
+  unset _REPO_ROOT _bad _p
+  return 1 2>/dev/null || exit 1
+fi
+unset _bad _p
 
 echo "env.local.sh loaded"
 echo "  predictions : $PREDICTIONS_BASE_URL (remote)"
