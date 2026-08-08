@@ -634,7 +634,11 @@ case "${1:-all}" in
     echo -e "  ${BOLD}${GREEN}🚀 Everything is up!${RESET}"
     echo ""
     echo -e "  Backend  → ${BOLD}http://localhost:${BACKEND_PORT}${RESET}"
-    echo -e "  Frontend → ${BOLD}http://localhost:${FRONTEND_PORT}${RESET}"
+    # /dev.html, not /: the root is the public story page since the frontend
+    # became a multi-page build. The full tool lives at /dev.html.
+    echo -e "  Frontend → ${BOLD}http://localhost:${FRONTEND_PORT}/dev.html${RESET}  ${DIM}(full app)${RESET}"
+    echo -e "             ${DIM}http://localhost:${FRONTEND_PORT}/explore.html  (simple map)${RESET}"
+    echo -e "             ${DIM}http://localhost:${FRONTEND_PORT}/              (story)${RESET}"
     echo ""
     echo -e "  ${DIM}$0 restart backend${RESET}   restart backend only"
     echo -e "  ${DIM}$0 restart frontend${RESET}  restart frontend only"
