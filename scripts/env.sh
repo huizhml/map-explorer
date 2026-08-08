@@ -1,5 +1,10 @@
 
 # --- Local predictions (2020 data on disk) ---
+# Which years are served from the local disks below. Replaces the hardcoded
+# `year == 2020` branches that used to decide local-vs-remote; without it this
+# host fetches 2020 over the network instead of reading /projects.
+export PREDICTIONS_LOCAL_YEARS="2020"
+
 export PREDICTIONS_MOSAIC_LOCAL_PATH="/projects/dereeco/data/gvs/products/vsm/2020/{version}/mosaic/global_mosaic_2020_RH{rh}_Q{q}.cog.tif"
 export PREDICTIONS_LOCAL_PATH="/projects/dereeco/data/gvs/products/vsm/2020/{version}/tiles/cog/{tile}/RH{rh}_Q{q}.tif"
 export DIVERSITY_INDICES_LOCAL_PATH="/projects/dereeco/data/gvs/products/diversity_indices/{year}/{version}/tiles/"
