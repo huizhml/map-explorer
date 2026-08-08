@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+import { renderTransect } from './lib/transect.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name, fallback = '') => {
@@ -76,6 +77,39 @@ rmSync(zipPath, { force: true });
 
 const manifest = JSON.parse(readFileSync(resolve(target, 'sites.json'), 'utf8'));
 console.log(`\n▸ ${manifest.count} site(s) → public/sites/`);
+
+// Transect figures are never persisted by the app: /transect/figure renders on
+// demand and hands the bytes back, so a saved LineString carries geometry but
+// no image. Render them here, once, from the stored line — the alternative is
+// making the public page wait ~50 s per figure.
+const needFigure = (manifest.sites ?? []).filter(
+  (s) => s.geometry?.type === 'LineString' && (s.images?.length ?? 0) === 0,
+);
+
+if (needFigure.length) {
+  mkdirSync(resolve(target, 'images'), { recursive: true });
+  console.log(`\n▸ rendering ${needFigure.length} transect figure(s) — about a minute each`);
+
+  for (const [i, site] of needFigure.entries()) {
+    const label = site.name ?? `site ${site.id}`;
+    process.stdout.write(`   [${i + 1}/${needFigure.length}] ${label} … `);
+    try {
+      const { png, sampleCount, seconds } = await renderTransect(API, site.geometry.coordinates, {
+        onProgress: (stage) => process.stdout.write(stage === 'rendering' ? 'drawing … ' : ''),
+      });
+      const file = `images/${site.id}-transect.png`;
+      writeFileSync(resolve(target, file), png);
+      site.images = [{ file, kind: 'transect', caption: site.description ?? null }];
+      console.log(`${sampleCount} pts, ${(png.length / 1024).toFixed(0)} KB, ${seconds.toFixed(0)}s`);
+    } catch (err) {
+      // One bad site should not sink the batch; it is published without a figure.
+      console.log(`FAILED — ${err.message}`);
+    }
+  }
+
+  writeFileSync(resolve(target, 'sites.json'), JSON.stringify(manifest, null, 2));
+}
+
 for (const site of manifest.sites ?? []) {
   console.log(`   · ${site.name ?? '(unnamed)'} — ${site.images?.length ?? 0} image(s)`);
 }

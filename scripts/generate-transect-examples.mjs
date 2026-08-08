@@ -49,89 +49,23 @@ const YEAR = 2020;
 const Q_INDEX = 1;
 const VERSION = 'original';
 
-async function postJSON(path, body, { timeoutMs = 600_000 } = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(`${API}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!resp.ok) throw new Error(`${path} → HTTP ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
-    return resp;
-  } finally {
-    clearTimeout(timer);
-  }
-}
+import { renderTransect } from './lib/transect.mjs';
 
 async function build(example) {
-  process.stdout.write(`\n▸ ${example.name}\n`);
-
-  // 1. Sample the predicted vertical profile along the line. This is the slow
-  //    part: it opens one COG per RH level, per sample point.
-  process.stdout.write('  sampling profile … ');
-  const started = Date.now();
-  const sampleResp = await postJSON('/predictions/vertical-profile-line', {
-    line_coordinates: example.line,
+  process.stdout.write(`\n▸ ${example.name}\n  `);
+  const { png, sampleCount, seconds } = await renderTransect(API, example.line, {
     year: YEAR,
     version: VERSION,
-    q_index: Q_INDEX,
+    qIndex: Q_INDEX,
+    xAxis: example.xAxis,
+    onProgress: (stage) => process.stdout.write(`${stage} … `),
   });
-  const sampled = await sampleResp.json();
-  if (!sampled.success && sampled.error) throw new Error(`profile: ${sampled.error}`);
-
-  // The per-sample `vertical_profile` field in the response is always null:
-  // the profile curves come back in a separate top-level array, indexed by
-  // sample index. /transect/figure expects them merged into each sample as
-  // `profile`, so do the same join the app does in useMapInteractions.ts —
-  // skip it and the figure renders with an empty heatmap panel and no error.
-  const matrix = sampled.vertical_profile ?? [];
-  const rawSamples = sampled.samples ?? [];
-  if (!rawSamples.length) throw new Error('profile returned no samples');
-
-  const samples = rawSamples.map((s) => ({
-    lon: s.lon,
-    lat: s.lat,
-    distance_m: s.distance_m,
-    profile: (matrix[s.index] ?? []).map((value, rh) => ({
-      rh,
-      value,
-      missing: value == null,
-    })),
-    fhd: s.fhd ?? null,
-    enl1d: s.enl1d ?? null,
-    enl2d: s.enl2d ?? null,
-    cr: s.cr ?? null,
-  }));
-
-  const withProfile = samples.filter((s) => s.profile.some((p) => p.value != null)).length;
-  process.stdout.write(
-    `${samples.length} points (${withProfile} with profile data) in ${((Date.now() - started) / 1000).toFixed(0)}s\n`,
-  );
-  if (withProfile === 0) throw new Error('every sample profile is empty — check the response shape');
-
-  // 2. Render. The figure endpoint takes the samples verbatim — it does no
-  //    sampling of its own, which is why step 1 cannot be skipped.
-  process.stdout.write('  rendering figure … ');
-  const figureResp = await postJSON('/transect/figure', {
-    samples,
-    x_axis: example.xAxis,
-    include_map: true,
-    include_heatmap: true,
-    // The per-panel provenance badges collide with the colourbar legend at this
-    // figure width; the story carries that information in the caption instead.
-    show_panel_labels: false,
-    dpi: 150,
-    fmt: 'png',
-  });
-  const png = Buffer.from(await figureResp.arrayBuffer());
-
   await mkdir(OUT_DIR, { recursive: true });
   const outPath = resolve(OUT_DIR, `${example.name}.png`);
   await writeFile(outPath, png);
-  process.stdout.write(`${(png.length / 1024).toFixed(0)} KB → public/examples/${example.name}.png\n`);
+  process.stdout.write(
+    `${sampleCount} pts, ${(png.length / 1024).toFixed(0)} KB, ${seconds.toFixed(0)}s → public/examples/${example.name}.png\n`,
+  );
 }
 
 let failures = 0;
