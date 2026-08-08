@@ -3,7 +3,11 @@
 # and takes a full snapshot every 24h with 30-day retention.
 
 dbs:
-  - path: /home/ksb781/map-explorer/backend/data/saved_features.db
+  # Env-driven, not hardcoded: this was pointed at the placeholder inside the
+  # repo while the app had long since been writing to /projects (see the
+  # SAVED_FEATURES_DB_PATH note in scripts/env.sh), so every replica was a
+  # backup of an empty file. Keep this the same value the app runs with.
+  - path: ${SAVED_FEATURES_DB_PATH}
     replicas:
       - type: s3
         bucket: ${LITESTREAM_BUCKET}

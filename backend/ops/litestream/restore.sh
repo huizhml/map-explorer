@@ -15,7 +15,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CONFIG="${HERE}/litestream.yml"
 ENV_FILE="${HOME}/.litestream.env"
 LITESTREAM_BIN="${HOME}/bin/litestream"
-LIVE_DB="/home/ksb781/map-explorer/backend/data/saved_features.db"
+# Same source of truth as litestream.yml — a hardcoded copy here is how the
+# config drifted from the database the app actually writes.
+LIVE_DB="${SAVED_FEATURES_DB_PATH:?Set SAVED_FEATURES_DB_PATH (see litestream.env.example)}"
 
 if [ -f "$ENV_FILE" ]; then
   set -a
