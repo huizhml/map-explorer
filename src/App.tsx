@@ -14,6 +14,7 @@ import { GediPointPopup } from './components/GediPointPopup';
 import { LayerManager } from './utils/LayerManager';
 import { useMapStore } from './stores/mapStore';
 import { InspectPanel } from './components/InspectPanel';
+import { PublishSitesPanel } from './components/PublishSitesPanel';
 import { SavedGediPointsList } from './components/SavedGediPointsList';
 import { SavedFeatureDialog, type SavedFeatureDialogPrefill } from './components/SavedFeatureDialog';
 import {
@@ -363,7 +364,8 @@ function App() {
           onSubmit={handleSaveFeatureDraft}
         />
       </div>
-    </ThemeProvider>
+          <PublishSitesPanel />
+</ThemeProvider>
   );
 }
 
