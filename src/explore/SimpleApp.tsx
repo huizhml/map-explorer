@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type Map from 'ol/Map';
 import TileLayer from 'ol/layer/Tile';
 import OSM from 'ol/source/OSM';
@@ -24,7 +24,7 @@ import {
 } from '../constants/predictions';
 import { SimpleControls, type BasemapId } from './SimpleControls';
 import { BasemapControl } from './BasemapControl';
-import { LayerControl } from './LayerControl';
+import { LayerControl, type ExploreLayer } from './LayerControl';
 import { RhProfileChart, VerticalProfileChart } from './ProfileCharts';
 import { RandomSite } from './RandomSite';
 import { fetchVerticalProfile, type VerticalProfileResponse } from '../utils/verticalProfile';
@@ -63,14 +63,46 @@ function formatHeight(value: unknown, rhIndex: number): string {
 }
 
 export default function SimpleApp() {
-  const { map, setMap, layerManager, setLayerManager, setLayers, addVsmLayer, removeVsmLayerByLayerId } =
+  // setLayers aliased: the local layer list owns that name here.
+  const { map, setMap, layerManager, setLayerManager, setLayers: setStoreLayers, addVsmLayer, removeVsmLayerByLayerId } =
     useMapStore();
 
-  const [rhIndex, setRhIndex] = useState(98);
-  const [year, setYear] = useState<2020>(2020);
   // Fixed: only the median quantile is published, so there is nothing to pick.
   const qChoice: VsmQChoice = 'median';
-  const [visible, setVisible] = useState(true);
+
+  // A list rather than a single layer, so pinning can hold one in place while
+  // the sidebar moves on to another RH.
+  const [layers, setLayers] = useState<ExploreLayer[]>([
+    { id: 'l0', rhIndex: 98, year: 2020, visible: true, pinned: false },
+  ]);
+  const [activeId, setActiveId] = useState<string | null>('l0');
+  const nextId = useRef(1);
+
+  const active = layers.find((l) => l.id === activeId) ?? layers[layers.length - 1] ?? null;
+  const rhIndex = active?.rhIndex ?? 98;
+  const year = (active?.year ?? 2020) as 2020;
+
+  /**
+   * Editing the active layer. A pinned layer is left alone and a new layer is
+   * added in front of it — that is what pinning means here.
+   */
+  const editActive = useCallback((patch: Partial<ExploreLayer>) => {
+    setLayers((prev) => {
+      const i = prev.findIndex((l) => l.id === activeId);
+      if (i < 0) return prev;
+      if (!prev[i].pinned) {
+        const copy = [...prev];
+        copy[i] = { ...copy[i], ...patch };
+        return copy;
+      }
+      const id = `l${nextId.current++}`;
+      setActiveId(id);
+      return [...prev, { ...prev[i], ...patch, id, pinned: false }];
+    });
+  }, [activeId]);
+
+  const setRhIndex = useCallback((rh: number) => editActive({ rhIndex: rh }), [editActive]);
+  const setYear = useCallback((y: 2020) => editActive({ year: y }), [editActive]);
   const [basemap, setBasemap] = useState<BasemapId>('osm');
   const [reading, setReading] = useState<PointReading | null>(null);
   const [gridReady, setGridReady] = useState(false);
@@ -82,13 +114,13 @@ export default function SimpleApp() {
     const { map: m, layerManager: mgr } = useMapStore.getState();
     if (!m || !mgr) return;
     mgr.syncAllProperties();
-    setLayers(
+    setStoreLayers(
       mgr.getAllLayers().map((l: any) => ({
         id: l.id, name: l.name, visible: l.visible, opacity: l.opacity,
         zIndex: l.zIndex, type: l.type, metadata: l.metadata,
       })),
     );
-  }, [setLayers]);
+  }, [setStoreLayers]);
 
   useAutoLoadVSM(updateLayersList);
 
@@ -176,26 +208,60 @@ export default function SimpleApp() {
     };
   }, [map]);
 
-  // One VSM layer at a time: swap the store entry whenever the selection
-  // changes and let useAutoLoadVSM add/remove the actual OpenLayers layers.
+  // Mirror the list into the store, which is what useAutoLoadVSM reads. Diffed
+  // rather than cleared and refilled, so untouched layers keep their tiles
+  // instead of being torn down and refetched on every change.
   useEffect(() => {
-    const entry: VsmLayerEntry = { year, rhIndex, qChoice, version: DEFAULT_VSM_VERSION };
-    const id = getVsmLayerId(entry);
-    const previous = useMapStore.getState().addedVsmLayers;
-    for (const p of previous) {
-      const pid = getVsmLayerId(p);
-      if (pid !== id) removeVsmLayerByLayerId(pid);
-    }
-    if (!previous.some((p) => getVsmLayerId(p) === id)) addVsmLayer(entry);
-  }, [year, rhIndex, qChoice, addVsmLayer, removeVsmLayerByLayerId]);
+    const wanted = new Map(
+      layers.map((l) => {
+        const entry: VsmLayerEntry = {
+          year: l.year as 2020,
+          rhIndex: l.rhIndex,
+          qChoice,
+          version: DEFAULT_VSM_VERSION,
+        };
+        return [getVsmLayerId(entry), entry];
+      }),
+    );
+    const present = new Set(
+      useMapStore.getState().addedVsmLayers.map((e) => getVsmLayerId(e)),
+    );
 
-  // Layer visibility.
+    for (const id of present) if (!wanted.has(id)) removeVsmLayerByLayerId(id);
+    for (const [id, entry] of wanted) if (!present.has(id)) addVsmLayer(entry);
+  }, [layers, qChoice, addVsmLayer, removeVsmLayerByLayerId]);
+
+  // Visibility, applied per layer.
   useEffect(() => {
     if (!layerManager) return;
-    const entry: VsmLayerEntry = { year, rhIndex, qChoice, version: DEFAULT_VSM_VERSION };
-    const managed = layerManager.getLayer(getVsmLayerId(entry));
-    if (managed?.layer) managed.layer.setVisible(visible);
-  }, [visible, layerManager, year, rhIndex, qChoice]);
+    for (const l of layers) {
+      const entry: VsmLayerEntry = {
+        year: l.year as 2020,
+        rhIndex: l.rhIndex,
+        qChoice,
+        version: DEFAULT_VSM_VERSION,
+      };
+      const managed = layerManager.getLayer(getVsmLayerId(entry));
+      if (managed?.layer) managed.layer.setVisible(l.visible);
+    }
+  }, [layers, layerManager, qChoice]);
+
+  const toggleVisible = useCallback((id: string) => {
+    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, visible: !l.visible } : l)));
+  }, []);
+
+  const togglePinned = useCallback((id: string) => {
+    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, pinned: !l.pinned } : l)));
+  }, []);
+
+  const removeLayer = useCallback((id: string) => {
+    setLayers((prev) => {
+      const next = prev.filter((l) => l.id !== id);
+      // Never leave the sidebar editing a layer that no longer exists.
+      if (id === activeId) setActiveId(next.length ? next[next.length - 1].id : null);
+      return next;
+    });
+  }, [activeId]);
 
   // Basemap. Map.tsx puts the base tile layer at index 0.
   useEffect(() => {
@@ -270,11 +336,11 @@ export default function SimpleApp() {
         </div>
 
         <LayerControl
-          rhIndex={rhIndex}
-          year={year}
-          qChoice={qChoice}
-          visible={visible}
-          onVisible={setVisible}
+          layers={layers}
+          activeId={activeId}
+          onToggleVisible={toggleVisible}
+          onTogglePinned={togglePinned}
+          onRemove={removeLayer}
         />
         <BasemapControl value={basemap} onChange={setBasemap} />
         <RandomSite map={map} />
