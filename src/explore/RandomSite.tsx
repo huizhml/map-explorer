@@ -131,7 +131,9 @@ export function RandomSite({ map }: { map: Map | null }) {
           <button className="ex-site__close" onClick={close} aria-label="Close">
             ×
           </button>
-          <h2>{current.name ?? 'Site'}</h2>
+          {/* The stored names are internal bookkeeping — random1, random2 — so
+              the card names what it shows instead. */}
+          <h2>Vertical profile</h2>
           {current.description && <p className="ex-site__desc">{current.description}</p>}
 
           {current.transect?.samples?.length ? (
