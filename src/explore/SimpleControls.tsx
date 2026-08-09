@@ -18,11 +18,9 @@ import './explore.css';
  * hook, the store.
  */
 
-// Only the percentiles that have published data. Intervals need Q0/Q2, which
-// are not on source.coop yet — offering them would render blank tiles.
-const Q_CHOICES: { value: VsmQChoice; label: string }[] = [
-  { value: 'median', label: 'Median' },
-];
+// The published data is the median quantile only — Q0/Q2 are not on
+// source.coop — so there is nothing to choose between and no control for it.
+// SimpleApp still passes qChoice through, since the layer id is built from it.
 
 const RH_CHOICES = [98, 95, 90, 75, 50, 25, 10];
 const YEARS = [2020] as const;
@@ -40,8 +38,6 @@ type Props = {
   onRhIndex: (rh: number) => void;
   year: (typeof YEARS)[number];
   onYear: (y: (typeof YEARS)[number]) => void;
-  qChoice: VsmQChoice;
-  onQChoice: (q: VsmQChoice) => void;
   visible: boolean;
   onVisible: (v: boolean) => void;
 };
@@ -51,10 +47,10 @@ export function SimpleControls(props: Props) {
     () => ({
       year: props.year,
       rhIndex: props.rhIndex,
-      qChoice: props.qChoice,
+      qChoice: 'median',
       version: DEFAULT_VSM_VERSION,
     }),
-    [props.year, props.rhIndex, props.qChoice],
+    [props.year, props.rhIndex],
   );
 
   return (
@@ -80,21 +76,6 @@ export function SimpleControls(props: Props) {
             <option key={rh} value={rh}>
               RH{rh}
               {rh === 98 ? ' (canopy top)' : ''}
-            </option>
-          ))}
-        </select>
-      </section>
-
-      <section className="ex-field">
-        <label htmlFor="ex-q">Quantile</label>
-        <select
-          id="ex-q"
-          value={props.qChoice}
-          onChange={(e) => props.onQChoice(e.target.value as VsmQChoice)}
-        >
-          {Q_CHOICES.map((q) => (
-            <option key={q.value} value={q.value}>
-              {q.label}
             </option>
           ))}
         </select>

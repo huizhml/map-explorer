@@ -67,7 +67,8 @@ export default function SimpleApp() {
 
   const [rhIndex, setRhIndex] = useState(98);
   const [year, setYear] = useState<2020>(2020);
-  const [qChoice, setQChoice] = useState<VsmQChoice>('median');
+  // Fixed: only the median quantile is published, so there is nothing to pick.
+  const qChoice: VsmQChoice = 'median';
   const [visible, setVisible] = useState(true);
   const [basemap, setBasemap] = useState<BasemapId>('osm');
   const [reading, setReading] = useState<PointReading | null>(null);
@@ -257,8 +258,6 @@ export default function SimpleApp() {
         onRhIndex={setRhIndex}
         year={year}
         onYear={setYear}
-        qChoice={qChoice}
-        onQChoice={setQChoice}
         visible={visible}
         onVisible={setVisible}
       />
