@@ -22,6 +22,7 @@ export type TransectSample = {
 
 export type Transect = {
   samples: TransectSample[];
+  line_coordinates?: [number, number][] | null;
   total_length_m?: number | null;
   heatmap_max_height?: number | null;
   metrics?: { fhd?: number | null; cr?: number | null; enl1d?: number | null; enl2d?: number | null } | null;

@@ -92,13 +92,27 @@ def _transect_of(feature: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         profile = s.get("profile")
         if not isinstance(profile, list):
             continue
+        # Entries are {rh, value, missing} dicts, not bare numbers — reading them
+        # as numbers turns every bin into null and the heatmap renders as one
+        # flat rectangle. Bare numbers are still accepted in case an older row
+        # stored them that way.
+        values = []
+        for entry in profile:
+            if isinstance(entry, dict):
+                v = entry.get("value")
+                values.append(None if entry.get("missing") or not isinstance(v, (int, float)) else round(v, 3))
+            elif isinstance(entry, (int, float)):
+                values.append(round(entry, 3))
+            else:
+                values.append(None)
+
         samples.append({
             "lon": s.get("lon"),
             "lat": s.get("lat"),
             "distance_m": s.get("distance_m"),
-            # 3 decimals: these are energy percentages, and the extra digits are
+            # 3 decimals: these are energy percentages and the extra digits were
             # a large share of the payload for no visible difference.
-            "profile": [round(v, 3) if isinstance(v, (int, float)) else None for v in profile],
+            "profile": values,
         })
     if not samples:
         return None
