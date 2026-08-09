@@ -5,6 +5,17 @@ import './story.css';
 /** Links are relative so they keep working under the /map-explorer/ Pages base. */
 const EXPLORE_URL = './explore.html';
 
+/**
+ * Hero background. Drop a file at public/story/hero.webp and it appears; leave
+ * it out and the header falls back to flat dark, which is why this is an inline
+ * style with a relative URL rather than a CSS url(): a missing file is a 404 at
+ * runtime instead of a failed build, and the path survives the Pages base.
+ *
+ * WebP, ~2560 px wide, under ~300 KB. The whole story page is 64 KB of code —
+ * an unoptimised background would dominate the first paint several times over.
+ */
+const HERO_IMAGE = './story/hero.webp';
+
 function Stat({ value, unit, label, decimals = 0 }: Extract<ChapterVisual, { kind: 'stat' }>) {
   const { ref, display } = useCountUp(value);
   return (
@@ -61,13 +72,20 @@ export default function Story() {
         ))}
       </nav>
 
-      <header className="story-hero">
-        <p className="story-hero__eyebrow">Global Vegetation Structure Map</p>
-        <h1>The shape of the world's forests</h1>
-        <p className="story-hero__lede">
-          A 10-metre map of vegetation vertical structure, everywhere on land.
+      <header
+        className="story-hero"
+        style={{ backgroundImage: `url(${HERO_IMAGE})` }}
+      >
+        {/* Scrim, not a filter on the image: it keeps the text legible whatever
+            the photograph turns out to be, and costs nothing when there is
+            no image at all. */}
+        <div className="story-hero__scrim" aria-hidden="true" />
+        <p className="story-hero__eyebrow story-hero__content">Global Vegetation Structure Model</p>
+        <h1 className="story-hero__content">The shape of the world's forests</h1>
+        <p className="story-hero__lede story-hero__content">
+          A 10-metre dataset of of Earth’s vegetation vertical structure
         </p>
-        <a className="story-cta story-cta--ghost" href="#010-what-we-mapped">
+        <a className="story-cta story-cta--ghost story-hero__content" href="#010-what-we-mapped">
           Start reading
         </a>
       </header>

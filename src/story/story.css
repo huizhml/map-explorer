@@ -90,12 +90,36 @@ body {
 /* --------------------------------------------------------------- hero ---- */
 
 .story-hero {
+  position: relative;
   min-height: 92vh;
   display: flex;
   flex-direction: column;
   justify-content: center;
   padding: 0 6vw;
-  max-width: 60rem;
+  /* Full-bleed: the background needs the whole width even though the text is
+     held to a readable measure by .story-hero__content. */
+  max-width: none;
+  background-color: var(--story-bg);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* Darkens toward the bottom-left, where the text sits, and stays out of the way
+   top-right so the image still reads. Sits over the background, under the text. */
+.story-hero__scrim {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(to top, rgba(11, 15, 14, 0.95) 0%, rgba(11, 15, 14, 0.55) 45%, rgba(11, 15, 14, 0.25) 100%),
+    linear-gradient(to right, rgba(11, 15, 14, 0.8) 0%, rgba(11, 15, 14, 0) 65%);
+  pointer-events: none;
+}
+
+.story-hero__content {
+  position: relative;
+  z-index: 1;
+  max-width: 46rem;
 }
 
 .story-hero__eyebrow {
