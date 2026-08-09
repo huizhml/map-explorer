@@ -91,7 +91,12 @@ body {
 
 .story-hero {
   position: relative;
-  min-height: 92vh;
+  /* Full viewport, not 92vh. The 8vh was there to let the next section peek
+     through as a hint that the page scrolls, but with a full-bleed image behind
+     it that gap reads as the picture failing to reach the bottom.
+     dvh first so mobile browser chrome does not eat into it. */
+  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -120,9 +125,9 @@ body {
   background: linear-gradient(
     to right,
     rgba(11, 15, 14, 1) 0%,
-    rgba(11, 15, 14, 0.92) 26%,
-    rgba(11, 15, 14, 0.35) 45%,
-    rgba(11, 15, 14, 0) 62%
+    rgba(11, 15, 14, 0.98) 30%,
+    rgba(11, 15, 14, 0.45) 47%,
+    rgba(11, 15, 14, 0) 64%
   );
   pointer-events: none;
 }
