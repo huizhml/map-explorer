@@ -429,3 +429,61 @@ body {
   background: #eef4f2;
   color: #47544e;
 }
+
+/* ------------------------------------------------------ transect heatmap ---- */
+
+.ex-heat__plot {
+  display: flex;
+  gap: 0.4rem;
+  align-items: stretch;
+}
+.ex-heat__yaxis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 0.62rem;
+  color: #8b9993;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.ex-heat__canvas {
+  flex: 1;
+  min-width: 0;
+  height: 150px;
+  border-radius: 4px;
+  display: block;
+  /* The buffer is one pixel per sample per height bin; letting the browser
+     smooth it is what makes the profile read as continuous rather than blocky. */
+  image-rendering: auto;
+}
+.ex-heat__xaxis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.62rem;
+  color: #8b9993;
+  margin-top: 0.2rem;
+  padding-left: 1.6rem;
+}
+.ex-heat__metrics {
+  display: flex;
+  gap: 1.1rem;
+  margin: 0.55rem 0 0;
+  padding-top: 0.5rem;
+  border-top: 1px solid #eef2f0;
+}
+.ex-heat__metrics div {
+  display: flex;
+  flex-direction: column;
+}
+.ex-heat__metrics dt {
+  font-size: 0.62rem;
+  color: #8b9993;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ex-heat__metrics dd {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}

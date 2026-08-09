@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type Map from 'ol/Map';
 import { fromLonLat } from 'ol/proj';
+import { TransectHeatmap, type Transect } from './TransectHeatmap';
 
 /**
  * "Visit a random site" — jumps to one of the curated sites and shows the
@@ -22,6 +23,8 @@ type Site = {
   center: [number, number] | null;
   tags: string[];
   images: Array<{ file: string; kind?: string | null; caption?: string | null }>;
+  /** Stored profile samples — preferred over a rendered image when present. */
+  transect?: Transect | null;
 };
 
 // Relative so it resolves under the /map-explorer/ Pages base as well as at root.
@@ -83,13 +86,15 @@ export function RandomSite({ map }: { map: Map | null }) {
           </button>
           <h2>{current.name ?? 'Site'}</h2>
           {current.description && <p className="ex-site__desc">{current.description}</p>}
-          {figure ? (
+          {current.transect?.samples?.length ? (
+            <TransectHeatmap transect={current.transect} />
+          ) : figure ? (
             <figure className="ex-site__figure">
               <img src={`${IMAGE_BASE}${figure.file}`} alt={figure.caption ?? current.name ?? 'Transect'} />
               {figure.caption && <figcaption>{figure.caption}</figcaption>}
             </figure>
           ) : (
-            <p className="ex-site__desc">No figure published for this site.</p>
+            <p className="ex-site__desc">No profile published for this site.</p>
           )}
           {current.tags.length > 0 && (
             <ul className="ex-site__tags">

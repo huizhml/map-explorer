@@ -82,8 +82,14 @@ console.log(`\n▸ ${manifest.count} site(s) → public/sites/`);
 // demand and hands the bytes back, so a saved LineString carries geometry but
 // no image. Render them here, once, from the stored line — the alternative is
 // making the public page wait ~50 s per figure.
+// Only for sites with neither. A stored transect is far better than a baked
+// figure — 0.17 MB gzipped against ~15 MB of PNG for these ten, and no render
+// step — so rendering is now the fallback for lines saved without one.
 const needFigure = (manifest.sites ?? []).filter(
-  (s) => s.geometry?.type === 'LineString' && (s.images?.length ?? 0) === 0,
+  (s) =>
+    s.geometry?.type === 'LineString' &&
+    (s.images?.length ?? 0) === 0 &&
+    !(s.transect?.samples?.length),
 );
 
 if (needFigure.length) {
@@ -111,7 +117,10 @@ if (needFigure.length) {
 }
 
 for (const site of manifest.sites ?? []) {
-  console.log(`   · ${site.name ?? '(unnamed)'} — ${site.images?.length ?? 0} image(s)`);
+  const what = site.transect?.samples?.length
+    ? `${site.transect.samples.length} profile samples`
+    : `${site.images?.length ?? 0} image(s)`;
+  console.log(`   · ${site.name ?? '(unnamed)'} — ${what}`);
 }
 if (manifest.missing_images?.length) {
   console.warn(`\n   ${manifest.missing_images.length} referenced image(s) missing on the server`);
