@@ -538,9 +538,9 @@ body {
 }
 .ex-layers__list li {
   display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.35rem 0.5rem;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0.4rem 0.5rem 0.45rem;
   font-size: 0.76rem;
   color: #2c3a34;
 }
@@ -581,4 +581,22 @@ body {
 .ex-layers__icon--danger:hover {
   background: #fdeceb;
   color: #b3261e;
+}
+
+.ex-layers__main {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: 100%;
+}
+.ex-layers__opacity {
+  width: 100%;
+  margin: 0.25rem 0 0;
+  height: 3px;
+  accent-color: #10796a;
+  cursor: pointer;
+}
+.ex-layers__opacity:disabled {
+  opacity: 0.35;
+  cursor: default;
 }

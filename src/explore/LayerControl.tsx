@@ -5,6 +5,8 @@ export type ExploreLayer = {
   visible: boolean;
   /** Pinned layers survive a change of RH — a new layer is added instead. */
   pinned: boolean;
+  /** 0-1. Stacked layers hide each other otherwise. */
+  opacity: number;
 };
 
 /**
@@ -20,12 +22,14 @@ export function LayerControl({
   onToggleVisible,
   onTogglePinned,
   onRemove,
+  onOpacity,
 }: {
   layers: ExploreLayer[];
   activeId: string | null;
   onToggleVisible: (id: string) => void;
   onTogglePinned: (id: string) => void;
   onRemove: (id: string) => void;
+  onOpacity: (id: string, value: number) => void;
 }) {
   if (!layers.length) return null;
 
@@ -35,6 +39,7 @@ export function LayerControl({
       <ul className="ex-layers__list">
         {layers.map((l) => (
           <li key={l.id} className={l.id === activeId ? 'is-active' : undefined}>
+            <div className="ex-layers__main">
             <button
               type="button"
               className={`ex-layers__icon${l.visible ? ' is-on' : ''}`}
@@ -91,6 +96,22 @@ export function LayerControl({
                 />
               </svg>
             </button>
+            </div>
+
+            {/* Its own line: the icon row is already four controls wide, and a
+                slider squeezed in beside them is too short to be usable. */}
+            <input
+              className="ex-layers__opacity"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={l.opacity}
+              disabled={!l.visible}
+              onChange={(e) => onOpacity(l.id, Number(e.target.value))}
+              title={`Opacity ${Math.round(l.opacity * 100)}%`}
+              aria-label={`Opacity of RH${l.rhIndex}`}
+            />
           </li>
         ))}
       </ul>

@@ -73,7 +73,7 @@ export default function SimpleApp() {
   // A list rather than a single layer, so pinning can hold one in place while
   // the sidebar moves on to another RH.
   const [layers, setLayers] = useState<ExploreLayer[]>([
-    { id: 'l0', rhIndex: 98, year: 2020, visible: true, pinned: false },
+    { id: 'l0', rhIndex: 98, year: 2020, visible: true, pinned: false, opacity: 1 },
   ]);
   const [activeId, setActiveId] = useState<string | null>('l0');
   const nextId = useRef(1);
@@ -242,7 +242,10 @@ export default function SimpleApp() {
         version: DEFAULT_VSM_VERSION,
       };
       const managed = layerManager.getLayer(getVsmLayerId(entry));
-      if (managed?.layer) managed.layer.setVisible(l.visible);
+      if (managed?.layer) {
+        managed.layer.setVisible(l.visible);
+        managed.layer.setOpacity(l.opacity);
+      }
     }
   }, [layers, layerManager, qChoice]);
 
@@ -252,6 +255,10 @@ export default function SimpleApp() {
 
   const togglePinned = useCallback((id: string) => {
     setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, pinned: !l.pinned } : l)));
+  }, []);
+
+  const setOpacity = useCallback((id: string, opacity: number) => {
+    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, opacity } : l)));
   }, []);
 
   const removeLayer = useCallback((id: string) => {
@@ -341,6 +348,7 @@ export default function SimpleApp() {
           onToggleVisible={toggleVisible}
           onTogglePinned={togglePinned}
           onRemove={removeLayer}
+          onOpacity={setOpacity}
         />
         <BasemapControl value={basemap} onChange={setBasemap} />
         <RandomSite map={map} />
