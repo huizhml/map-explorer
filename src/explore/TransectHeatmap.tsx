@@ -73,12 +73,21 @@ function MetricLines({ samples }: { samples: TransectSample[] }) {
 
   return (
     <div className="ex-heat__metrics">
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="ex-heat__lines">
-        {series.map((s) => (
-          <path key={s.key} d={path(s.values)} fill="none" stroke={s.colour} strokeWidth="0.5"
-                vectorEffect="non-scaling-stroke" />
-        ))}
-      </svg>
+      {/* Labelled top and bottom, mirroring the heatmap's axis above, rather
+          than quoting the range as a bare pair of numbers off to one side —
+          which read as an unexplained annotation. */}
+      <div className="ex-heat__plot">
+        <div className="ex-heat__yaxis">
+          <span>{hi.toFixed(1)}</span>
+          <span>{lo.toFixed(1)}</span>
+        </div>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="ex-heat__lines">
+          {series.map((s) => (
+            <path key={s.key} d={path(s.values)} fill="none" stroke={s.colour} strokeWidth="0.5"
+                  vectorEffect="non-scaling-stroke" />
+          ))}
+        </svg>
+      </div>
       <ul className="ex-heat__legend">
         {series.map((s) => (
           <li key={s.key}>
@@ -86,9 +95,6 @@ function MetricLines({ samples }: { samples: TransectSample[] }) {
             {s.label}
           </li>
         ))}
-        <li className="ex-heat__range">
-          {lo.toFixed(1)}–{hi.toFixed(1)}
-        </li>
       </ul>
     </div>
   );

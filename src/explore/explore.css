@@ -479,18 +479,17 @@ body {
   border-top: 1px solid #eef2f0;
 }
 .ex-heat__lines {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 46px;
   display: block;
-  margin-left: 1.6rem;
-  width: calc(100% - 1.6rem);
 }
 .ex-heat__legend {
   display: flex;
   align-items: center;
   gap: 0.7rem;
   list-style: none;
-  margin: 0.25rem 0 0 1.6rem;
+  margin: 0.3rem 0 0 2.1rem;
   padding: 0;
   font-size: 0.63rem;
   color: #6b7a74;
@@ -504,9 +503,4 @@ body {
   width: 10px;
   height: 2px;
   border-radius: 1px;
-}
-.ex-heat__range {
-  margin-left: auto;
-  color: #9aa8a2;
-  font-variant-numeric: tabular-nums;
 }
