@@ -122,12 +122,15 @@ body {
   /* The left is already flat background, so this is not carrying the text so
      much as dissolving the image's hard left edge into it — without it the
      render stops on a visible vertical seam. */
+  /* Light enough to leave the render visible behind the type. The title is
+     large and white and carries itself; only the lede needed help, and the
+     image is dark to begin with. */
   background: linear-gradient(
     to right,
-    rgba(11, 15, 14, 1) 0%,
-    rgba(11, 15, 14, 0.98) 30%,
-    rgba(11, 15, 14, 0.45) 47%,
-    rgba(11, 15, 14, 0) 64%
+    rgba(11, 15, 14, 0.85) 0%,
+    rgba(11, 15, 14, 0.55) 18%,
+    rgba(11, 15, 14, 0.2) 34%,
+    rgba(11, 15, 14, 0) 50%
   );
   pointer-events: none;
 }
