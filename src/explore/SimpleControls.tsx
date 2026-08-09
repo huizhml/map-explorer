@@ -38,8 +38,6 @@ type Props = {
   onRhIndex: (rh: number) => void;
   year: (typeof YEARS)[number];
   onYear: (y: (typeof YEARS)[number]) => void;
-  visible: boolean;
-  onVisible: (v: boolean) => void;
 };
 
 export function SimpleControls(props: Props) {
@@ -95,18 +93,6 @@ export function SimpleControls(props: Props) {
           ))}
         </select>
       </section>
-
-      <section className="ex-field ex-field--row">
-        <label htmlFor="ex-visible">Show layer</label>
-        <input
-          id="ex-visible"
-          type="checkbox"
-          checked={props.visible}
-          onChange={(e) => props.onVisible(e.target.checked)}
-        />
-      </section>
-
-      {/* Basemap lives on the map itself, bottom-right — see SimpleApp. */}
 
       <p className="ex-tip">Click the map to read the profile at that point.</p>
 

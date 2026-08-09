@@ -24,6 +24,7 @@ import {
 } from '../constants/predictions';
 import { SimpleControls, type BasemapId } from './SimpleControls';
 import { BasemapControl } from './BasemapControl';
+import { LayerControl } from './LayerControl';
 import { RhProfileChart, VerticalProfileChart } from './ProfileCharts';
 import { RandomSite } from './RandomSite';
 import { fetchVerticalProfile, type VerticalProfileResponse } from '../utils/verticalProfile';
@@ -258,8 +259,6 @@ export default function SimpleApp() {
         onRhIndex={setRhIndex}
         year={year}
         onYear={setYear}
-        visible={visible}
-        onVisible={setVisible}
       />
 
       <div className="ex-map">
@@ -270,6 +269,13 @@ export default function SimpleApp() {
           <MapComponent onMapInit={handleMapInit} />
         </div>
 
+        <LayerControl
+          rhIndex={rhIndex}
+          year={year}
+          qChoice={qChoice}
+          visible={visible}
+          onVisible={setVisible}
+        />
         <BasemapControl value={basemap} onChange={setBasemap} />
         <RandomSite map={map} />
 

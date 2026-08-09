@@ -372,14 +372,16 @@ body {
   transform: translateX(-50%) translateY(-1px);
 }
 
+/* Horizontally centred: it is the focus when open, and centring keeps it clear
+   of the layer panel top-right and the reading card bottom-left. Vertically it
+   stops short of the bottom so the "next site" button stays reachable. */
 .ex-site {
   position: absolute;
   top: 1rem;
-  right: 1rem;
-  /* Below the button's z-index so the two never fight; the button is pinned
-     bottom-centre and the card top-right, so they do not overlap anyway. */
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 11;
-  width: min(520px, calc(100% - 2rem));
+  width: min(560px, calc(100% - 15rem));
   max-height: calc(100vh - 7rem);
   overflow-y: auto;
   background: rgba(255, 255, 255, 0.98);
@@ -503,4 +505,55 @@ body {
   width: 10px;
   height: 2px;
   border-radius: 1px;
+}
+
+/* ------------------------------------------------------- layer control ---- */
+
+.ex-layers {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 10;
+  min-width: 190px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.22);
+}
+.ex-layers__head {
+  margin: 0;
+  padding: 0.45rem 0.7rem;
+  background: #10796a;
+  color: #fff;
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.ex-layers__row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.78rem;
+  color: #2c3a34;
+  cursor: pointer;
+  text-align: left;
+}
+.ex-layers__row:hover {
+  background: #f2f7f5;
+}
+.ex-layers__eye {
+  display: flex;
+  color: #b3c0ba;
+  flex: none;
+}
+.ex-layers__eye.is-on {
+  color: #10796a;
+}
+.ex-layers__name {
+  font-variant-numeric: tabular-nums;
 }
