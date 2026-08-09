@@ -100,11 +100,11 @@ body {
      held to a readable measure by .story-hero__content. */
   max-width: none;
   background-color: var(--story-bg);
-  background-size: cover;
-  /* Anchored right: the figure carries its own legend and colourbar down the
-     left edge, which is exactly where the title sits. Pushing the image right
-     crops that furniture out rather than letting the two collide — the story
-     explains RH in its own words a screen later anyway. */
+  /* Height-filling rather than cover: the render is a figure, and cropping its
+     top and bottom to fill the width would cut into the globe. `auto 100%`
+     keeps it whole and lets it end wherever it ends — the page background
+     carries the rest as flat black, which is where the title goes. */
+  background-size: auto 100%;
   background-position: right center;
   background-repeat: no-repeat;
 }
@@ -114,12 +114,16 @@ body {
 .story-hero__scrim {
   position: absolute;
   inset: 0;
-  background:
-    /* Solid behind the text, clearing to nothing across the middle so the
-       globe still reads on the right. */
-    linear-gradient(to right, rgba(11, 15, 14, 0.94) 0%, rgba(11, 15, 14, 0.82) 28%, rgba(11, 15, 14, 0.15) 62%, rgba(11, 15, 14, 0) 100%),
-    /* Slight lift at the very bottom so the hero meets the dark page cleanly. */
-    linear-gradient(to top, rgba(11, 15, 14, 0.75) 0%, rgba(11, 15, 14, 0) 30%);
+  /* The left is already flat background, so this is not carrying the text so
+     much as dissolving the image's hard left edge into it — without it the
+     render stops on a visible vertical seam. */
+  background: linear-gradient(
+    to right,
+    rgba(11, 15, 14, 1) 0%,
+    rgba(11, 15, 14, 0.92) 26%,
+    rgba(11, 15, 14, 0.35) 45%,
+    rgba(11, 15, 14, 0) 62%
+  );
   pointer-events: none;
 }
 
