@@ -145,13 +145,6 @@ export function RandomSite({ map }: { map: Map | null }) {
             <p className="ex-site__desc">No profile published for this site.</p>
           )}
 
-          {current.tags.length > 0 && (
-            <ul className="ex-site__tags">
-              {current.tags.map((t) => (
-                <li key={t}>{t}</li>
-              ))}
-            </ul>
-          )}
         </div>
       )}
     </>

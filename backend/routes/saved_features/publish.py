@@ -106,6 +106,10 @@ def _transect_of(feature: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             else:
                 values.append(None)
 
+        def _num(key: str):
+            v = s.get(key)
+            return round(v, 3) if isinstance(v, (int, float)) else None
+
         samples.append({
             "lon": s.get("lon"),
             "lat": s.get("lat"),
@@ -113,6 +117,12 @@ def _transect_of(feature: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             # 3 decimals: these are energy percentages and the extra digits were
             # a large share of the payload for no visible difference.
             "profile": values,
+            # Per-sample, not a single number for the whole line: these vary
+            # along the transect and are the point of the metrics panel.
+            "fhd": _num("fhd"),
+            "enl1d": _num("enl1d"),
+            "enl2d": _num("enl2d"),
+            "cr": _num("cr"),
         })
     if not samples:
         return None
@@ -123,7 +133,6 @@ def _transect_of(feature: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "heatmap_max_height": t.get("heatmap_max_height"),
         "sample_count": len(samples),
         "samples": samples,
-        "metrics": pd.get("profile_metrics"),
     }
 
 

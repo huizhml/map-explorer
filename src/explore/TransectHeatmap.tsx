@@ -18,6 +18,10 @@ export type TransectSample = {
   lat: number;
   distance_m?: number | null;
   profile: Array<number | null>;
+  fhd?: number | null;
+  enl1d?: number | null;
+  enl2d?: number | null;
+  cr?: number | null;
 };
 
 export type Transect = {
@@ -25,8 +29,70 @@ export type Transect = {
   line_coordinates?: [number, number][] | null;
   total_length_m?: number | null;
   heatmap_max_height?: number | null;
-  metrics?: { fhd?: number | null; cr?: number | null; enl1d?: number | null; enl2d?: number | null } | null;
 };
+
+/** Metric lines under the heatmap, sharing its x-axis. */
+const METRICS = [
+  { key: 'fhd', label: 'FHD', colour: '#2f7ed8' },
+  { key: 'enl1d', label: '1D ENL', colour: '#1a9850' },
+  { key: 'enl2d', label: '2D ENL', colour: '#d7301f' },
+  { key: 'cr', label: 'CR', colour: '#8856a7' },
+] as const;
+
+function MetricLines({ samples }: { samples: TransectSample[] }) {
+  const series = METRICS.map((m) => ({
+    ...m,
+    values: samples.map((s) => (typeof s[m.key] === 'number' ? (s[m.key] as number) : null)),
+  })).filter((s) => s.values.some((v) => v != null));
+
+  if (!series.length) return null;
+
+  // One shared y-scale: the four are on comparable ranges here (roughly 0-7),
+  // and separate axes would make them impossible to read against each other.
+  const all = series.flatMap((s) => s.values).filter((v): v is number => v != null);
+  const lo = Math.min(0, ...all);
+  const hi = Math.max(...all);
+  const W = 100;
+  const H = 26;
+
+  const path = (values: Array<number | null>) => {
+    let d = '';
+    let pen = false;
+    values.forEach((v, i) => {
+      if (v == null) {
+        pen = false;
+        return;
+      }
+      const x = (i / Math.max(1, values.length - 1)) * W;
+      const y = H - ((v - lo) / (hi - lo || 1)) * H;
+      d += `${pen ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)}`;
+      pen = true;
+    });
+    return d;
+  };
+
+  return (
+    <div className="ex-heat__metrics">
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="ex-heat__lines">
+        {series.map((s) => (
+          <path key={s.key} d={path(s.values)} fill="none" stroke={s.colour} strokeWidth="0.5"
+                vectorEffect="non-scaling-stroke" />
+        ))}
+      </svg>
+      <ul className="ex-heat__legend">
+        {series.map((s) => (
+          <li key={s.key}>
+            <span style={{ background: s.colour }} />
+            {s.label}
+          </li>
+        ))}
+        <li className="ex-heat__range">
+          {lo.toFixed(1)}–{hi.toFixed(1)}
+        </li>
+      </ul>
+    </div>
+  );
+}
 
 /** Viridis, sampled at 16 stops — matches the app's heatmap. */
 const VIRIDIS: Array<[number, number, number]> = [
@@ -103,26 +169,7 @@ export function TransectHeatmap({ transect, max = 10 }: { transect: Transect; ma
         <span>{lengthKm ? `${lengthKm} km along transect` : 'along transect'}</span>
         <span>{lengthKm ? `${lengthKm} km` : ''}</span>
       </div>
-      {transect.metrics && (
-        <dl className="ex-heat__metrics">
-          {transect.metrics.fhd != null && (
-            <div>
-              <dt title="Foliage height diversity">FHD</dt>
-              <dd>{transect.metrics.fhd.toFixed(2)}</dd>
-            </div>
-          )}
-          {transect.metrics.cr != null && (
-            <div>
-              <dt title="Canopy ratio">CR</dt>
-              <dd>{transect.metrics.cr.toFixed(2)}</dd>
-            </div>
-          )}
-          <div>
-            <dt>Samples</dt>
-            <dd>{transect.samples.length}</dd>
-          </div>
-        </dl>
-      )}
+      <MetricLines samples={transect.samples} />
     </div>
   );
 }

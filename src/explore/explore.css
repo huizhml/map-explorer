@@ -474,25 +474,39 @@ body {
   padding-left: 1.6rem;
 }
 .ex-heat__metrics {
-  display: flex;
-  gap: 1.1rem;
-  margin: 0.55rem 0 0;
-  padding-top: 0.5rem;
+  margin-top: 0.45rem;
+  padding-top: 0.45rem;
   border-top: 1px solid #eef2f0;
 }
-.ex-heat__metrics div {
+.ex-heat__lines {
+  width: 100%;
+  height: 46px;
+  display: block;
+  margin-left: 1.6rem;
+  width: calc(100% - 1.6rem);
+}
+.ex-heat__legend {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 0.7rem;
+  list-style: none;
+  margin: 0.25rem 0 0 1.6rem;
+  padding: 0;
+  font-size: 0.63rem;
+  color: #6b7a74;
 }
-.ex-heat__metrics dt {
-  font-size: 0.62rem;
-  color: #8b9993;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.ex-heat__legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
 }
-.ex-heat__metrics dd {
-  margin: 0;
-  font-size: 0.82rem;
-  font-weight: 600;
+.ex-heat__legend span {
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+}
+.ex-heat__range {
+  margin-left: auto;
+  color: #9aa8a2;
   font-variant-numeric: tabular-nums;
 }
