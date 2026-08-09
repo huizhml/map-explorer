@@ -589,14 +589,24 @@ body {
   gap: 0.3rem;
   width: 100%;
 }
+/* Muted by default and brought up on hover or focus. Always present rather
+   than revealed, so the row does not change height under the pointer — but
+   quiet, because it is a secondary adjustment sitting under every layer. */
 .ex-layers__opacity {
   width: 100%;
-  margin: 0.25rem 0 0;
-  height: 3px;
-  accent-color: #10796a;
+  margin: 0.3rem 0 0;
+  height: 2px;
+  accent-color: #b3c0ba;
+  opacity: 0.45;
   cursor: pointer;
+  transition: opacity 0.15s, accent-color 0.15s;
+}
+.ex-layers__list li:hover .ex-layers__opacity,
+.ex-layers__opacity:focus-visible {
+  opacity: 1;
+  accent-color: #10796a;
 }
 .ex-layers__opacity:disabled {
-  opacity: 0.35;
+  opacity: 0.18;
   cursor: default;
 }
