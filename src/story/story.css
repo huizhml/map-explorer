@@ -101,7 +101,11 @@ body {
   max-width: none;
   background-color: var(--story-bg);
   background-size: cover;
-  background-position: center;
+  /* Anchored right: the figure carries its own legend and colourbar down the
+     left edge, which is exactly where the title sits. Pushing the image right
+     crops that furniture out rather than letting the two collide — the story
+     explains RH in its own words a screen later anyway. */
+  background-position: right center;
   background-repeat: no-repeat;
 }
 
@@ -111,8 +115,11 @@ body {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(to top, rgba(11, 15, 14, 0.95) 0%, rgba(11, 15, 14, 0.55) 45%, rgba(11, 15, 14, 0.25) 100%),
-    linear-gradient(to right, rgba(11, 15, 14, 0.8) 0%, rgba(11, 15, 14, 0) 65%);
+    /* Solid behind the text, clearing to nothing across the middle so the
+       globe still reads on the right. */
+    linear-gradient(to right, rgba(11, 15, 14, 0.94) 0%, rgba(11, 15, 14, 0.82) 28%, rgba(11, 15, 14, 0.15) 62%, rgba(11, 15, 14, 0) 100%),
+    /* Slight lift at the very bottom so the hero meets the dark page cleanly. */
+    linear-gradient(to top, rgba(11, 15, 14, 0.75) 0%, rgba(11, 15, 14, 0) 30%);
   pointer-events: none;
 }
 
@@ -297,6 +304,12 @@ body {
 /* --------------------------------------------------------- responsive ---- */
 
 @media (max-width: 860px) {
+  /* No room for text beside the figure; darken it right down and let it act as
+     texture rather than as an illustration competing with the title. */
+  .story-hero__scrim {
+    background: rgba(11, 15, 14, 0.86);
+  }
+
   .story-body {
     grid-template-columns: 1fr;
   }

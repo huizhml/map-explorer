@@ -46,3 +46,7 @@ deploy/hf-space/.space-repo/
 # figures are produced by scripts/generate-transect-examples.mjs, which needs a
 # running backend and takes minutes; the Pages workflow has neither. Same rule
 # as deploy/data/s2_grid.fgb — if CI cannot regenerate it, it belongs in git.
+
+# Full-resolution source art. Optimised copies live in public/; the originals
+# would otherwise be published verbatim and are far too large to serve.
+art/
