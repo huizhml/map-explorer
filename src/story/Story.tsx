@@ -89,6 +89,27 @@ function Visual({ visual, progress = 0 }: { visual: ChapterVisual; progress?: nu
       return <Sequence visual={visual} progress={progress} />;
     case 'stat':
       return <Stat {...visual} />;
+    case 'video':
+      return (
+        <figure className="story-figure">
+          {/* muted + playsInline are what make autoplay permitted at all; the
+              poster covers the gap before it loads and the case where it never
+              plays. The clip is a ping-pong, so looping has no visible cut. */}
+          <video
+            autoPlay
+            muted
+            loop
+            playsInline
+            poster={visual.poster}
+            aria-label={visual.alt}
+          >
+            {visual.sources.map((src) => (
+              <source key={src} src={src} type={src.endsWith('.webm') ? 'video/webm' : 'video/mp4'} />
+            ))}
+          </video>
+          {visual.caption && <figcaption>{visual.caption}</figcaption>}
+        </figure>
+      );
     case 'image':
     case 'figure':
       return (

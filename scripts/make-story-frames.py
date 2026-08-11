@@ -56,10 +56,13 @@ BAR_MAX_PX = 26
 
 # Animation: 60 frames at 90 ms is a 5.4 s loop — long enough to read the dates
 # going by, short enough not to become the page's centre of gravity.
-ANIM_WIDTH = 840
-ANIM_BUILD_FRAMES = 44
-ANIM_HOLD_FRAMES = 16
-ANIM_FRAME_MS = 90
+ANIM_WIDTH = 760
+ANIM_BUILD_FRAMES = 26
+ANIM_HOLD_FRAMES = 14
+ANIM_FPS = 11
+# How far the camera leans over. Past ~60 deg the far half of the scene
+# collapses into a sliver and the bars there stop being readable.
+TILT_MAX_DEG = 54
 
 
 def save_webp(png_or_jpeg: bytes, name: str, quality: int = 80) -> None:
@@ -119,72 +122,155 @@ def _draw_bars(base, lon, lat, rh98, upto: int):
     return Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
 
 
-def frame_gedi_animation() -> None:
-    """The same shots, revealed in the order they were actually acquired.
+def _homography(src, dst):
+    """Forward 3x3 mapping src → dst from four point correspondences."""
+    import numpy as np
 
-    GEDI's coverage here is not one pass — it is 13 overpasses between January
-    and December 2020. Animating in `delta_time` order shows coverage
-    accumulating the way it really did, which is a stronger statement about
-    sparseness than any single sweep: after a year of passes, this is still all
-    there is.
+    a = []
+    b = []
+    for (sx, sy), (dx, dy) in zip(src, dst):
+        a.append([sx, sy, 1, 0, 0, 0, -sx * dx, -sy * dx])
+        b.append(dx)
+        a.append([0, 0, 0, sx, sy, 1, -sx * dy, -sy * dy])
+        b.append(dy)
+    h = np.linalg.solve(np.asarray(a, dtype="float64"), np.asarray(b, dtype="float64"))
+    return np.append(h, 1.0).reshape(3, 3)
+
+
+def frame_gedi_animation() -> None:
+    """Tilt from nadir into an oblique view, so the measurements stand up.
+
+    The point of the chapter is that GEDI measures the vertical dimension, and
+    a map cannot show a vertical dimension — from straight down, a 40 m canopy
+    and bare ground look the same. So the camera starts at nadir, where the bars
+    have zero length because that is honestly what you can see from there, and
+    tilts until they are standing. The tilt is the information; the same visual
+    grammar as the hero render.
+
+    An earlier version animated the shots appearing in acquisition order. That
+    was motion without an argument: the chapter is about spatial sparseness, and
+    watching coverage accumulate over a year suggests the opposite.
     """
-    print("frame 2 (animated) — GEDI coverage accumulating")
+    print("frame 2 (animated) — nadir tilting into oblique")
     if not GEDI_PARQUET.exists():
         print(f"  skipped: {GEDI_PARQUET.name} not found")
         return
 
-    import datetime as dt
     import numpy as np
     import pyarrow.parquet as pq
     from PIL import Image, ImageDraw
+    from rio_tiler.colormap import cmap
 
-    table = pq.ParquetFile(GEDI_PARQUET).read(columns=["lon", "lat", "rh98", "delta_time"])
+    table = pq.ParquetFile(GEDI_PARQUET).read(columns=["lon", "lat", "rh98"])
     lon = np.asarray(table["lon"], dtype="float64")
     lat = np.asarray(table["lat"], dtype="float64")
     rh98 = np.asarray(table["rh98"], dtype="float64")
-    tsec = np.asarray(table["delta_time"], dtype="float64")
-
     inside = (lon >= MIN_LON) & (lon <= MAX_LON) & (lat >= MIN_LAT) & (lat <= MAX_LAT)
-    lon, lat, rh98, tsec = lon[inside], lat[inside], rh98[inside], tsec[inside]
-    order = np.argsort(tsec)
-    lon, lat, rh98, tsec = lon[order], lat[order], rh98[order], tsec[order]
-    n = len(lon)
-    print(f"  {n} shots, {len(np.unique(np.floor(tsec / 3600)))} distinct hours")
+    lon, lat, rh98 = lon[inside], lat[inside], rh98[inside]
+    print(f"  {inside.sum()} shots")
 
-    # Smaller than the stills: this is 60 frames, and the panel renders at about
-    # 600 px anyway.
     base = Image.open(OUT / "method-1-sentinel2.webp").convert("RGB")
-    base = base.resize((ANIM_WIDTH, int(ANIM_WIDTH * HEIGHT / WIDTH)), Image.LANCZOS)
+    W = ANIM_WIDTH
+    H = int(ANIM_WIDTH * HEIGHT / WIDTH)
+    base = base.resize((W, H), Image.LANCZOS)
 
-    epoch = dt.datetime(2018, 1, 1)
+    lut = cmap.get("inferno")
+    lo, hi = RH_RANGE_M
+    # Ground positions in the flat image, and each shot's height fraction.
+    gx = (lon - MIN_LON) / (MAX_LON - MIN_LON) * W
+    gy = (MAX_LAT - lat) / (MAX_LAT - MIN_LAT) * H
+    frac = np.clip((rh98 - lo) / (hi - lo), 0, 1)
+    frac[~np.isfinite(rh98)] = np.nan
+
+    src_corners = [(0, 0), (W, 0), (W, H), (0, H)]
     frames = []
+
     for k in range(ANIM_BUILD_FRAMES):
-        upto = max(1, round(n * (k + 1) / ANIM_BUILD_FRAMES))
-        img = _draw_bars(base, lon, lat, rh98, upto)
-        date = (epoch + dt.timedelta(seconds=float(tsec[upto - 1]))).date()
-        d = ImageDraw.Draw(img)
-        label = f"{date}   {upto} shots"
-        d.rectangle((8, img.size[1] - 26, 8 + 7 * len(label) + 12, img.size[1] - 6), fill=(0, 0, 0, 160))
-        d.text((16, img.size[1] - 22), label, fill=(235, 242, 240))
-        frames.append(img)
+        # Ease-in-out so the tilt starts and ends calmly.
+        u = k / max(1, ANIM_BUILD_FRAMES - 1)
+        eased = 0.5 - 0.5 * np.cos(np.pi * u)
+        theta = np.radians(TILT_MAX_DEG) * eased
 
-    # Hold on the finished state, so the loop reads as "and that is all of it"
-    # before it starts over.
-    frames += [frames[-1]] * ANIM_HOLD_FRAMES
+        squash = float(np.cos(theta))          # ground foreshortening
+        narrow = 0.42 * float(np.sin(theta))   # far edge pulled in
+        lift = float(np.sin(theta))            # how much of a bar is visible
 
-    out = OUT / "method-2-gedi.webp"
-    frames[0].save(
-        out,
-        "WEBP",
-        save_all=True,
-        append_images=frames[1:],
-        duration=ANIM_FRAME_MS,
-        loop=0,
-        quality=68,
-        method=6,
-    )
-    print(f"  method-2-gedi.webp  {out.stat().st_size / 1024:.0f} KB  "
-          f"{len(frames)} frames  {frames[0].size[0]}x{frames[0].size[1]}")
+        # The ground keeps most of the canvas as it tilts, rather than shrinking
+        # by cos(theta) and leaving the top 40% black. It gives up only as much
+        # room as the bars need to stand in.
+        band_h = H * (1 - 0.17 * float(np.sin(theta)))
+        y_bot = H - 6
+        y_top = y_bot - band_h
+        dst_corners = [
+            (W * 0.5 * narrow, y_top),
+            (W - W * 0.5 * narrow, y_top),
+            (W, y_bot),
+            (0, y_bot),
+        ]
+
+        # PIL's PERSPECTIVE takes the inverse mapping (output → input).
+        inv = _homography(dst_corners, src_corners)
+        coeffs = (inv / inv[2, 2]).flatten()[:8]
+        ground = base.transform((W, H), Image.PERSPECTIVE, coeffs, resample=Image.BICUBIC)
+
+        canvas = Image.new("RGB", (W, H), (8, 11, 10))
+        canvas.paste(ground, (0, 0))
+
+        fwd = _homography(src_corners, dst_corners)
+        pts = np.stack([gx, gy, np.ones_like(gx)])
+        proj = fwd @ pts
+        px = proj[0] / proj[2]
+        py = proj[1] / proj[2]
+
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        # Far to near, so nearer bars occlude farther ones.
+        for i in np.argsort(py):
+            f = frac[i]
+            if not np.isfinite(f):
+                continue
+            # Zero at nadir: from straight down there is no height to see. That
+            # is the whole point of the tilt, so it is not faked in early.
+            # Scaled so a full-height (40 m) shot reaches roughly the headroom the
+            # ground gives up — bars that read as columns, not as tick marks.
+            length = f * BAR_MAX_PX * (H / HEIGHT) * lift * 6.2
+            if length < 0.5:
+                continue
+            r, g, b, _ = lut[int(f * 255)]
+            x, y = float(px[i]), float(py[i])
+            draw.line((x, y, x, y - length), fill=(r, g, b, 240), width=2)
+            draw.ellipse((x - 1.3, y - 1.3, x + 1.3, y + 1.3), fill=(255, 255, 255, 190))
+
+        frames.append(Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB"))
+
+    # Ping-pong: up, hold, back down. The loop is then seamless — no cut from
+    # full tilt back to nadir — and it re-states the comparison every cycle:
+    # flat shows nothing, tilted shows the measurement.
+    frames = frames + [frames[-1]] * ANIM_HOLD_FRAMES + frames[-2:0:-1]
+
+    # A still doubles as the poster, so something is on screen before the video
+    # has loaded, or if it never plays.
+    frames[len(frames) // 3].save(OUT / "method-2-gedi.webp", "WEBP", quality=80, method=6)
+
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, f in enumerate(frames):
+            f.save(f"{tmp}/{i:03d}.png")
+        for name, args in (
+            ("method-2-gedi.mp4", ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "28",
+                                   "-movflags", "+faststart"]),
+            ("method-2-gedi.webm", ["-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p",
+                                    "-crf", "40", "-b:v", "0"]),
+        ):
+            dest = OUT / name
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(ANIM_FPS),
+                 "-i", f"{tmp}/%03d.png", *args, str(dest)],
+                check=True,
+            )
+            print(f"  {name}  {dest.stat().st_size / 1024:.0f} KB  {len(frames)} frames  {W}x{H}")
 
 
 def frame_gedi() -> None:

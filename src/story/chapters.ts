@@ -23,6 +23,14 @@ export type ChapterVisual =
       frames: Array<{ src: string; alt: string; caption?: string }>;
     }
   | { kind: 'figure'; src: string; alt: string; caption?: string }
+  /** Looping clip. `poster` shows before it loads and if it never plays. */
+  | {
+      kind: 'video';
+      sources: string[];
+      poster: string;
+      alt: string;
+      caption?: string;
+    }
   | { kind: 'stat'; value: number; unit: string; label: string; decimals?: number }
   | { kind: 'placeholder'; note: string };
 
@@ -62,25 +70,12 @@ export const CHAPTERS: Chapter[] = [
         'globally. The result is a vertical profile for every 10 m pixel on land.',
     ],
     visual: {
-      kind: 'sequence',
-      note: 'Sentinel-2 tile → sparse GEDI tracks over it → predicted profile everywhere',
-      frames: [
-        {
-          src: 'story/method-1-sentinel2.webp',
-          alt: 'Sentinel-2 true-colour image of a forested area',
-          caption: 'Sentinel-2 sees everywhere, every few days — but only from above.',
-        },
-        {
-          src: 'story/method-2-gedi.webp',
-          alt: 'Real GEDI shots over the same area, coloured by canopy height',
-          caption: '724 GEDI shots in this view, each bar its measured canopy height — real structure, but only where the tracks fall.',
-        },
-        {
-          src: 'story/method-3-predicted.webp',
-          alt: 'Predicted canopy structure across the whole area',
-          caption: 'The model learns the link, and fills in everywhere between the tracks.',
-        },
-      ],
+      kind: 'video',
+      sources: ['story/method-2-gedi.webm', 'story/method-2-gedi.mp4'],
+      poster: 'story/method-2-gedi.webp',
+      alt: 'The view tilts from directly overhead into an oblique view, and the GEDI measurements stand up as columns of canopy height',
+      caption:
+        'Seen from directly above, a 40 m canopy and bare ground look the same. Tilt, and 724 real GEDI shots stand up — measured structure, but only where the tracks fall.',
     },
   },
   {
