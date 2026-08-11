@@ -70,12 +70,35 @@ export const CHAPTERS: Chapter[] = [
         'globally. The result is a vertical profile for every 10 m pixel on land.',
     ],
     visual: {
-      kind: 'video',
-      sources: ['story/method-2-gedi.webm', 'story/method-2-gedi.mp4'],
-      poster: 'story/method-2-gedi.webp',
-      alt: 'The view tilts from directly overhead into an oblique view, and the GEDI measurements stand up as columns of canopy height',
-      caption:
-        'Seen from directly above, a 40 m canopy and bare ground look the same. Tilt, and 724 real GEDI shots stand up — measured structure, but only where the tracks fall.',
+      kind: 'sequence',
+      note: 'One GEDI shot → what it records → RH98 → the bar → all 724',
+      frames: [
+        {
+          src: 'story/method-2a-shot.webp',
+          alt: 'A single GEDI footprint ringed on the satellite image',
+          caption: 'One GEDI shot. The laser lights a circle 25 m across.',
+        },
+        {
+          src: 'story/method-2b-profile.webp',
+          alt: 'The energy returned from that shot, plotted against height',
+          caption: 'What it records is not a number but a profile: how much energy came back from each height.',
+        },
+        {
+          src: 'story/method-2c-rh98.webp',
+          alt: 'RH98 marked on the profile',
+          caption: 'RH98 is the height below which 98% of that energy falls — in practice, the top of the canopy.',
+        },
+        {
+          src: 'story/method-2d-bar.webp',
+          alt: 'The profile collapsing into a single bar of that height',
+          caption: 'Collapse the profile to that one height, and you have a bar.',
+        },
+        {
+          src: 'story/method-2e-all.webp',
+          alt: 'All 724 GEDI shots in view, each drawn as a bar',
+          caption: 'Here are all 724 in this view — real measurements, but only where the tracks fall.',
+        },
+      ],
     },
   },
   {
