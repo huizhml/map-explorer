@@ -1,5 +1,6 @@
 import { CHAPTERS, type ChapterVisual } from './chapters';
-import { useActiveSection, useCountUp } from './useInView';
+import { useState } from 'react';
+import { useActiveSection, useCountUp, useSectionProgress } from './useInView';
 import './story.css';
 
 /** Links are relative so they keep working under the /map-explorer/ Pages base. */
@@ -32,8 +33,60 @@ function Stat({ value, unit, label, decimals = 0 }: Extract<ChapterVisual, { kin
   );
 }
 
-function Visual({ visual }: { visual: ChapterVisual }) {
+function Sequence({
+  visual,
+  progress,
+}: {
+  visual: Extract<ChapterVisual, { kind: 'sequence' }>;
+  progress: number;
+}) {
+  const [failed, setFailed] = useState<Record<string, boolean>>({});
+  const usable = visual.frames.filter((f) => !failed[f.src]);
+
+  // Frames are stacked and cross-faded rather than swapped, so the browser has
+  // already decoded the next one before it is needed and nothing flashes.
+  const index = Math.min(
+    visual.frames.length - 1,
+    Math.floor(progress * visual.frames.length),
+  );
+  const active = visual.frames[index];
+
+  if (!usable.length) {
+    return (
+      <div className="story-placeholder">
+        <span>{visual.note}</span>
+      </div>
+    );
+  }
+
+  return (
+    <figure className="story-sequence">
+      <div className="story-sequence__stack">
+        {visual.frames.map((f, i) => (
+          <img
+            key={f.src}
+            src={f.src}
+            alt={f.alt}
+            loading="eager"
+            style={{ opacity: i === index ? 1 : 0 }}
+            onError={() => setFailed((prev) => ({ ...prev, [f.src]: true }))}
+          />
+        ))}
+        <ol className="story-sequence__steps" aria-hidden="true">
+          {visual.frames.map((f, i) => (
+            <li key={f.src} className={i === index ? 'is-active' : undefined} />
+          ))}
+        </ol>
+      </div>
+      {active?.caption && <figcaption>{active.caption}</figcaption>}
+    </figure>
+  );
+}
+
+function Visual({ visual, progress = 0 }: { visual: ChapterVisual; progress?: number }) {
   switch (visual.kind) {
+    case 'sequence':
+      return <Sequence visual={visual} progress={progress} />;
     case 'stat':
       return <Stat {...visual} />;
     case 'image':
@@ -55,6 +108,10 @@ function Visual({ visual }: { visual: ChapterVisual }) {
 
 export default function Story() {
   const { activeIndex, register } = useActiveSection(CHAPTERS.length);
+  // Progress through the active chapter, so a sequence advances with the scroll
+  // that chapter occupies rather than switching all at once when it activates.
+  const [activeEl, setActiveEl] = useState<HTMLElement | null>(null);
+  const progress = useSectionProgress(activeEl);
 
   return (
     <div className="story">
@@ -95,7 +152,7 @@ export default function Story() {
             visual is driven by whichever chapter is crossing the middle of the
             viewport, so the two stay in step without any scroll maths. */}
         <div className="story-sticky" aria-hidden="true">
-          <Visual visual={CHAPTERS[activeIndex].visual} />
+          <Visual visual={CHAPTERS[activeIndex].visual} progress={progress} />
         </div>
 
         <div className="story-prose">
@@ -103,7 +160,10 @@ export default function Story() {
             <section
               key={chapter.id}
               id={chapter.id}
-              ref={register(i)}
+              ref={(el) => {
+                register(i)(el);
+                if (i === activeIndex) setActiveEl(el);
+              }}
               className="story-chapter"
             >
               {chapter.eyebrow && <p className="story-chapter__eyebrow">{chapter.eyebrow}</p>}
@@ -115,7 +175,7 @@ export default function Story() {
               {/* On narrow screens the sticky column collapses, so each chapter
                   carries its own copy of the visual inline. */}
               <div className="story-chapter__visual">
-                <Visual visual={chapter.visual} />
+                <Visual visual={chapter.visual} progress={i === activeIndex ? progress : 0} />
               </div>
             </section>
           ))}

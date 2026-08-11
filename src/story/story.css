@@ -349,3 +349,65 @@ body {
     transition: none;
   }
 }
+
+/* ------------------------------------------------------------ sequence ---- */
+
+.story-sequence {
+  margin: 0;
+  width: 100%;
+}
+
+/* Frames are stacked in one grid cell so they cross-fade in place; laying them
+   out in flow would make the panel jump as each one loads. */
+.story-sequence__stack {
+  position: relative;
+  display: grid;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #121a17;
+}
+.story-sequence__stack img {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: opacity 0.45s ease;
+}
+
+.story-sequence__steps {
+  position: absolute;
+  left: 0.8rem;
+  bottom: 0.8rem;
+  display: flex;
+  gap: 0.35rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.story-sequence__steps li {
+  width: 22px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.25);
+  transition: background-color 0.3s;
+}
+.story-sequence__steps li.is-active {
+  background: var(--story-accent);
+}
+
+.story-sequence figcaption {
+  color: var(--story-muted);
+  font-size: 0.8rem;
+  margin-top: 0.7rem;
+  /* Reserve two lines so a longer caption does not shift the figure above it. */
+  min-height: 2.6em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .story-sequence__stack img,
+  .story-sequence__steps li {
+    transition: none;
+  }
+}

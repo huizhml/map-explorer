@@ -85,3 +85,47 @@ export function useCountUp(value: number, durationMs = 1200) {
 
   return { ref, display };
 }
+
+/**
+ * How far a section has travelled through the viewport, 0 → 1.
+ *
+ * 0 when its top reaches the middle of the screen, 1 when its bottom does, so
+ * a sequence advances across exactly the scroll the chapter occupies. Measured
+ * on scroll rather than with IntersectionObserver: observers report crossings,
+ * not position, and this needs a continuous value.
+ *
+ * Reads are batched into a rAF so a fast scroll cannot queue up layout work.
+ */
+export function useSectionProgress(el: HTMLElement | null): number {
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    if (!el) return;
+    let frame = 0;
+
+    const measure = () => {
+      frame = 0;
+      const rect = el.getBoundingClientRect();
+      const centre = window.innerHeight / 2;
+      // Distance the section's top has travelled past the centre line, over its
+      // own height. Guard the height: a collapsed section would divide by zero.
+      const p = (centre - rect.top) / Math.max(1, rect.height);
+      setProgress(Math.min(1, Math.max(0, p)));
+    };
+
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(measure);
+    };
+
+    measure();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+    };
+  }, [el]);
+
+  return progress;
+}

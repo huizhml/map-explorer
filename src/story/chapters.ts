@@ -12,6 +12,16 @@
 
 export type ChapterVisual =
   | { kind: 'image'; src: string; alt: string; caption?: string }
+  /**
+   * Frames that cross-fade as the chapter scrolls past — for an argument built
+   * in steps. `note` is what shows if the images are not there yet, so the
+   * chapter still reads before the artwork exists.
+   */
+  | {
+      kind: 'sequence';
+      note: string;
+      frames: Array<{ src: string; alt: string; caption?: string }>;
+    }
   | { kind: 'figure'; src: string; alt: string; caption?: string }
   | { kind: 'stat'; value: number; unit: string; label: string; decimals?: number }
   | { kind: 'placeholder'; note: string };
@@ -51,7 +61,27 @@ export const CHAPTERS: Chapter[] = [
       'We train a model to predict the full GEDI waveform from Sentinel-2 imagery, then apply it ' +
         'globally. The result is a vertical profile for every 10 m pixel on land.',
     ],
-    visual: { kind: 'placeholder', note: 'GEDI track over a Sentinel-2 tile → predicted profile' },
+    visual: {
+      kind: 'sequence',
+      note: 'Sentinel-2 tile → sparse GEDI tracks over it → predicted profile everywhere',
+      frames: [
+        {
+          src: 'story/method-1-sentinel2.webp',
+          alt: 'Sentinel-2 true-colour image of a forested area',
+          caption: 'Sentinel-2 sees everywhere, every few days — but only from above.',
+        },
+        {
+          src: 'story/method-2-gedi.webp',
+          alt: 'Sparse GEDI ground tracks overlaid on the same area',
+          caption: 'GEDI measures structure directly, along tracks that miss most of the land.',
+        },
+        {
+          src: 'story/method-3-predicted.webp',
+          alt: 'Predicted canopy structure across the whole area',
+          caption: 'The model learns the link, and fills in everywhere between the tracks.',
+        },
+      ],
+    },
   },
   {
     id: '030-relative-height',
