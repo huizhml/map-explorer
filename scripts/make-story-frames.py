@@ -50,6 +50,10 @@ GEDI_PARQUET = OUT / f"{TILE}.parquet"
 # dense. Metres; GEDI rh98 is metres, VSM is decimetres.
 RH_RANGE_M = (0.0, 40.0)
 
+# Height of a full-scale (40 m) GEDI bar, in pixels. Tall enough to read as
+# structure, short enough that the tracks do not merge into stripes.
+BAR_MAX_PX = 26
+
 
 def save_webp(png_or_jpeg: bytes, name: str, quality: int = 80) -> None:
     from PIL import Image
@@ -100,21 +104,38 @@ def frame_gedi() -> None:
     print(f"  {inside.sum()} shots in view")
 
     base = Image.open(OUT / "method-1-sentinel2.webp").convert("RGB")
-    # Darkened so the shots carry the frame — this one is about the sampling,
-    # not the imagery underneath.
-    base = Image.blend(base, Image.new("RGB", base.size, (0, 0, 0)), 0.45)
-    draw = ImageDraw.Draw(base)
+    # Not darkened. Frames 1 and 2 are meant to read as the same place gaining
+    # information; changing the exposure between them makes them read as two
+    # different pictures instead. The shots carry themselves.
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
 
     lut = cmap.get("inferno")
     lo, hi = RH_RANGE_M
 
-    for x_deg, y_deg, h in zip(lon, lat, rh98):
-        x = (x_deg - MIN_LON) / (MAX_LON - MIN_LON) * WIDTH
-        # Image rows run north to south.
-        y = (MAX_LAT - y_deg) / (MAX_LAT - MIN_LAT) * HEIGHT
-        t = 0.0 if not np.isfinite(h) else min(1.0, max(0.0, (h - lo) / (hi - lo)))
+    # Each shot as a standing bar rather than a dot: GEDI's footprint is 25 m,
+    # which is under a pixel at this extent, so a dot can only ever say "a
+    # measurement happened here" — the wrong half of the point. Bar length
+    # carries the measured rh98, which is what the chapter is about, and echoes
+    # the vertical-column language of the hero render.
+    order = np.argsort(-lat)  # far to near, so nearer bars overlap farther ones
+    for i in order:
+        x = (lon[i] - MIN_LON) / (MAX_LON - MIN_LON) * WIDTH
+        y = (MAX_LAT - lat[i]) / (MAX_LAT - MIN_LAT) * HEIGHT
+        h = rh98[i]
+        if not np.isfinite(h):
+            continue
+        t = min(1.0, max(0.0, (h - lo) / (hi - lo)))
         r, g, b, _ = lut[int(t * 255)]
-        draw.ellipse((x - 3, y - 3, x + 3, y + 3), fill=(r, g, b), outline=(255, 255, 255))
+
+        # 40 m of canopy becomes BAR_MAX_PX; the scale is arbitrary but constant,
+        # so relative heights across the scene are honest.
+        length = 4 + t * BAR_MAX_PX
+        draw.line((x, y, x, y - length), fill=(r, g, b, 235), width=2)
+        # A base mark so the ground position stays readable where bars are short.
+        draw.ellipse((x - 1.6, y - 1.6, x + 1.6, y + 1.6), fill=(255, 255, 255, 200))
+
+    base = Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
 
     buf = io.BytesIO()
     base.save(buf, "PNG")

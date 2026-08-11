@@ -73,7 +73,7 @@ export const CHAPTERS: Chapter[] = [
         {
           src: 'story/method-2-gedi.webp',
           alt: 'Real GEDI shots over the same area, coloured by canopy height',
-          caption: '724 GEDI shots fall in this view — measured structure, but only along its tracks.',
+          caption: '724 GEDI shots in this view, each bar its measured canopy height — real structure, but only where the tracks fall.',
         },
         {
           src: 'story/method-3-predicted.webp',
