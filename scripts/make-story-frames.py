@@ -44,7 +44,9 @@ OUT = REPO / "public" / "story"
 
 TILE = "21LTD"
 VSM_URL = f"https://data.source.coop/geoai-ucph/gvsm/{YEAR}/{TILE}/RH98_Q1.tif"
-GEDI_PARQUET = OUT / f"{TILE}.parquet"
+# Under art/, not public/: Vite copies everything in public/ into the build
+# verbatim, so a build input left there gets published alongside the images.
+GEDI_PARQUET = REPO / "art" / f"{TILE}.parquet"
 
 # Shared with frame 3 so the two read as the same measurement, sparse then
 # dense. Metres; GEDI rh98 is metres, VSM is decimetres.

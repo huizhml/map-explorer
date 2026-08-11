@@ -51,5 +51,5 @@ deploy/hf-space/.space-repo/
 # would otherwise be published verbatim and are far too large to serve.
 art/
 
-# GEDI export used to build method-2 (kept out of the published bundle).
-public/story/*.parquet
+# NOTE: .gitignore does not keep anything out of the build — Vite copies all of
+# public/ verbatim. Build inputs belong in art/, which is ignored and not copied.
