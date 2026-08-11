@@ -70,11 +70,11 @@ export const CHAPTERS: Chapter[] = [
           alt: 'Sentinel-2 true-colour image of a forested area',
           caption: 'Sentinel-2 sees everywhere, every few days — but only from above.',
         },
-        {
-          src: 'story/method-2-gedi.webp',
-          alt: 'Sparse GEDI ground tracks overlaid on the same area',
-          caption: 'GEDI measures structure directly, along tracks that miss most of the land.',
-        },
+        // Frame 2 — GEDI ground tracks over the same area — is missing on
+        // purpose. It needs the GEDI data that only exists on the cluster, and
+        // inventing plausible track positions for a paper's companion site
+        // would be publishing invented data as measurement. Drop the file in as
+        // story/method-2-gedi.webp and restore this entry between the two.
         {
           src: 'story/method-3-predicted.webp',
           alt: 'Predicted canopy structure across the whole area',
