@@ -1,49 +1,92 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
- * Reports which of a set of sections is currently the "active" one.
+ * Which chapter is active, and how far it has scrolled — from one measurement.
  *
- * Scrollytelling needs one active section at a time, not a per-element boolean:
- * during a scroll two sections are usually intersecting at once, and a naive
- * per-element `isIntersecting` flag makes the sticky visual flicker between
- * them. The rootMargin below collapses the viewport to a thin band across the
- * middle, so a section becomes active when it crosses the centre line and
- * exactly one section qualifies at a time.
+ * These were two mechanisms: an IntersectionObserver for the active chapter and
+ * a separate scroll listener for progress, joined by a ref callback that pushed
+ * the active element into state. That chain never settled. The ref callbacks
+ * were inline arrows, so React detached and reattached them on every render,
+ * which cleared and reset the element, which tore down and rebuilt the progress
+ * effect — and the sequence never advanced.
  *
- * No scrollytelling library needed — IntersectionObserver is the whole
- * mechanism, and it runs off the main thread.
+ * One rAF-batched scroll handler reads every section's box and derives both
+ * values, so they cannot disagree and there is no state round-trip.
  */
-export function useActiveSection(count: number): {
+export function useStoryScroll(count: number): {
   activeIndex: number;
+  progress: number;
   register: (index: number) => (el: HTMLElement | null) => void;
 } {
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [state, setState] = useState({ activeIndex: 0, progress: 0 });
   const elements = useRef<(HTMLElement | null)[]>([]);
 
-  const register = (index: number) => (el: HTMLElement | null) => {
-    elements.current[index] = el;
-  };
+  // One callback per index, cached, so React attaches each ref once instead of
+  // detaching and reattaching on every render — which would briefly null the
+  // entry a scroll measurement could land on.
+  const callbacks = useRef<Array<(el: HTMLElement | null) => void>>([]);
+  const register = useCallback((index: number) => {
+    callbacks.current[index] ||= (el: HTMLElement | null) => {
+      elements.current[index] = el;
+    };
+    return callbacks.current[index];
+  }, []);
 
   useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const index = elements.current.indexOf(entry.target as HTMLElement);
-          if (index >= 0) setActiveIndex(index);
-        }
-      },
-      // Top and bottom pulled in to a ~20% band around the middle of the screen.
-      { rootMargin: '-40% 0px -40% 0px', threshold: 0 },
-    );
+    let frame = 0;
 
-    for (const el of elements.current) {
-      if (el) observer.observe(el);
-    }
-    return () => observer.disconnect();
+    const measure = () => {
+      frame = 0;
+      const centre = window.innerHeight / 2;
+
+      // Active = whichever section's own centre is nearest the middle of the
+      // screen. A distance rather than an intersection test, so exactly one
+      // section qualifies however tall they are or how fast the page moves.
+      let activeIndex = 0;
+      let best = Infinity;
+      for (let i = 0; i < elements.current.length; i++) {
+        const el = elements.current[i];
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        const d = Math.abs(r.top + r.height / 2 - centre);
+        if (d < best) {
+          best = d;
+          activeIndex = i;
+        }
+      }
+
+      const el = elements.current[activeIndex];
+      let progress = 0;
+      if (el) {
+        const r = el.getBoundingClientRect();
+        // 0 when the section's top reaches the middle of the screen, 1 when its
+        // bottom does — so a sequence advances across exactly the scroll the
+        // chapter occupies.
+        progress = Math.min(1, Math.max(0, (centre - r.top) / Math.max(1, r.height)));
+      }
+
+      setState((prev) =>
+        prev.activeIndex === activeIndex && Math.abs(prev.progress - progress) < 0.004
+          ? prev
+          : { activeIndex, progress },
+      );
+    };
+
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(measure);
+    };
+
+    measure();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+    };
   }, [count]);
 
-  return { activeIndex, register };
+  return { ...state, register };
 }
 
 /**
@@ -84,48 +127,4 @@ export function useCountUp(value: number, durationMs = 1200) {
   }, [value, durationMs]);
 
   return { ref, display };
-}
-
-/**
- * How far a section has travelled through the viewport, 0 → 1.
- *
- * 0 when its top reaches the middle of the screen, 1 when its bottom does, so
- * a sequence advances across exactly the scroll the chapter occupies. Measured
- * on scroll rather than with IntersectionObserver: observers report crossings,
- * not position, and this needs a continuous value.
- *
- * Reads are batched into a rAF so a fast scroll cannot queue up layout work.
- */
-export function useSectionProgress(el: HTMLElement | null): number {
-  const [progress, setProgress] = useState(0);
-
-  useEffect(() => {
-    if (!el) return;
-    let frame = 0;
-
-    const measure = () => {
-      frame = 0;
-      const rect = el.getBoundingClientRect();
-      const centre = window.innerHeight / 2;
-      // Distance the section's top has travelled past the centre line, over its
-      // own height. Guard the height: a collapsed section would divide by zero.
-      const p = (centre - rect.top) / Math.max(1, rect.height);
-      setProgress(Math.min(1, Math.max(0, p)));
-    };
-
-    const onScroll = () => {
-      if (!frame) frame = requestAnimationFrame(measure);
-    };
-
-    measure();
-    window.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('resize', onScroll);
-    return () => {
-      if (frame) cancelAnimationFrame(frame);
-      window.removeEventListener('scroll', onScroll);
-      window.removeEventListener('resize', onScroll);
-    };
-  }, [el]);
-
-  return progress;
 }

@@ -1,6 +1,6 @@
 import { CHAPTERS, type ChapterVisual } from './chapters';
 import { useState } from 'react';
-import { useActiveSection, useCountUp, useSectionProgress } from './useInView';
+import { useCountUp, useStoryScroll } from './useInView';
 import './story.css';
 
 /** Links are relative so they keep working under the /map-explorer/ Pages base. */
@@ -107,11 +107,9 @@ function Visual({ visual, progress = 0 }: { visual: ChapterVisual; progress?: nu
 }
 
 export default function Story() {
-  const { activeIndex, register } = useActiveSection(CHAPTERS.length);
-  // Progress through the active chapter, so a sequence advances with the scroll
-  // that chapter occupies rather than switching all at once when it activates.
-  const [activeEl, setActiveEl] = useState<HTMLElement | null>(null);
-  const progress = useSectionProgress(activeEl);
+  // Active chapter and its scroll progress come from one measurement, so the
+  // sticky visual and the sequence inside it cannot disagree.
+  const { activeIndex, progress, register } = useStoryScroll(CHAPTERS.length);
 
   return (
     <div className="story">
@@ -160,10 +158,7 @@ export default function Story() {
             <section
               key={chapter.id}
               id={chapter.id}
-              ref={(el) => {
-                register(i)(el);
-                if (i === activeIndex) setActiveEl(el);
-              }}
+              ref={register(i)}
               className="story-chapter"
             >
               {chapter.eyebrow && <p className="story-chapter__eyebrow">{chapter.eyebrow}</p>}
