@@ -34,25 +34,119 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ---------------------------------------------------------------- nav ---- */
+/* ---------------------------------------------------------------- deck ---- */
 
-.story-nav {
+/* The page does not scroll: it is a deck of slides moved sideways. Vertical
+   overflow is handled per slide, so a long chapter on a phone can still be
+   read without the whole deck moving. */
+.story-deck {
   position: fixed;
-  top: 50%;
-  right: 1.5rem;
-  transform: translateY(-50%);
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
+  inset: 0;
+  overflow: hidden;
+  /* The browser keeps vertical panning; horizontal is ours to interpret. */
+  touch-action: pan-y;
 }
 
-.story-nav a {
+/* A drag across a figure is navigation, so the figures may not start a text
+   selection or a native image drag: both hand the gesture to the browser
+   mid-way, which used to strand the deck between two chapters. The prose stays
+   selectable — a reader should still be able to quote it, and a dragstart there
+   is already cancelled in useDeck. */
+.story-slide__visual,
+.story-slide--hero {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.story-slide img,
+.story-slide svg {
+  -webkit-user-drag: none;
+}
+
+.story-deck__track {
   display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  text-decoration: none;
+  height: 100%;
+  will-change: transform;
+  transition: transform 0.55s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.story-slide {
+  flex: 0 0 100%;
+  height: 100%;
+  overflow-y: auto;
+  padding: 0 max(3.5vw, 4rem) 4rem;
+  display: grid;
+  align-content: center;
+}
+
+/* Chapters are full bleed: the figure is the page and the prose sits on it, so
+   these three layers stack rather than sharing a grid. */
+.story-slide--chapter {
+  position: relative;
+  display: block;
+  padding: 0;
+  overflow: hidden;
+}
+
+.story-slide__visual {
+  position: absolute;
+  inset: 0;
+}
+
+/* Carries the type over whatever the figure happens to be doing underneath. */
+.story-slide__scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    rgba(8, 11, 10, 0.94) 0%,
+    rgba(8, 11, 10, 0.82) 26%,
+    rgba(8, 11, 10, 0.25) 46%,
+    rgba(8, 11, 10, 0) 60%
+  );
+}
+
+.story-slide__prose {
+  position: absolute;
+  left: max(4vw, 3rem);
+  top: 50%;
+  transform: translateY(-50%);
+  /* The vw term keeps it in proportion on a laptop; the rem term is the
+     ceiling. It used to cap at 34rem, so on a 2500 px display the column was a
+     fifth of the screen with the rest of it empty. */
+  width: min(34vw, 46rem);
+  z-index: 2;
+}
+
+/* ------------------------------------------------------------- nav dots ---- */
+
+/* The one control that is not the linear sequence: swiping always means "next
+   thing", so jumping to a chapter needs its own affordance.
+
+   Along the bottom rather than up the right-hand side, where it used to be:
+   with the prose now filling half the slide instead of a scrolling column, a
+   right-hand rail sat on top of the paragraphs. */
+.story-nav {
+  position: absolute;
+  left: max(4vw, 3rem);
+  bottom: max(3vw, 2rem);
+  z-index: 20;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.story-nav button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
   color: var(--story-muted);
+  font: inherit;
   font-size: 0.78rem;
 }
 
@@ -61,50 +155,116 @@ body {
   height: 8px;
   border-radius: 50%;
   border: 1px solid currentColor;
-  flex: none;
   transition: background-color 0.2s, transform 0.2s;
 }
 
-.story-nav a.is-active {
+.story-nav button.is-active {
   color: var(--story-accent);
 }
-.story-nav a.is-active .story-nav__dot {
+.story-nav button.is-active .story-nav__dot {
   background: currentColor;
   transform: scale(1.35);
 }
 
-/* Labels would crowd the viewport; reveal on hover/focus only. */
+/* Labels would crowd the viewport; reveal on hover/focus only, above the dot. */
 .story-nav__label {
-  opacity: 0;
-  transform: translateX(0.4rem);
-  transition: opacity 0.2s, transform 0.2s;
+  position: absolute;
+  bottom: 1.5rem;
   white-space: nowrap;
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+  background: rgba(11, 15, 14, 0.92);
+  border: 1px solid var(--story-rule);
+  color: var(--story-fg);
+  opacity: 0;
+  transform: translateY(0.3rem);
+  transition: opacity 0.2s, transform 0.2s;
   pointer-events: none;
 }
-.story-nav a:hover .story-nav__label,
-.story-nav a:focus-visible .story-nav__label {
+.story-nav button:hover .story-nav__label,
+.story-nav button:focus-visible .story-nav__label {
   opacity: 1;
   transform: none;
 }
 
+/* ------------------------------------------------------------ controls ---- */
+
+/* One obvious way forward, and a quiet way back — the shape the reference uses,
+   and the reason a reader never has to wonder what to do next. */
+.story-controls {
+  position: absolute;
+  right: max(3vw, 2rem);
+  bottom: max(3vw, 2rem);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+}
+
+.story-back {
+  background: none;
+  border: 0;
+  padding: 0.4rem;
+  color: var(--story-muted);
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+.story-back:hover {
+  color: var(--story-fg);
+}
+
+.story-next {
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 50%;
+  border: 0;
+  background: var(--story-accent);
+  color: #06231a;
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: transform 0.18s, filter 0.18s;
+}
+.story-next:hover {
+  transform: scale(1.06);
+}
+
+.story-back:disabled,
+.story-next:disabled {
+  opacity: 0.25;
+  cursor: default;
+  transform: none;
+}
+
+/* Hairline along the top edge rather than a bar across the bottom, where the
+   caption and the chapter dots already are. */
+.story-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  z-index: 20;
+}
+.story-progress span {
+  display: block;
+  height: 100%;
+  background: var(--story-accent);
+  transform-origin: left;
+  transition: transform 0.4s ease;
+}
+
 /* --------------------------------------------------------------- hero ---- */
 
-.story-hero {
-  position: relative;
-  /* Full viewport, not 92vh. The 8vh was there to let the next section peek
-     through as a hint that the page scrolls, but with a full-bleed image behind
-     it that gap reads as the picture failing to reach the bottom.
-     dvh first so mobile browser chrome does not eat into it. */
-  min-height: 100vh;
-  min-height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 0 6vw;
+.story-slide--hero {
   /* Full-bleed: the background needs the whole width even though the text is
      held to a readable measure by .story-hero__content. */
-  max-width: none;
-  background-color: var(--story-bg);
+  position: relative;
   /* Height-filling rather than cover: the render is a figure, and cropping its
      top and bottom to fill the width would cut into the globe. `auto 100%`
      keeps it whole and lets it end wherever it ends — the page background
@@ -122,9 +282,6 @@ body {
   /* The left is already flat background, so this is not carrying the text so
      much as dissolving the image's hard left edge into it — without it the
      render stops on a visible vertical seam. */
-  /* Light enough to leave the render visible behind the type. The title is
-     large and white and carries itself; only the lede needed help, and the
-     image is dark to begin with. */
   background: linear-gradient(
     to right,
     rgba(11, 15, 14, 0.85) 0%,
@@ -149,47 +306,38 @@ body {
   margin: 0 0 1.5rem;
 }
 
-.story-hero h1 {
-  font-size: clamp(2.4rem, 7vw, 5rem);
+.story-slide--hero h1 {
+  font-size: clamp(2.4rem, 6vw, 7rem);
   line-height: 1.05;
   margin: 0 0 1.5rem;
   letter-spacing: -0.02em;
 }
 
 .story-hero__lede {
-  font-size: clamp(1.05rem, 2vw, 1.4rem);
+  font-size: clamp(1.05rem, 1.5vw, 1.9rem);
   color: var(--story-muted);
-  max-width: var(--story-measure);
+  max-width: 44rem;
   margin: 0 0 2.5rem;
 }
 
-/* --------------------------------------------------------------- body ---- */
-
-.story-body {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4vw;
-  padding: 0 6vw;
-  align-items: start;
-}
-
-.story-sticky {
-  position: sticky;
-  top: 0;
-  height: 100vh;
+/* Start reading, and the shortcut straight to the map. Wraps rather than
+   shrinks: at phone width the two sit on separate lines at full size. */
+.story-hero__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
+  gap: 0.75rem;
 }
 
-.story-chapter {
-  min-height: 92vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  max-width: var(--story-measure);
-  scroll-margin-top: 10vh;
+/* Says how to move, once, where the reader starts. */
+.story-hint {
+  color: var(--story-muted);
+  font-size: 0.8rem;
+  margin: 1.5rem 0 0;
 }
+
+/* ------------------------------------------------------------ chapters ---- */
+
 
 .story-chapter__eyebrow {
   color: var(--story-accent);
@@ -199,22 +347,26 @@ body {
   margin: 0 0 0.75rem;
 }
 
-.story-chapter h2 {
-  font-size: clamp(1.6rem, 3.4vw, 2.4rem);
-  line-height: 1.15;
-  margin: 0 0 1.25rem;
-  letter-spacing: -0.01em;
+/* Sized so a title of this length holds one line across the usual widths — at
+   4.6vw "Forests are not flat" broke in two. Longer chapter titles still wrap,
+   which is what balance is for. */
+.story-slide__prose h2 {
+  font-size: clamp(2.1rem, 3.2vw, 4.2rem);
+  line-height: 0.98;
+  margin: 0 0 1.5rem;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
 }
 
-.story-chapter p {
-  color: #cfd8d4;
+.story-slide__prose p {
+  color: #d8e0dc;
+  font-size: clamp(1.02rem, 1.1vw, 1.5rem);
+  line-height: 1.5;
   margin: 0 0 1.1rem;
 }
-
-/* Inline copy of the visual, shown only when the sticky column is gone. */
-.story-chapter__visual {
-  display: none;
-  margin-top: 1.5rem;
+.story-slide__prose strong {
+  color: var(--story-fg);
+  font-weight: 650;
 }
 
 /* ------------------------------------------------------------- visuals ---- */
@@ -223,10 +375,12 @@ body {
   margin: 0;
   width: 100%;
 }
-.story-figure img {
+.story-figure img,
+.story-figure video {
   width: 100%;
   height: auto;
   border-radius: 10px;
+  display: block;
   background: #121a17;
 }
 .story-figure figcaption {
@@ -270,37 +424,23 @@ body {
   font-size: 0.9rem;
 }
 
-/* -------------------------------------------------------------- outro ---- */
-
-.story-outro {
-  min-height: 70vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: flex-start;
-  padding: 0 6vw;
-  border-top: 1px solid #1b2a24;
-  margin-top: 6rem;
-}
-.story-outro h2 {
-  font-size: clamp(1.8rem, 4vw, 3rem);
-  margin: 0 0 1rem;
-}
-.story-outro p {
+.story-cta-block p {
   color: var(--story-muted);
-  max-width: var(--story-measure);
-  margin: 0 0 2rem;
+  margin: 0 0 1.5rem;
+  max-width: 24rem;
 }
 
 .story-cta {
   display: inline-block;
   padding: 0.85rem 1.6rem;
   border-radius: 999px;
+  border: 0;
   background: var(--story-accent);
   color: #06231a;
+  font: inherit;
   font-weight: 600;
   text-decoration: none;
-  align-self: flex-start;
+  cursor: pointer;
   transition: transform 0.15s, filter 0.15s;
 }
 .story-cta:hover {
@@ -316,33 +456,53 @@ body {
 /* --------------------------------------------------------- responsive ---- */
 
 @media (max-width: 860px) {
-  /* No room for text beside the figure; darken it right down and let it act as
-     texture rather than as an illustration competing with the title. */
+  /* No room for text beside the figure; darken the hero image right down and
+     let it act as texture rather than an illustration competing with the
+     title. */
   .story-hero__scrim {
     background: rgba(11, 15, 14, 0.86);
   }
 
-  .story-body {
-    grid-template-columns: 1fr;
+  /* One column, and the slide scrolls if the pair is taller than the phone.
+     Vertical panning is already left to the browser, so this needs no JS. */
+  .story-slide {
+    align-content: start;
+    padding: 3rem 6vw 4.5rem;
   }
-  /* One column: the sticky visual has nowhere to stick, so each chapter shows
-     its own inline copy instead. */
-  .story-sticky {
-    display: none;
+  /* No room beside the figure: the prose sits along the bottom instead, and
+     the scrim comes up from there. */
+  .story-slide__prose {
+    top: auto;
+    bottom: 5.5rem;
+    transform: none;
+    left: 6vw;
+    right: 6vw;
+    width: auto;
   }
-  .story-chapter__visual {
-    display: block;
+  .story-slide__scrim {
+    background: linear-gradient(
+      to top,
+      rgba(8, 11, 10, 0.95) 0%,
+      rgba(8, 11, 10, 0.88) 42%,
+      rgba(8, 11, 10, 0.2) 70%,
+      rgba(8, 11, 10, 0) 88%
+    );
   }
-  .story-chapter {
-    min-height: 0;
-    padding: 3rem 0;
+  .story-controls {
+    right: 1.2rem;
+    bottom: 1.2rem;
   }
-  .story-nav {
-    display: none;
+  .story-next {
+    width: 3.4rem;
+    height: 3.4rem;
+    font-size: 1.3rem;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .story-deck__track,
+  .story-progress span,
+  .story-next,
   .story-cta,
   .story-nav__dot,
   .story-nav__label {
@@ -350,33 +510,204 @@ body {
   }
 }
 
-/* ------------------------------------------------------------ sequence ---- */
+/* ------------------------------------------------- visuals, full bleed ---- */
 
-.story-sequence {
+/* The drawn figures are composed for full bleed and fill the slide. Everything
+   else — a plotted figure with its own white panels and legends, a number, a
+   button — is a thing on a page, and sits clear of the prose instead. */
+.story-slide__visual .story-shot {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+}
+.story-slide__visual .story-shot__stack {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  background: none;
+}
+.story-slide__visual .story-shot__stack svg {
+  width: 100%;
+  height: 100%;
+}
+.story-slide__visual .story-figure {
+  position: absolute;
+  top: 50%;
+  right: max(4vw, 3rem);
+  transform: translateY(-50%);
+  width: min(52vw, 48rem);
+  margin: 0;
+}
+.story-slide__visual .story-figure img,
+.story-slide__visual .story-figure video {
+  width: 100%;
+  height: auto;
+  max-height: 76vh;
+  object-fit: contain;
+}
+
+/* Captions belong with the prose, under it, not floating over the figure. */
+.story-slide__visual .story-shot__steps {
+  left: 62%;
+  transform: translateX(-50%);
+  bottom: max(3vw, 2rem);
+}
+
+.story-slide__visual figcaption {
+  position: absolute;
+  left: max(4vw, 3rem);
+  bottom: max(6.5vw, 5rem);
+  width: min(34vw, 46rem);
+  z-index: 3;
+}
+
+.story-slide__visual .story-stat,
+.story-slide__visual .story-placeholder,
+.story-slide__visual .story-cta-block {
+  position: absolute;
+  top: 50%;
+  right: max(6vw, 4rem);
+  transform: translateY(-50%);
+  width: min(46vw, 34rem);
+}
+
+@media (max-width: 860px) {
+  .story-slide__visual .story-shot__steps {
+  left: 62%;
+  transform: translateX(-50%);
+  bottom: max(3vw, 2rem);
+}
+
+.story-slide__visual figcaption {
+    display: none;
+  }
+  .story-slide__visual .story-figure,
+  .story-slide__visual .story-stat,
+  .story-slide__visual .story-placeholder,
+  .story-slide__visual .story-cta-block {
+    top: 30%;
+    right: 6vw;
+    left: 6vw;
+    width: auto;
+  }
+}
+
+/* ---------------------------------------------------------- forest pair ---- */
+
+/* Two square patches of ground with sky above them, in the right two thirds of
+   the slide where the prose is not. */
+.story-pair__panels {
+  position: absolute;
+  inset: 0 max(4vw, 3rem) 0 auto;
+  width: min(56vw, 88rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: min(4vw, 4rem);
+}
+
+/* One dimension only, with every limit folded into it, and the aspect ratio
+   derives the other. Setting a height *and* a max-width let the box violate its
+   own ratio: the SVG letterboxed inside it while the imagery square did not, so
+   the trees ended up floating above ground they were supposed to stand on.
+   The 0.76 is the panel's own ratio — a height limit expressed as a width. */
+.story-pair__panel {
+  position: relative;
+  flex: 0 0 auto;
+  aspect-ratio: 380 / 500;
+  width: min(24vw, calc(80vh * 380 / 500), 46rem);
+}
+
+/* The wide half of the flight: one map, in the place the two panels will be. */
+/* Absolutely centred, but otherwise exactly a panel: the pins are placed in
+   the same viewBox as the trees, so the box has to keep the same shape or the
+   two disagree about where the ground is. */
+.story-pair__panel--shared {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+}
+
+/* The imagery: a square of ground at the bottom of the panel that tips out of
+   plan. Rotating about its own centre puts the tipped plane on the line the
+   trees stand on. */
+.story-pair__ground {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  aspect-ratio: 1;
+  transform-origin: center center;
+  overflow: hidden;
+  background: #080b0a;
+}
+.story-pair__ground img {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100%;
+  aspect-ratio: 1;
+  transform-origin: center center;
+  will-change: transform, opacity;
+}
+.story-pair__haze {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    #0b0f0e 0%,
+    rgba(11, 15, 14, 0.65) 24%,
+    rgba(11, 15, 14, 0) 62%
+  );
+}
+
+/* The trees, over the whole panel: they stand on the tipped plane's centre. */
+.story-pair__panel svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+@media (max-width: 860px) {
+  .story-pair__panels {
+    inset: 0 4vw auto 4vw;
+    top: 6vh;
+    width: auto;
+    gap: 3vw;
+  }
+  .story-pair__panel {
+    flex: 1 1 0;
+    max-height: 46vh;
+  }
+}
+
+/* ----------------------------------------------------------- gedi shot ---- */
+
+.story-shot {
   margin: 0;
   width: 100%;
 }
 
-/* Frames are stacked in one grid cell so they cross-fade in place; laying them
-   out in flow would make the panel jump as each one loads. */
-.story-sequence__stack {
+.story-shot__stack {
   position: relative;
-  display: grid;
   width: 100%;
-  aspect-ratio: 4 / 3;
   border-radius: 10px;
   overflow: hidden;
-  background: #121a17;
+  background: #080b0a;
 }
-.story-sequence__stack img {
-  grid-area: 1 / 1;
+/* The SVG carries its own aspect ratio through the viewBox, so the box cannot
+   disagree with the geometry the export script laid out. */
+.story-shot__stack svg {
+  display: block;
   width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transition: opacity 0.45s ease;
+  height: auto;
 }
 
-.story-sequence__steps {
+.story-shot__steps {
   position: absolute;
   left: 0.8rem;
   bottom: 0.8rem;
@@ -386,28 +717,34 @@ body {
   margin: 0;
   padding: 0;
 }
-.story-sequence__steps li {
+.story-shot__steps li {
   width: 22px;
   height: 3px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.25);
   transition: background-color 0.3s;
 }
-.story-sequence__steps li.is-active {
+.story-shot__steps li.is-active {
   background: var(--story-accent);
 }
 
-.story-sequence figcaption {
+.story-shot__note {
+  display: block;
+  margin-top: 0.4rem;
+  font-size: clamp(0.72rem, 0.55vw, 0.9rem);
+  opacity: 0.62;
+}
+
+.story-shot figcaption {
   color: var(--story-muted);
-  font-size: 0.8rem;
+  font-size: clamp(0.8rem, 0.62vw, 1rem);
   margin-top: 0.7rem;
   /* Reserve two lines so a longer caption does not shift the figure above it. */
   min-height: 2.6em;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .story-sequence__stack img,
-  .story-sequence__steps li {
+  .story-shot__steps li {
     transition: none;
   }
 }

@@ -87,15 +87,22 @@ function MetricLines({ samples }: { samples: TransectSample[] }) {
                   vectorEffect="non-scaling-stroke" />
           ))}
         </svg>
+        {/* Top-right of the plot rather than below it: the four traces run
+            along the bottom of the range, leaving that corner empty, and the
+            key sits next to what it names instead of a line away from it. */}
+        <ul className="ex-heat__legend">
+          {series.map((s) => (
+            <li key={s.key}>
+              <span style={{ background: s.colour }} />
+              {s.label}
+            </li>
+          ))}
+        </ul>
+
+        {/* Holds the width the heatmap gives its colorbar. These lines share the
+            heatmap's x-axis, so the two plots have to start and end together. */}
+        <div className="ex-heat__cbar-gap" aria-hidden="true" />
       </div>
-      <ul className="ex-heat__legend">
-        {series.map((s) => (
-          <li key={s.key}>
-            <span style={{ background: s.colour }} />
-            {s.label}
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }
@@ -120,6 +127,34 @@ function colour(t: number): [number, number, number] {
     Math.round(a[1] + (b[1] - a[1]) * f),
     Math.round(a[2] + (b[2] - a[2]) * f),
   ];
+}
+
+/**
+ * The colour scale, built from the same VIRIDIS table the canvas is filled
+ * from, so the two cannot drift apart.
+ *
+ * `max` is HEATMAP_COLORMAP_MAX in the full app, where this quantity is
+ * labelled "Energy (%)" — the share of returned energy in each height bin.
+ */
+function EnergyColorbar({ max }: { max: number }) {
+  const stops = VIRIDIS.map(([r, g, b]) => `rgb(${r},${g},${b})`).join(', ');
+  const ticks = [max, max / 2, 0];
+
+  return (
+    <div
+      className="ex-heat__cbar"
+      role="img"
+      aria-label={`Colour scale: returned energy per height bin, 0 to ${max}%`}
+    >
+      <div className="ex-heat__cbar-ramp" style={{ background: `linear-gradient(to top, ${stops})` }} />
+      <div className="ex-heat__cbar-ticks">
+        {ticks.map((t) => (
+          <span key={t}>{Number.isInteger(t) ? t : t.toFixed(1)}</span>
+        ))}
+      </div>
+      <span className="ex-heat__cbar-title">Energy (%)</span>
+    </div>
+  );
 }
 
 export function TransectHeatmap({ transect, max = 10 }: { transect: Transect; max?: number }) {
@@ -169,6 +204,7 @@ export function TransectHeatmap({ transect, max = 10 }: { transect: Transect; ma
         {/* image-rendering:auto — the buffer is one pixel per sample, so the
             browser's smoothing is what makes it read as a continuous profile. */}
         <canvas ref={ref} className="ex-heat__canvas" />
+        <EnergyColorbar max={max} />
       </div>
       <div className="ex-heat__xaxis">
         <span>0</span>

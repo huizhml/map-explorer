@@ -1,10 +1,9 @@
+import { Colorbar, type ColorRamp } from './Colorbar';
+
 export type ExploreLayer = {
   id: string;
   rhIndex: number;
-  year: number;
   visible: boolean;
-  /** Pinned layers survive a change of RH — a new layer is added instead. */
-  pinned: boolean;
   /** 0-1. Stacked layers hide each other otherwise. */
   opacity: number;
 };
@@ -12,23 +11,27 @@ export type ExploreLayer = {
 /**
  * Layer list, on the map rather than in the sidebar.
  *
- * The sidebar chooses *what* to look at; whether a layer is drawn, kept, or
- * removed is a property of the map and belongs next to it — which is where the
+ * The sidebar chooses *what* to look at; whether a layer is drawn and how
+ * strongly is a property of the map and belongs next to it — which is where the
  * full app puts its layer panel too.
+ *
+ * Which layers exist is no longer decided here: the sidebar's RH buttons are a
+ * multi-select, so adding and removing a layer is toggling its button. A delete
+ * control here would be a second, desynchronised way to do the same thing, and
+ * pinning meant nothing once changing RH stopped replacing the current layer.
  */
 export function LayerControl({
   layers,
-  activeId,
+  year,
+  ramps,
   onToggleVisible,
-  onTogglePinned,
-  onRemove,
   onOpacity,
 }: {
   layers: ExploreLayer[];
-  activeId: string | null;
+  year: number;
+  /** Colour scales for the visible layers, from buildRamps. */
+  ramps: ColorRamp[];
   onToggleVisible: (id: string) => void;
-  onTogglePinned: (id: string) => void;
-  onRemove: (id: string) => void;
   onOpacity: (id: string, value: number) => void;
 }) {
   if (!layers.length) return null;
@@ -38,7 +41,7 @@ export function LayerControl({
       <h2 className="ex-layers__head">Layers</h2>
       <ul className="ex-layers__list">
         {layers.map((l) => (
-          <li key={l.id} className={l.id === activeId ? 'is-active' : undefined}>
+          <li key={l.id}>
             <div className="ex-layers__main">
             <button
               type="button"
@@ -65,41 +68,12 @@ export function LayerControl({
             </button>
 
             <span className="ex-layers__name">
-              RH{l.rhIndex} · {l.year}
+              RH{l.rhIndex} · {year}
             </span>
-
-            <button
-              type="button"
-              className={`ex-layers__icon${l.pinned ? ' is-pinned' : ''}`}
-              onClick={() => onTogglePinned(l.id)}
-              title={l.pinned ? 'Unpin — changing RH will replace this layer' : 'Pin — keep this layer when RH changes'}
-              aria-pressed={l.pinned}
-            >
-              <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
-                <path
-                  fill="currentColor"
-                  d="M14 2 9.6 6.4l-4 .8a1 1 0 0 0-.5 1.7l3 3-5.4 7.9a.5.5 0 0 0 .7.7l7.9-5.4 3 3a1 1 0 0 0 1.7-.5l.8-4L21 9.9 14 2Z"
-                />
-              </svg>
-            </button>
-
-            <button
-              type="button"
-              className="ex-layers__icon ex-layers__icon--danger"
-              onClick={() => onRemove(l.id)}
-              title="Remove layer"
-            >
-              <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
-                <path
-                  fill="currentColor"
-                  d="M9 3h6l1 2h4v2H4V5h4l1-2ZM6 9h12l-1 12H7L6 9Z"
-                />
-              </svg>
-            </button>
             </div>
 
-            {/* Its own line: the icon row is already four controls wide, and a
-                slider squeezed in beside them is too short to be usable. */}
+            {/* Its own line: a slider squeezed in beside the icon row is too
+                short to be usable. */}
             <input
               className="ex-layers__opacity"
               type="range"
@@ -115,6 +89,11 @@ export function LayerControl({
           </li>
         ))}
       </ul>
+
+      {/* Inside the card rather than floating on its own: the map's four
+          corners are taken, and the scale means nothing without the list of
+          layers it applies to. */}
+      <Colorbar ramps={ramps} />
     </div>
   );
 }

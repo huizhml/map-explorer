@@ -46,6 +46,10 @@ import {
   OpenInFull as OpenInFullIcon,
   EditOutlined as EditOutlinedIcon,
   OpenWith as OpenWithIcon,
+  Add as AddIcon,
+  CloudOutlined as CloudOutlinedIcon,
+  SpaOutlined as SpaOutlinedIcon,
+  ParkOutlined as ParkOutlinedIcon,
 } from '@mui/icons-material';
 import type { VsmQChoice, VsmVersion } from '../constants/predictions';
 import { VSM_VERSION_OPTIONS } from '../constants/predictions';
@@ -218,6 +222,24 @@ interface SidebarProps {
 /** EOX s2cloudless mosaic years currently published on tiles.maps.eox.at. */
 export const EOX_S2CLOUDLESS_YEARS = [2016, 2018, 2019, 2020, 2021, 2022, 2023, 2024] as const;
 
+/** Read a persisted boolean (accordion open/close), falling back when unset/unavailable. */
+function readStoredBool(key: string, fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : v === '1';
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredBool(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? '1' : '0');
+  } catch {
+    /* ignore quota / unavailable storage */
+  }
+}
+
 const SidebarContainer = styled(Box)(() => ({
   position: 'absolute',
   left: 12,
@@ -243,6 +265,9 @@ type SidebarThemeTokens = {
   textSecondary: string;
   textMuted: string;
   accent: string;
+  accentSolid: string;
+  accentOnSolid: string;
+  accentTintText: string;
   accentSoft: string;
   accentBorder: string;
   buttonBg: string;
@@ -267,9 +292,12 @@ const SIDEBAR_THEME: Record<SidebarSurfaceMode, SidebarThemeTokens> = {
     textPrimary: '#f4f4fa',
     textSecondary: 'rgba(238,238,247,0.72)',
     textMuted: 'rgba(238,238,247,0.48)',
-    accent: '#6c5ce7',
-    accentSoft: 'rgba(162,155,254,0.16)',
-    accentBorder: 'rgba(162,155,254,0.38)',
+    accent: '#afa9ec',
+    accentSolid: '#6157c2',
+    accentOnSolid: '#ffffff',
+    accentTintText: '#cecbf6',
+    accentSoft: 'rgba(127,119,221,0.20)',
+    accentBorder: 'rgba(175,169,236,0.40)',
     buttonBg: 'rgba(255,255,255,0.04)',
     buttonHover: 'rgba(255,255,255,0.08)',
     fieldBg: '#111119',
@@ -277,7 +305,7 @@ const SIDEBAR_THEME: Record<SidebarSurfaceMode, SidebarThemeTokens> = {
     fieldLabel: 'rgba(238,238,247,0.52)',
     cardBg: '#15151d',
     cardHover: '#1b1b25',
-    cardActive: 'rgba(162,155,254,0.12)',
+    cardActive: 'rgba(127,119,221,0.14)',
     success: '#82e5aa',
     shadow: '0 18px 42px rgba(0,0,0,0.28)',
   },
@@ -290,9 +318,12 @@ const SIDEBAR_THEME: Record<SidebarSurfaceMode, SidebarThemeTokens> = {
     textPrimary: '#172033',
     textSecondary: 'rgba(23,32,51,0.78)',
     textMuted: 'rgba(23,32,51,0.5)',
-    accent: '#5b4ee8',
-    accentSoft: 'rgba(91,78,232,0.12)',
-    accentBorder: 'rgba(91,78,232,0.26)',
+    accent: '#534ab7',
+    accentSolid: '#534ab7',
+    accentOnSolid: '#ffffff',
+    accentTintText: '#3c3489',
+    accentSoft: '#eeedfe',
+    accentBorder: 'rgba(83,74,183,0.30)',
     buttonBg: 'rgba(23,32,51,0.03)',
     buttonHover: 'rgba(23,32,51,0.07)',
     fieldBg: '#ffffff',
@@ -300,7 +331,7 @@ const SIDEBAR_THEME: Record<SidebarSurfaceMode, SidebarThemeTokens> = {
     fieldLabel: 'rgba(23,32,51,0.5)',
     cardBg: '#ffffff',
     cardHover: '#f4f6fb',
-    cardActive: 'rgba(91,78,232,0.1)',
+    cardActive: '#eeedfe',
     success: '#1f8f4e',
     shadow: '0 18px 42px rgba(31, 45, 74, 0.16)',
   },
@@ -362,7 +393,7 @@ function RailButton({
           border: 'none',
           borderRadius: 2.5,
           background: active ? ui.accentSoft : 'transparent',
-          color: active ? ui.accent : ui.textMuted,
+          color: active ? ui.accentTintText : ui.textMuted,
           cursor: 'pointer',
           display: 'flex',
           flexDirection: 'column',
@@ -372,7 +403,7 @@ function RailButton({
           transition: 'background-color 120ms ease, color 120ms ease, transform 120ms ease',
           '&:hover': {
             background: active ? ui.accentSoft : ui.buttonHover,
-            color: active ? ui.accent : ui.textSecondary,
+            color: active ? ui.accentTintText : ui.textSecondary,
             transform: 'translateY(-1px)',
           },
         }}
@@ -385,46 +416,6 @@ function RailButton({
         </Typography>
       </Box>
     </Tooltip>
-  );
-}
-
-function SelectionChip({
-  label,
-  active,
-  onClick,
-  ui,
-}: {
-  label: ReactNode;
-  active: boolean;
-  onClick: () => void;
-  ui: SidebarThemeTokens;
-}) {
-  return (
-    <Box
-      component="button"
-      type="button"
-      onClick={onClick}
-      sx={{
-        px: 1.25,
-        py: 0.65,
-        borderRadius: 1.5,
-        border: '1px solid',
-        borderColor: active ? ui.accentBorder : ui.border,
-        background: active ? ui.accentSoft : ui.buttonBg,
-        color: active ? ui.accent : ui.textSecondary,
-        fontSize: '0.75rem',
-        fontWeight: active ? 700 : 500,
-        lineHeight: 1.2,
-        cursor: 'pointer',
-        transition: 'background-color 120ms ease, border-color 120ms ease, color 120ms ease',
-        '&:hover': {
-          background: active ? ui.accentSoft : ui.buttonHover,
-          borderColor: active ? ui.accentBorder : ui.borderStrong,
-        },
-      }}
-    >
-      {label}
-    </Box>
   );
 }
 
@@ -468,7 +459,7 @@ function PanelActionCard({
       }}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Box sx={{ color: active ? ui.accent : ui.textMuted, display: 'flex', alignItems: 'center', fontSize: 18 }}>
+        <Box sx={{ color: active ? ui.accentTintText : ui.textMuted, display: 'flex', alignItems: 'center', fontSize: 18 }}>
           {icon}
         </Box>
         <HoverHelp title={description} ui={ui} />
@@ -481,6 +472,173 @@ function PanelActionCard({
           {description}
         </Typography>
       </Box>
+    </Box>
+  );
+}
+
+function SegmentedControl<T extends string>({
+  options,
+  value,
+  onChange,
+  ui,
+}: {
+  options: { value: T; label: ReactNode }[];
+  value: T;
+  onChange: (value: T) => void;
+  ui: SidebarThemeTokens;
+}) {
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        gap: 0.375,
+        p: 0.375,
+        borderRadius: 2,
+        background: ui.buttonBg,
+        border: `1px solid ${ui.border}`,
+      }}
+    >
+      {options.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <Box
+            key={opt.value}
+            component="button"
+            type="button"
+            onClick={() => onChange(opt.value)}
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              py: 0.5,
+              px: 0.5,
+              border: active ? `1px solid ${ui.accentBorder}` : '1px solid transparent',
+              borderRadius: 1.5,
+              background: active ? ui.accentSoft : 'transparent',
+              color: active ? ui.accentTintText : ui.textSecondary,
+              fontSize: '0.78rem',
+              fontWeight: active ? 700 : 500,
+              lineHeight: 1.2,
+              textAlign: 'center',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              transition: 'background-color 120ms ease, color 120ms ease',
+              '&:hover': { color: active ? ui.accentTintText : ui.textPrimary },
+            }}
+          >
+            {opt.label}
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  expanded,
+  onToggle,
+  bgcolor,
+  children,
+  ui,
+}: {
+  title: string;
+  expanded: boolean;
+  onToggle: () => void;
+  bgcolor?: string;
+  children: ReactNode;
+  ui: SidebarThemeTokens;
+}) {
+  return (
+    <Box
+      sx={{
+        mb: 1.25,
+        borderRadius: 2,
+        ...(bgcolor ? { background: bgcolor, border: `1px solid ${ui.border}`, p: 1.25 } : {}),
+      }}
+    >
+      <Box
+        onClick={onToggle}
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          cursor: 'pointer',
+          mb: expanded ? 1 : 0,
+        }}
+      >
+        <Typography
+          variant="caption"
+          sx={{
+            color: ui.textMuted,
+            fontSize: '0.7rem',
+            fontWeight: 700,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+          }}
+        >
+          {title}
+        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', color: ui.textMuted }}>
+          {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+        </Box>
+      </Box>
+      <Collapse in={expanded}>
+        <Box>{children}</Box>
+      </Collapse>
+    </Box>
+  );
+}
+
+function DataLayerRow({
+  icon,
+  label,
+  trailing,
+  onClick,
+  disabled = false,
+  ui,
+}: {
+  icon: ReactNode;
+  label: string;
+  trailing?: ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  ui: SidebarThemeTokens;
+}) {
+  return (
+    <Box
+      component={onClick ? 'button' : 'div'}
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
+      disabled={onClick ? disabled : undefined}
+      sx={{
+        width: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1,
+        minHeight: 32,
+        px: 1.1,
+        py: 0.4,
+        textAlign: 'left',
+        borderRadius: 2,
+        border: `1px solid ${ui.border}`,
+        background: ui.cardBg,
+        color: ui.textPrimary,
+        fontSize: '0.82rem',
+        cursor: onClick ? 'pointer' : 'default',
+        opacity: disabled ? 0.5 : 1,
+        transition: 'background-color 120ms ease, border-color 120ms ease',
+        '&:hover': onClick && !disabled ? { background: ui.cardHover } : undefined,
+      }}
+    >
+      <Box sx={{ display: 'flex', alignItems: 'center', color: ui.textMuted, fontSize: 18 }}>
+        {icon}
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {label}
+      </Box>
+      {trailing && <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>{trailing}</Box>}
     </Box>
   );
 }
@@ -574,6 +732,13 @@ export function Sidebar({
   const diversityHeightBinM = useMapStore((s) => s.diversityHeightBinM);
   const setDiversityHeightBinM = useMapStore((s) => s.setDiversityHeightBinM);
   const [showAddedInfo, setShowAddedInfo] = useState(true);
+  const [vsmOpen, setVsmOpen] = useState(() => readStoredBool('exploreVsm.vsmOpen', true));
+  const [dataLayersOpen, setDataLayersOpen] = useState(() =>
+    readStoredBool('exploreVsm.dataLayersOpen', true),
+  );
+  useEffect(() => writeStoredBool('exploreVsm.vsmOpen', vsmOpen), [vsmOpen]);
+  useEffect(() => writeStoredBool('exploreVsm.dataLayersOpen', dataLayersOpen), [dataLayersOpen]);
+  const [forestVariant, setForestVariant] = useState<'data' | 'val' | null>(null);
   const [eoxMosaicYear, setEoxMosaicYear] = useState<number>(
     EOX_S2CLOUDLESS_YEARS.includes(2020 as (typeof EOX_S2CLOUDLESS_YEARS)[number])
       ? 2020
@@ -854,7 +1019,7 @@ export function Sidebar({
       {activePanel && (
         <Box
           sx={{
-            width: { xs: 280, sm: 306 },
+            width: { xs: 300, sm: 340 },
             ml: '-1px',
             borderTopRightRadius: 4,
             borderBottomRightRadius: 4,
@@ -881,225 +1046,259 @@ export function Sidebar({
           <Box sx={{ p: 2, overflowY: 'auto', flex: 1 }}>
             {activePanel === 'layers' && (
               <Box>
-                <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
-                  <TextField
-                    label="Year"
-                    type="number"
-                    value={vsmYear}
-                    onChange={(e) => {
-                      const v = parseInt(e.target.value);
-                      if (!isNaN(v)) onVsmYearChange(v);
-                    }}
-                    size="small"
-                    fullWidth
-                    inputProps={{ min: 2015, max: 2030 }}
-                    sx={{
-                      '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
-                      '& .MuiInputLabel-root': { color: ui.fieldLabel },
-                    }}
-                  />
-                  <TextField
-                    label="RH index"
-                    type="number"
-                    value={vsmRhIndex}
-                    onChange={(e) => {
-                      const v = parseInt(e.target.value);
-                      if (!isNaN(v)) onVsmRhIndexChange(v);
-                    }}
-                    size="small"
-                    fullWidth
-                    sx={{
-                      '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
-                      '& .MuiInputLabel-root': { color: ui.fieldLabel },
-                    }}
-                  />
-                </Box>
-
-                <FormControl
-                  size="small"
-                  fullWidth
-                  disabled={vsmYear !== 2020}
-                  sx={{ mb: 2 }}
+                <CollapsibleSection
+                  title="VSM parameters"
+                  expanded={vsmOpen}
+                  onToggle={() => setVsmOpen((v) => !v)}
+                  ui={ui}
                 >
-                  <InputLabel sx={{ color: ui.fieldLabel }}>Product version</InputLabel>
-                  <Tooltip
-                    title={vsmYear === 2020 ? '' : 'Versioned outputs only exist for 2020'}
-                    placement="top"
-                  >
-                    <Select
-                      label="Product version"
-                      value={vsmVersion}
-                      onChange={(e) => onVsmVersionChange(e.target.value as VsmVersion)}
-                      sx={{
-                        backgroundColor: ui.fieldBg,
-                        color: ui.fieldText,
-                        '& .MuiSvgIcon-root': { color: ui.fieldLabel },
-                      }}
-                    >
-                      {VSM_VERSION_OPTIONS.map((v) => (
-                        <MenuItem key={v} value={v}>{v}</MenuItem>
-                      ))}
-                    </Select>
-                  </Tooltip>
-                </FormControl>
-
-                <SectionLabel ui={ui}>Quantiles</SectionLabel>
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 1.75 }}>
-                  <SelectionChip label="5%" active={vsmQChoice === '5%'} onClick={() => onVsmQChoiceChange('5%')} ui={ui} />
-                  <SelectionChip label="Median" active={vsmQChoice === 'median'} onClick={() => onVsmQChoiceChange('median')} ui={ui} />
-                  <SelectionChip label="95%" active={vsmQChoice === '95%'} onClick={() => onVsmQChoiceChange('95%')} ui={ui} />
-                </Box>
-
-                <SectionLabel ui={ui}>Intervals</SectionLabel>
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 1.75 }}>
-                  <SelectionChip label="95%-5%" active={vsmQChoice === '95%-5%'} onClick={() => onVsmQChoiceChange('95%-5%')} ui={ui} />
-                  <SelectionChip label="95%-50%" active={vsmQChoice === '95%-50%'} onClick={() => onVsmQChoiceChange('95%-50%')} ui={ui} />
-                  <SelectionChip label="50%-5%" active={vsmQChoice === '50%-5%'} onClick={() => onVsmQChoiceChange('50%-5%')} ui={ui} />
-                </Box>
-
-                <SectionLabel ui={ui}>Skewness</SectionLabel>
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2 }}>
-                  <SelectionChip
-                    label={
-                      <span>
-                        (Q<sub>0.95</sub> - Q<sub>0.50</sub>) - (Q<sub>0.50</sub> - Q<sub>0.05</sub>)
-                      </span>
-                    }
-                    active={vsmQChoice === 'skewness'}
-                    onClick={() => onVsmQChoiceChange('skewness')}
-                    ui={ui}
-                  />
-                </Box>
-
-                <Button
-                  variant="outlined"
-                  onClick={onAddLayer}
-                  fullWidth
-                  sx={{
-                    borderStyle: 'dashed',
-                    borderColor: ui.borderStrong,
-                    color: ui.textSecondary,
-                    py: 1,
-                    '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
-                  }}
-                >
-                  + Add Layer
-                </Button>
-
-                <Box sx={{ mt: 1, display: 'flex', gap: 1, alignItems: 'stretch' }}>
-                  <FormControl size="small" sx={{ minWidth: 96 }}>
-                    <InputLabel sx={{ color: ui.fieldLabel }}>Year</InputLabel>
-                    <Select
+                  <Box sx={{ display: 'flex', gap: 1, mb: 1.5 }}>
+                    <TextField
                       label="Year"
-                      value={eoxMosaicYear}
-                      onChange={(e) => setEoxMosaicYear(Number(e.target.value))}
-                      sx={{
-                        backgroundColor: ui.fieldBg,
-                        color: ui.fieldText,
-                        '& .MuiSvgIcon-root': { color: ui.fieldLabel },
+                      type="number"
+                      value={vsmYear}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value);
+                        if (!isNaN(v)) onVsmYearChange(v);
                       }}
+                      size="small"
+                      fullWidth
+                      inputProps={{ min: 2015, max: 2030 }}
+                      sx={{
+                        '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
+                        '& .MuiInputLabel-root': { color: ui.fieldLabel },
+                      }}
+                    />
+                    <TextField
+                      label="RH index"
+                      type="number"
+                      value={vsmRhIndex}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value);
+                        if (!isNaN(v)) onVsmRhIndexChange(v);
+                      }}
+                      size="small"
+                      fullWidth
+                      sx={{
+                        '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
+                        '& .MuiInputLabel-root': { color: ui.fieldLabel },
+                      }}
+                    />
+                  </Box>
+
+                  <FormControl
+                    size="small"
+                    fullWidth
+                    disabled={vsmYear !== 2020}
+                    sx={{ mb: 1.75 }}
+                  >
+                    <InputLabel sx={{ color: ui.fieldLabel }}>Product version</InputLabel>
+                    <Tooltip
+                      title={vsmYear === 2020 ? '' : 'Versioned outputs only exist for 2020'}
+                      placement="top"
                     >
-                      {EOX_S2CLOUDLESS_YEARS.map((y) => (
-                        <MenuItem key={y} value={y}>{y}</MenuItem>
-                      ))}
-                    </Select>
+                      <Select
+                        label="Product version"
+                        value={vsmVersion}
+                        onChange={(e) => onVsmVersionChange(e.target.value as VsmVersion)}
+                        sx={{
+                          backgroundColor: ui.fieldBg,
+                          color: ui.fieldText,
+                          '& .MuiSvgIcon-root': { color: ui.fieldLabel },
+                        }}
+                      >
+                        {VSM_VERSION_OPTIONS.map((v) => (
+                          <MenuItem key={v} value={v}>{v}</MenuItem>
+                        ))}
+                      </Select>
+                    </Tooltip>
                   </FormControl>
+
+                  <SectionLabel ui={ui}>Quantile</SectionLabel>
+                  <Box sx={{ mb: 1.75 }}>
+                    <SegmentedControl
+                      value={vsmQChoice}
+                      onChange={onVsmQChoiceChange}
+                      options={[
+                        { value: '5%', label: '5%' },
+                        { value: 'median', label: 'Median' },
+                        { value: '95%', label: '95%' },
+                      ]}
+                      ui={ui}
+                    />
+                  </Box>
+
+                  <Tooltip
+                    title={<span>Skew: (Q<sub>0.95</sub> − Q<sub>0.50</sub>) − (Q<sub>0.50</sub> − Q<sub>0.05</sub>)</span>}
+                    placement="top"
+                    arrow
+                  >
+                    <span>
+                      <SectionLabel ui={ui}>Interval · Skewness</SectionLabel>
+                    </span>
+                  </Tooltip>
+                  <Box sx={{ mb: 1.75 }}>
+                    <SegmentedControl
+                      value={vsmQChoice}
+                      onChange={onVsmQChoiceChange}
+                      options={[
+                        { value: '95%-5%', label: '95–5%' },
+                        { value: '95%-50%', label: '95–50%' },
+                        { value: '50%-5%', label: '50–5%' },
+                        {
+                          value: 'skewness',
+                          label: (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                              <ShowChartIcon sx={{ fontSize: 13 }} /> skew
+                            </span>
+                          ),
+                        },
+                      ]}
+                      ui={ui}
+                    />
+                  </Box>
+
                   <Button
-                    variant="outlined"
-                    onClick={() => onLoadEoxS2CloudlessMosaic(eoxMosaicYear)}
+                    variant="contained"
+                    disableElevation
+                    startIcon={<AddIcon />}
+                    onClick={onAddLayer}
+                    fullWidth
                     sx={{
-                      flex: 1,
-                      borderStyle: 'dashed',
-                      borderColor: ui.borderStrong,
-                      color: ui.textSecondary,
-                      py: 1,
+                      mt: 1.5,
+                      py: 0.8,
+                      backgroundColor: ui.accentSolid,
+                      color: ui.accentOnSolid,
+                      fontWeight: 700,
                       textTransform: 'none',
-                      '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
+                      '&:hover': { backgroundColor: ui.accentSolid, filter: 'brightness(1.08)' },
                     }}
                   >
-                    Load cloud free sentinel-2 mosaic
+                    Add VSM layer
                   </Button>
-                </Box>
+                </CollapsibleSection>
 
-                <Button
-                  variant="outlined"
-                  onClick={onLoadNaturalnessMap}
-                  fullWidth
-                  sx={{
-                    mt: 1,
-                    borderStyle: 'dashed',
-                    borderColor: ui.borderStrong,
-                    color: ui.textSecondary,
-                    py: 1,
-                    textTransform: 'none',
-                    '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
-                  }}
+                <CollapsibleSection
+                  title="Data layers"
+                  expanded={dataLayersOpen}
+                  onToggle={() => setDataLayersOpen((v) => !v)}
+                  ui={ui}
                 >
-                  Load naturalness map
-                </Button>
-                <Button
-                  variant="outlined"
-                  onClick={onLoadForestNaturalnessData}
-                  fullWidth
-                  sx={{
-                    mt: 1,
-                    borderStyle: 'dashed',
-                    borderColor: ui.borderStrong,
-                    color: ui.textSecondary,
-                    py: 1,
-                    textTransform: 'none',
-                    '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
-                  }}
-                >
-                  Load forest naturalness data
-                </Button>
-                <Button
-                  variant="outlined"
-                  onClick={onLoadForestNaturalnessDataVal}
-                  fullWidth
-                  sx={{
-                    mt: 1,
-                    borderStyle: 'dashed',
-                    borderColor: ui.borderStrong,
-                    color: ui.textSecondary,
-                    py: 1,
-                    textTransform: 'none',
-                    '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
-                  }}
-                >
-                  Load forest naturalness data (val)
-                </Button>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6 }}>
+                    <DataLayerRow
+                      icon={<CloudOutlinedIcon fontSize="inherit" />}
+                      label="Sentinel-2 mosaic"
+                      onClick={() => onLoadEoxS2CloudlessMosaic(eoxMosaicYear)}
+                      trailing={
+                        <Select
+                          value={eoxMosaicYear}
+                          onChange={(e) => setEoxMosaicYear(Number(e.target.value))}
+                          onClick={(e) => e.stopPropagation()}
+                          variant="standard"
+                          disableUnderline
+                          sx={{
+                            fontSize: '0.78rem',
+                            color: ui.textMuted,
+                            '& .MuiSelect-select': { py: 0, pr: '18px !important' },
+                            '& .MuiSvgIcon-root': { color: ui.textMuted, fontSize: 18 },
+                          }}
+                          MenuProps={{
+                            PaperProps: {
+                              sx: { bgcolor: ui.fieldBg, color: ui.fieldText, border: `1px solid ${ui.border}` },
+                            },
+                          }}
+                        >
+                          {EOX_S2CLOUDLESS_YEARS.map((y) => (
+                            <MenuItem key={y} value={y}>{y}</MenuItem>
+                          ))}
+                        </Select>
+                      }
+                      ui={ui}
+                    />
+                    <DataLayerRow
+                      icon={<SpaOutlinedIcon fontSize="inherit" />}
+                      label="Naturalness map"
+                      onClick={onLoadNaturalnessMap}
+                      ui={ui}
+                    />
+                    <DataLayerRow
+                      icon={<ParkOutlinedIcon fontSize="inherit" />}
+                      label="Forest naturalness"
+                      trailing={
+                        <>
+                          {(
+                            [
+                              { key: 'data' as const, label: 'data', onClick: onLoadForestNaturalnessData },
+                              { key: 'val' as const, label: 'val', onClick: onLoadForestNaturalnessDataVal },
+                            ]
+                          ).map(({ key, label, onClick }) => {
+                            const on = forestVariant === key;
+                            return (
+                              <Box
+                                key={key}
+                                component="button"
+                                type="button"
+                                onClick={() => {
+                                  setForestVariant(key);
+                                  onClick();
+                                }}
+                                sx={{
+                                  px: 0.9,
+                                  py: 0.2,
+                                  borderRadius: 10,
+                                  border: `1px solid ${on ? ui.accentBorder : ui.border}`,
+                                  background: on ? ui.accentSoft : ui.buttonBg,
+                                  color: on ? ui.accentTintText : ui.textSecondary,
+                                  fontSize: '0.66rem',
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  '&:hover': {
+                                    background: on ? ui.accentSoft : ui.buttonHover,
+                                    color: on ? ui.accentTintText : ui.textPrimary,
+                                  },
+                                }}
+                              >
+                                {label}
+                              </Box>
+                            );
+                          })}
+                        </>
+                      }
+                      ui={ui}
+                    />
 
-                <TextField
-                  label="FlatGeobuf path"
-                  placeholder="/path/to/file.fgb"
-                  value={fgbPathInput}
-                  onChange={(e) => onFgbPathInputChange(e.target.value)}
-                  size="small"
-                  fullWidth
-                  sx={{
-                    mt: 1,
-                    '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
-                    '& .MuiInputLabel-root': { color: ui.fieldLabel },
-                  }}
-                />
-                <Button
-                  variant="outlined"
-                  onClick={onLoadFgbPath}
-                  fullWidth
-                  disabled={!fgbPathInput.trim()}
-                  sx={{
-                    mt: 1,
-                    borderStyle: 'dashed',
-                    borderColor: ui.borderStrong,
-                    color: ui.textSecondary,
-                    py: 1,
-                    textTransform: 'none',
-                    '&:hover': { borderStyle: 'dashed', borderColor: ui.accentBorder, backgroundColor: ui.accentSoft },
-                  }}
-                >
-                  Load fbg layer
-                </Button>
+                    <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', mt: 0.25 }}>
+                      <TextField
+                        label="FlatGeobuf path"
+                        placeholder="/path/to/file.fgb"
+                        value={fgbPathInput}
+                        onChange={(e) => onFgbPathInputChange(e.target.value)}
+                        size="small"
+                        fullWidth
+                        sx={{
+                          '& .MuiOutlinedInput-root': { backgroundColor: ui.fieldBg, color: ui.fieldText },
+                          '& .MuiInputLabel-root': { color: ui.fieldLabel },
+                        }}
+                      />
+                      <IconButton
+                        onClick={onLoadFgbPath}
+                        disabled={!fgbPathInput.trim()}
+                        aria-label="Load FlatGeobuf layer"
+                        sx={{
+                          flexShrink: 0,
+                          border: `1px solid ${ui.border}`,
+                          borderRadius: 2,
+                          color: ui.textSecondary,
+                          background: ui.cardBg,
+                          '&:hover': { background: ui.cardHover },
+                          '&:disabled': { opacity: 0.4 },
+                        }}
+                      >
+                        <UploadFileIcon fontSize="small" />
+                      </IconButton>
+                    </Box>
+                  </Box>
+                </CollapsibleSection>
 
                 <EarthEngineLayerSection ui={ui} />
 
@@ -1132,12 +1331,22 @@ export function Sidebar({
                 <Box sx={{ mt: 1.5 }}>
                   <SectionLabel ui={ui}>Diversity metrics</SectionLabel>
                   <FormControl size="small" fullWidth sx={{ mt: 0.5 }}>
-                    <InputLabel id="diversity-height-bin-label">Height bin (m)</InputLabel>
+                    <InputLabel id="diversity-height-bin-label" sx={{ color: ui.fieldLabel }}>Height bin (m)</InputLabel>
                     <Select
                       labelId="diversity-height-bin-label"
                       label="Height bin (m)"
                       value={diversityHeightBinM}
                       onChange={(e) => setDiversityHeightBinM(Number(e.target.value))}
+                      sx={{
+                        backgroundColor: ui.fieldBg,
+                        color: ui.fieldText,
+                        '& .MuiSvgIcon-root': { color: ui.fieldLabel },
+                      }}
+                      MenuProps={{
+                        PaperProps: {
+                          sx: { bgcolor: ui.fieldBg, color: ui.fieldText, border: `1px solid ${ui.border}` },
+                        },
+                      }}
                     >
                       {DIVERSITY_HEIGHT_BIN_OPTIONS.map((m) => (
                         <MenuItem key={m} value={m}>{m} m</MenuItem>
@@ -1397,7 +1606,7 @@ export function Sidebar({
                       textTransform: 'none',
                       borderRadius: 2,
                       py: 0.95,
-                      background: `linear-gradient(135deg, ${ui.accent} 0%, #a29bfe 100%)`,
+                      background: `linear-gradient(135deg, ${ui.accentSolid} 0%, #a29bfe 100%)`,
                     }}
                   >
                     {savingFiguresToDb ? 'Saving to database...' : 'Save area images to DB'}
@@ -2344,7 +2553,7 @@ export function Sidebar({
                         )}
                       </Box>
                       <Box sx={{ display: 'flex', gap: 0.5, mt: 0.75 }}>
-                        <Button size="small" variant="contained" onClick={handleConfirmFolder} sx={{ flex: 1, textTransform: 'none', backgroundColor: ui.accent }}>
+                        <Button size="small" variant="contained" onClick={handleConfirmFolder} sx={{ flex: 1, textTransform: 'none', backgroundColor: ui.accentSolid, color: ui.accentOnSolid }}>
                           Select folder
                         </Button>
                         <IconButton size="small" onClick={() => { setShowNewFolder(!showNewFolder); }} title="New folder" sx={{ color: ui.textMuted }}>

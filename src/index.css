@@ -54,6 +54,16 @@ button:focus-visible {
   outline: 4px auto -webkit-focus-ring-color;
 }
 
+/*
+ * Move the OpenLayers scale bar clear of the sidebar (rail ~58px + panel up to
+ * 340px on the left edge) so it is no longer hidden behind it.
+ */
+.ol-scale-bar,
+.ol-scale-line {
+  left: 412px;
+  bottom: 8px;
+}
+
 @media (prefers-color-scheme: light) {
   :root {
     color: #213547;

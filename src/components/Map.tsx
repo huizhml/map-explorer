@@ -31,7 +31,7 @@ export function MapComponent({ onMapInit }: MapComponentProps) {
 
     const map = new Map({
       target: mapRef.current,
-      controls: defaultControls().extend([
+      controls: defaultControls({ zoom: false }).extend([
         new ScaleLine({
           units: 'metric',
           bar: true,

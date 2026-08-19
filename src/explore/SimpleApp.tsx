@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type Map from 'ol/Map';
 import TileLayer from 'ol/layer/Tile';
 import OSM from 'ol/source/OSM';
@@ -24,10 +24,13 @@ import {
 } from '../constants/predictions';
 import { SimpleControls, type BasemapId } from './SimpleControls';
 import { BasemapControl } from './BasemapControl';
+import { MiniMap } from './MiniMap';
 import { LayerControl, type ExploreLayer } from './LayerControl';
+import { buildRamps } from './Colorbar';
 import { RhProfileChart, VerticalProfileChart } from './ProfileCharts';
 import { RandomSite } from './RandomSite';
 import { fetchVerticalProfile, type VerticalProfileResponse } from '../utils/verticalProfile';
+import { placeLabel, reverseGeocode, type Place } from '../utils/reverseGeocode';
 import './explore.css';
 
 /** EPSG:3857 bounds of the published mosaics: 82.8529°N .. −56.0371°S. */
@@ -41,10 +44,17 @@ type PointReading = {
   lat: number;
   rows: InspectLayerRow[];
   loading: boolean;
+  /** undefined while the lookup is in flight, null when the point has no name. */
+  place?: Place | null;
   profile?: VerticalProfileResponse;
   profileLoading: boolean;
   profileError?: string;
 };
+
+/** The layer entry for one RH — the id built from it is the layer's identity. */
+function vsmEntry(rhIndex: number, year: 2020, qChoice: VsmQChoice): VsmLayerEntry {
+  return { year, rhIndex, qChoice, version: DEFAULT_VSM_VERSION };
+}
 
 /**
  * inspectPointAtLonLat stores TiTiler's whole /cog/point response as `value`
@@ -70,39 +80,39 @@ export default function SimpleApp() {
   // Fixed: only the median quantile is published, so there is nothing to pick.
   const qChoice: VsmQChoice = 'median';
 
-  // A list rather than a single layer, so pinning can hold one in place while
-  // the sidebar moves on to another RH.
+  // One layer per selected RH: the sidebar's RH control is a multi-select, so
+  // the layer list *is* the selection. Held newest-last, which is the order
+  // LayerManager draws in.
   const [layers, setLayers] = useState<ExploreLayer[]>([
-    { id: 'l0', rhIndex: 98, year: 2020, visible: true, pinned: false, opacity: 1 },
+    { id: 'l0', rhIndex: 98, visible: true, opacity: 1 },
   ]);
-  const [activeId, setActiveId] = useState<string | null>('l0');
   const nextId = useRef(1);
 
-  const active = layers.find((l) => l.id === activeId) ?? layers[layers.length - 1] ?? null;
-  const rhIndex = active?.rhIndex ?? 98;
-  const year = (active?.year ?? 2020) as 2020;
+  // Only 2020 is published, so the year is shared by every layer rather than
+  // being a per-layer property.
+  const [year, setYear] = useState<2020>(2020);
+
+  const rhIndexes = useMemo(() => layers.map((l) => l.rhIndex), [layers]);
 
   /**
-   * Editing the active layer. A pinned layer is left alone and a new layer is
-   * added in front of it — that is what pinning means here.
+   * The RH buttons toggle layers in and out. Turning one off is the only way to
+   * remove a layer now that the layer list has no delete button — the two must
+   * not disagree about what is on the map.
    */
-  const editActive = useCallback((patch: Partial<ExploreLayer>) => {
+  const toggleRh = useCallback((rh: number) => {
     setLayers((prev) => {
-      const i = prev.findIndex((l) => l.id === activeId);
-      if (i < 0) return prev;
-      if (!prev[i].pinned) {
-        const copy = [...prev];
-        copy[i] = { ...copy[i], ...patch };
-        return copy;
-      }
-      const id = `l${nextId.current++}`;
-      setActiveId(id);
-      return [...prev, { ...prev[i], ...patch, id, pinned: false }];
+      if (prev.some((l) => l.rhIndex === rh)) return prev.filter((l) => l.rhIndex !== rh);
+      // Stacked layers hide each other at full opacity, so anything joining an
+      // existing stack comes in half-transparent; the first one stays opaque.
+      return [...prev, {
+        id: `l${nextId.current++}`,
+        rhIndex: rh,
+        visible: true,
+        opacity: prev.length ? 0.5 : 1,
+      }];
     });
-  }, [activeId]);
+  }, []);
 
-  const setRhIndex = useCallback((rh: number) => editActive({ rhIndex: rh }), [editActive]);
-  const setYear = useCallback((y: 2020) => editActive({ year: y }), [editActive]);
   const [basemap, setBasemap] = useState<BasemapId>('osm');
   const [reading, setReading] = useState<PointReading | null>(null);
   const [gridReady, setGridReady] = useState(false);
@@ -212,63 +222,51 @@ export default function SimpleApp() {
   // rather than cleared and refilled, so untouched layers keep their tiles
   // instead of being torn down and refetched on every change.
   useEffect(() => {
-    const wanted = new Map(
-      layers.map((l) => {
-        const entry: VsmLayerEntry = {
-          year: l.year as 2020,
-          rhIndex: l.rhIndex,
-          qChoice,
-          version: DEFAULT_VSM_VERSION,
-        };
-        return [getVsmLayerId(entry), entry];
-      }),
-    );
+    // A plain object rather than a Map: `Map` is OpenLayers' here, not the
+    // global one.
+    const wanted: Record<string, VsmLayerEntry> = {};
+    for (const l of layers) {
+      const entry = vsmEntry(l.rhIndex, year, qChoice);
+      wanted[getVsmLayerId(entry)] = entry;
+    }
     const present = new Set(
       useMapStore.getState().addedVsmLayers.map((e) => getVsmLayerId(e)),
     );
 
-    for (const id of present) if (!wanted.has(id)) removeVsmLayerByLayerId(id);
-    for (const [id, entry] of wanted) if (!present.has(id)) addVsmLayer(entry);
-  }, [layers, qChoice, addVsmLayer, removeVsmLayerByLayerId]);
+    for (const id of present) if (!(id in wanted)) removeVsmLayerByLayerId(id);
+    for (const [id, entry] of Object.entries(wanted)) if (!present.has(id)) addVsmLayer(entry);
+  }, [layers, year, qChoice, addVsmLayer, removeVsmLayerByLayerId]);
 
-  // Visibility, applied per layer.
+  // Visibility and opacity, applied per layer.
   useEffect(() => {
     if (!layerManager) return;
     for (const l of layers) {
-      const entry: VsmLayerEntry = {
-        year: l.year as 2020,
-        rhIndex: l.rhIndex,
-        qChoice,
-        version: DEFAULT_VSM_VERSION,
-      };
-      const managed = layerManager.getLayer(getVsmLayerId(entry));
+      const managed = layerManager.getLayer(getVsmLayerId(vsmEntry(l.rhIndex, year, qChoice)));
       if (managed?.layer) {
         managed.layer.setVisible(l.visible);
         managed.layer.setOpacity(l.opacity);
       }
     }
-  }, [layers, layerManager, qChoice]);
+  }, [layers, year, layerManager, qChoice]);
 
   const toggleVisible = useCallback((id: string) => {
     setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, visible: !l.visible } : l)));
-  }, []);
-
-  const togglePinned = useCallback((id: string) => {
-    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, pinned: !l.pinned } : l)));
   }, []);
 
   const setOpacity = useCallback((id: string, opacity: number) => {
     setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, opacity } : l)));
   }, []);
 
-  const removeLayer = useCallback((id: string) => {
-    setLayers((prev) => {
-      const next = prev.filter((l) => l.id !== id);
-      // Never leave the sidebar editing a layer that no longer exists.
-      if (id === activeId) setActiveId(next.length ? next[next.length - 1].id : null);
-      return next;
-    });
-  }, [activeId]);
+  // Which RH each sampled row came from. inspectPointAtLonLat keys rows by the
+  // managed layer id, and with several layers on the map the reading card would
+  // otherwise label every row with the same RH.
+  const ramps = useMemo(() => buildRamps(layers, qChoice), [layers, qChoice]);
+
+  const rhByLayerId = useMemo(() => {
+    const byId: Record<string, number> = {};
+    for (const l of layers) byId[getVsmLayerId(vsmEntry(l.rhIndex, year, qChoice))] = l.rhIndex;
+    return byId;
+  }, [layers, year, qChoice]);
 
   // Basemap. Map.tsx puts the base tile layer at index 0.
   useEffect(() => {
@@ -300,6 +298,13 @@ export default function SimpleApp() {
         setReading((prev) => (prev && prev.lon === lon && prev.lat === lat ? { ...prev, rows, loading: false } : prev)),
       );
 
+      // Third request, on the same land-as-it-arrives basis: it goes to a
+      // different host and is rate-limited to one a second, so it must not hold
+      // up the pixel read.
+      reverseGeocode(lon, lat).then((place) =>
+        setReading((prev) => (prev && prev.lon === lon && prev.lat === lat ? { ...prev, place } : prev)),
+      );
+
       fetchVerticalProfile(lon, lat, year)
         .then((profile) =>
           setReading((prev) =>
@@ -323,13 +328,13 @@ export default function SimpleApp() {
     };
     map.on('singleclick', onClick);
     return () => map.un('singleclick', onClick);
-  }, [map, year, rhIndex, qChoice]);
+  }, [map, year]);
 
   return (
     <div className="ex-root">
       <SimpleControls
-        rhIndex={rhIndex}
-        onRhIndex={setRhIndex}
+        rhIndexes={rhIndexes}
+        onToggleRh={toggleRh}
         year={year}
         onYear={setYear}
       />
@@ -344,13 +349,13 @@ export default function SimpleApp() {
 
         <LayerControl
           layers={layers}
-          activeId={activeId}
+          year={year}
+          ramps={ramps}
           onToggleVisible={toggleVisible}
-          onTogglePinned={togglePinned}
-          onRemove={removeLayer}
           onOpacity={setOpacity}
         />
         <BasemapControl value={basemap} onChange={setBasemap} />
+        <MiniMap map={map} />
         <RandomSite map={map} />
 
         {/* The grid gates every tile request, so its state is worth surfacing
@@ -369,6 +374,13 @@ export default function SimpleApp() {
             <button className="ex-reading__close" onClick={() => setReading(null)} aria-label="Close">
               ×
             </button>
+            {/* Place above coordinates: "Alto Paraíso, Brazil" answers where
+                this is, and the numbers are what you copy afterwards. */}
+            {reading.place && (
+              <div className="ex-reading__place" title={reading.place.address}>
+                {placeLabel(reading.place)}
+              </div>
+            )}
             <div className="ex-reading__coords">
               {reading.lat.toFixed(5)}, {reading.lon.toFixed(5)}
             </div>
@@ -378,18 +390,25 @@ export default function SimpleApp() {
               ) : reading.rows.length === 0 ? (
                 'No layer to sample'
               ) : (
-                reading.rows.map((row) => (
-                  <div key={row.id}>
-                    {row.error ? `Error: ${row.error}` : formatHeight(row.value, rhIndex)}
-                  </div>
-                ))
+                // Sorted by RH: inspectPointAtLonLat resolves its requests in
+                // parallel and pushes as they land, so the rows arrive in
+                // whatever order the network happened to give them.
+                [...reading.rows]
+                  .sort((a, b) => (rhByLayerId[b.id] ?? 0) - (rhByLayerId[a.id] ?? 0))
+                  .map((row) => (
+                    <div key={row.id}>
+                      {row.error
+                        ? `Error: ${row.error}`
+                        : formatHeight(row.value, rhByLayerId[row.id] ?? 0)}
+                    </div>
+                  ))
               )}
             </div>
 
             <div className="ex-profile">
               {reading.profileLoading && (
                 <p className="ex-profile__note">
-                  Building profile… reads 101 layers, ~20 s
+                  Building profile… reads 101 layers, this may take a while.
                 </p>
               )}
               {reading.profileError && <p className="ex-profile__note">{reading.profileError}</p>}

@@ -13,15 +13,13 @@
 export type ChapterVisual =
   | { kind: 'image'; src: string; alt: string; caption?: string }
   /**
-   * Frames that cross-fade as the chapter scrolls past — for an argument built
-   * in steps. `note` is what shows if the images are not there yet, so the
-   * chapter still reads before the artwork exists.
+   * The chapter-2 explainer, drawn and animated from real data as the chapter
+   * scrolls past. Its content lives in GediShot.tsx, not here, because every
+   * part of it — the beats, their captions, the geometry — is one figure.
    */
-  | {
-      kind: 'sequence';
-      note: string;
-      frames: Array<{ src: string; alt: string; caption?: string }>;
-    }
+  | { kind: 'gedi-shot' }
+  /** Chapter 1's pair of look-alike places. Lives in ForestPair.tsx. */
+  | { kind: 'forest-pair' }
   | { kind: 'figure'; src: string; alt: string; caption?: string }
   /** Looping clip. `poster` shows before it loads and if it never plays. */
   | {
@@ -32,6 +30,8 @@ export type ChapterVisual =
       caption?: string;
     }
   | { kind: 'stat'; value: number; unit: string; label: string; decimals?: number }
+  /** The closing slide's button. A deck has no footer to put it in. */
+  | { kind: 'cta' }
   | { kind: 'placeholder'; note: string };
 
 export type Chapter = {
@@ -46,16 +46,16 @@ export type Chapter = {
 export const CHAPTERS: Chapter[] = [
   {
     id: '010-what-we-mapped',
-    eyebrow: 'The map',
+    eyebrow: '',
     title: 'Forests are not flat',
     body: [
-      'Global forest maps have mostly answered one question: is there a tree here or not. ' +
-        'But a young plantation and an old-growth stand can look identical from directly above ' +
-        'while storing completely different amounts of carbon and supporting completely different species.',
-      'What separates them is vertical structure — how the canopy is arranged between the ground ' +
-        'and the treetops. That is what this map measures, everywhere, at 10 m.',
+      'Most forest maps answer one question: **is there a tree here or not**.',
+      'But two stands can look identical from above and be nothing alike inside — different ' +
+        'carbon, different species.',
+      'What separates them is **vertical structure**. That is what this map measures, ' +
+        'everywhere, at 10 m.',
     ],
-    visual: { kind: 'placeholder', note: 'Side-by-side: same canopy cover, different vertical profile' },
+    visual: { kind: 'forest-pair' },
   },
   {
     id: '020-how-it-is-measured',
@@ -69,37 +69,7 @@ export const CHAPTERS: Chapter[] = [
       'We train a model to predict the full GEDI waveform from Sentinel-2 imagery, then apply it ' +
         'globally. The result is a vertical profile for every 10 m pixel on land.',
     ],
-    visual: {
-      kind: 'sequence',
-      note: 'One GEDI shot → what it records → RH98 → the bar → all 724',
-      frames: [
-        {
-          src: 'story/method-2a-shot.webp',
-          alt: 'A single GEDI footprint ringed on the satellite image',
-          caption: 'One GEDI shot. The laser lights a circle 25 m across.',
-        },
-        {
-          src: 'story/method-2b-profile.webp',
-          alt: 'The energy returned from that shot, plotted against height',
-          caption: 'What it records is not a number but a profile: how much energy came back from each height.',
-        },
-        {
-          src: 'story/method-2c-rh98.webp',
-          alt: 'RH98 marked on the profile',
-          caption: 'RH98 is the height below which 98% of that energy falls — in practice, the top of the canopy.',
-        },
-        {
-          src: 'story/method-2d-bar.webp',
-          alt: 'The profile collapsing into a single bar of that height',
-          caption: 'Collapse the profile to that one height, and you have a bar.',
-        },
-        {
-          src: 'story/method-2e-all.webp',
-          alt: 'All 724 GEDI shots in view, each drawn as a bar',
-          caption: 'Here are all 724 in this view — real measurements, but only where the tracks fall.',
-        },
-      ],
-    },
+    visual: { kind: 'gedi-shot' },
   },
   {
     id: '030-relative-height',
@@ -151,6 +121,6 @@ export const CHAPTERS: Chapter[] = [
     body: [
       'Pick a percentile, pick a place, and click anywhere to read the profile under your cursor.',
     ],
-    visual: { kind: 'placeholder', note: 'Call to action — handled by the CTA block' },
+    visual: { kind: 'cta' },
   },
 ];

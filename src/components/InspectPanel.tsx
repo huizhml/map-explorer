@@ -277,7 +277,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
           ? { xs: 'calc(100% - 32px)', sm: 'min(92vw, 920px)' }
           : { xs: 'calc(100% - 32px)', sm: 380 },
         maxWidth: (isVertical || isVerticalLine) ? 920 : 420,
-        maxHeight: (isVertical || isVerticalLine) ? '52vh' : '45vh',
+        maxHeight: (isVertical || isVerticalLine) ? '72vh' : '45vh',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
@@ -381,7 +381,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
           py: 1.5,
           ...(isVertical
             || isVerticalLine
-            ? { flex: 1, minHeight: 0, maxHeight: 'calc(52vh - 120px)', overflowY: 'auto' }
+            ? { flex: 1, minHeight: 0, maxHeight: 'calc(72vh - 120px)', overflowY: 'auto' }
             : { height: 300, overflowY: 'auto', flexShrink: 0 }),
           display: 'flex',
           flexDirection: 'column',
@@ -432,6 +432,7 @@ export function InspectPanel({ panel, onClose, onSave }: InspectPanelProps) {
                   samples={transectProfile!.samples}
                   totalLengthMeters={transectProfile!.totalLengthMeters}
                   xAxis={transectMetricXAxis}
+                  chartHeight={160}
                   dimmed={hasStaleVertical}
                   heatmapMaxHeight={profileMetaData?.heatmapMaxHeight ?? DEFAULT_HEATMAP_MAX_HEIGHT_M}
                   heightBinM={profileMetaData?.fhdInterval ?? diversityHeightBinM ?? DEFAULT_DIVERSITY_HEIGHT_BIN_M}
