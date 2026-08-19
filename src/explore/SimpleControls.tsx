@@ -134,10 +134,15 @@ export function SimpleControls(props: Props) {
         <span className="ex-layer-id" title={layerIds.join('\n')}>
           {layerIds.length === 1 ? layerIds[0] : `${layerIds.length} layers`}
         </span>
-        {/* './index.html' is the right way back in both builds — the story deck
-            on the main site, the title page on the review site. Only the name
-            of the place differs. */}
-        <a href="./index.html">{__REVIEW__ ? '← Back' : '← Story'}</a>
+        {/* './index.html' is the way back — the review site's title page, or
+            the story deck when it is published. While the story is unpublished
+            there is no such page on the main site, so there is no link either:
+            better nothing than a link into a 404. */}
+        {__REVIEW__ ? (
+          <a href="./index.html">← Back</a>
+        ) : (
+          __STORY__ && <a href="./index.html">← Story</a>
+        )}
       </footer>
     </aside>
   );

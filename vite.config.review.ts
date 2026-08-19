@@ -59,7 +59,9 @@ export default defineConfig({
   root,
   publicDir: false,
   plugins: [react(), publicAssetsMinusChapterArt()],
-  define: { __REVIEW__: 'true' },
+  // The review site never has the story deck — only its own title page — so
+  // __STORY__ is false here whatever the main build is doing.
+  define: { __REVIEW__: 'true', __STORY__: 'false' },
   build: {
     outDir,
     // dist/ sits outside `root`, so Vite wants this said explicitly before it
