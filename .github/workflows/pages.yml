@@ -38,6 +38,13 @@ jobs:
           # e.g. https://your-user-gvsm-map-explorer-api.hf.space
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
 
+      # The review site — explore map only, no story — nested in the same
+      # artifact at /<repo>/review/. It must run *after* build:web, which
+      # empties dist/ and would take dist/review/ with it.
+      - run: npm run build:review -- --base=/${{ github.event.repository.name }}/review/
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

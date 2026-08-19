@@ -15,6 +15,9 @@ import { resolve } from 'node:path'
 // map state.
 export default defineConfig({
   plugins: [react()],
+  // False here, true in vite.config.review.ts — the one flag that tells the
+  // shared components which of the two builds they are in.
+  define: { __REVIEW__: 'false' },
   build: {
     rollupOptions: {
       input: {

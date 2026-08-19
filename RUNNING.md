@@ -19,6 +19,20 @@ The frontend builds three pages from the same `src/`:
 
 > ⚠️ The full app moved to **`/dev.html`**. `/` is now the story page.
 
+Plus a fourth URL, `/review/`, built separately by `vite.config.review.ts`: the
+same explore map, alone. No story chapters, no `dev.html`, no `public/story/`
+artwork in the output — a reviewer lands on the map instead of navigating to it.
+Same code as `/explore.html`, so the same ~175 KB.
+
+```bash
+npm run build:web                        # dist/         — the three pages above
+npm run build:review                     # dist/review/  — must run second
+```
+
+The order matters: `build:web` empties `dist/`. CI runs both in
+[.github/workflows/pages.yml](.github/workflows/pages.yml) and ships one
+artifact, so `/review/` deploys with everything else.
+
 ---
 
 ## Local
