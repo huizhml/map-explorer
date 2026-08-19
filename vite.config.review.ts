@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { cpSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -31,23 +31,34 @@ const heroImage = resolve(storyArt, 'hero.webp')
 // './sites/sites.json' relative to whatever page it is on; and the hero
 // background, the one file under public/story/ the landing page needs. The 40
 // chapter frames beside it are dead weight here.
-const publicAssetsMinusChapterArt = {
-  name: 'review-public-assets',
-  closeBundle() {
-    cpSync(resolve(__dirname, 'public'), outDir, {
-      recursive: true,
-      // Returning false for a directory skips everything under it, so
-      // public/story/ itself has to pass before hero.webp can be considered.
-      filter: (src: string) =>
-        src === storyArt || !src.startsWith(storyArt) || src === heroImage,
-    })
-  },
+function publicAssetsMinusChapterArt(): Plugin {
+  // Read back from the resolved config rather than the `outDir` constant
+  // below: `--outDir` on the command line overrides it, and the CI job that
+  // publishes to a separate repository does exactly that. Copying to the
+  // constant instead put the HTML and JS in one directory and sites.json,
+  // hero.webp and vite.svg in another.
+  let target = outDir
+  return {
+    name: 'review-public-assets',
+    configResolved(config) {
+      target = resolve(config.root, config.build.outDir)
+    },
+    closeBundle() {
+      cpSync(resolve(__dirname, 'public'), target, {
+        recursive: true,
+        // Returning false for a directory skips everything under it, so
+        // public/story/ itself has to pass before hero.webp can be considered.
+        filter: (src: string) =>
+          src === storyArt || !src.startsWith(storyArt) || src === heroImage,
+      })
+    },
+  }
 }
 
 export default defineConfig({
   root,
   publicDir: false,
-  plugins: [react(), publicAssetsMinusChapterArt],
+  plugins: [react(), publicAssetsMinusChapterArt()],
   define: { __REVIEW__: 'true' },
   build: {
     outDir,

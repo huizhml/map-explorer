@@ -38,10 +38,16 @@ jobs:
           # e.g. https://your-user-gvsm-map-explorer-api.hf.space
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
 
-      # The review site — explore map only, no story — nested in the same
-      # artifact at /<repo>/review/. It must run *after* build:web, which
-      # empties dist/ and would take dist/review/ with it.
-      - run: npm run build:review -- --base=/${{ github.event.repository.name }}/review/
+      # The review site, nested in this artifact at /<repo>/review/ — but only
+      # while it has nowhere better to live. Setting the REVIEW_SITE_REPO
+      # variable moves it to its own repository (see the review-site job) and
+      # this step stops running, so the two never publish at once and there is
+      # no window where neither URL works.
+      #
+      # It must run *after* build:web, which empties dist/ and would otherwise
+      # take dist/review/ with it.
+      - if: vars.REVIEW_SITE_REPO == ''
+        run: npm run build:review -- --base=/${{ github.event.repository.name }}/review/
         env:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
 
@@ -58,3 +64,70 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # Publish the review site to a repository of its own, so its URL reads as a
+  # standalone site rather than a subsection of this one. Pages takes the path
+  # from the repo name, which is the whole reason this cannot be done with a
+  # build flag here.
+  #
+  # Dormant until two things are set in Settings → Secrets and variables →
+  # Actions:
+  #
+  #   variable REVIEW_SITE_REPO        owner/name, e.g. huizhml/map-explorer-review
+  #   secret   REVIEW_SITE_DEPLOY_KEY  private half of a write-enabled deploy
+  #                                    key on that repository
+  #
+  # A deploy key rather than a PAT: it grants exactly one repository, and the
+  # workflow's own GITHUB_TOKEN cannot write outside this one. For the same
+  # reason this pushes a branch instead of using actions/deploy-pages, which
+  # only ever publishes to the repository it runs in.
+  review-site:
+    if: vars.REVIEW_SITE_REPO != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # The base is the repo name alone — 'huizhml/x' becomes '/x/'.
+      - name: Build the review site
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          REVIEW_SITE_REPO: ${{ vars.REVIEW_SITE_REPO }}
+        run: npm run build:review -- --base=/${REVIEW_SITE_REPO#*/}/ --outDir ../dist-review
+
+      - name: Push it to the review repository
+        env:
+          DEPLOY_KEY: ${{ secrets.REVIEW_SITE_DEPLOY_KEY }}
+          REVIEW_SITE_REPO: ${{ vars.REVIEW_SITE_REPO }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_KEY:-}" ]; then
+            echo "REVIEW_SITE_REPO is set but REVIEW_SITE_DEPLOY_KEY is not." >&2
+            echo "Add the secret, or clear the variable to go back to publishing" >&2
+            echo "the review site as a subpath of the main Pages site." >&2
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+          cd dist-review
+          # Pages runs Jekyll otherwise, which drops any path with a leading
+          # underscore. Nothing here has one today; this keeps it that way.
+          touch .nojekyll
+          git init -q -b gh-pages
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -q -m "deploy ${GITHUB_SHA::7} from ${GITHUB_REPOSITORY}"
+          # One commit, force-pushed. The review repo is a publishing target,
+          # not a history — keeping every past build would grow it without
+          # bound, and the real history lives here.
+          git push -q -f "git@github.com:${REVIEW_SITE_REPO}.git" gh-pages

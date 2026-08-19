@@ -19,10 +19,17 @@ The frontend builds three pages from the same `src/`:
 
 > ⚠️ The full app moved to **`/dev.html`**. `/` is now the story page.
 
-Plus a fourth URL, `/review/`, built separately by `vite.config.review.ts`: the
-same explore map, alone. No story chapters, no `dev.html`, no `public/story/`
-artwork in the output — a reviewer lands on the map instead of navigating to it.
-Same code as `/explore.html`, so the same ~175 KB.
+Plus the review site, built separately by `vite.config.review.ts` — two more
+pages from the same `src/`, for someone sent the dataset cold:
+
+| URL | Page | Weight (gzip) |
+|---|---|---|
+| `/review/` | The story's title slide, alone | ~61 KB |
+| `/review/map.html` | The explore map | ~175 KB |
+
+No chapters, no `dev.html`. The landing page is 1 kB of code over React and
+loads none of the map's bundle, and `hero.webp` is the only file under
+`public/story/` that the build copies — the 40 chapter frames stay behind.
 
 ```bash
 npm run build:web                        # dist/         — the three pages above
@@ -32,6 +39,24 @@ npm run build:review                     # dist/review/  — must run second
 The order matters: `build:web` empties `dist/`. CI runs both in
 [.github/workflows/pages.yml](.github/workflows/pages.yml) and ships one
 artifact, so `/review/` deploys with everything else.
+
+### Giving the review site its own URL
+
+Pages takes the path from the repository name, so `/map-explorer/review/` is as
+close as one repo gets. To publish it as `huizhml.github.io/map-explorer-review/`
+instead, set both of these under Settings → Secrets and variables → Actions:
+
+| | |
+|---|---|
+| variable `REVIEW_SITE_REPO` | `huizhml/map-explorer-review` |
+| secret `REVIEW_SITE_DEPLOY_KEY` | private half of a write-enabled deploy key on that repo |
+
+The `review-site` job then builds with the new base and force-pushes to that
+repo's `gh-pages` branch, and the subpath build stops running — so the two never
+publish at once. Clear the variable to go back. A deploy key rather than a PAT
+because it grants exactly one repository; the workflow's own `GITHUB_TOKEN`
+cannot write outside this one, which is also why this pushes a branch instead of
+using `actions/deploy-pages`.
 
 ---
 
