@@ -9,42 +9,47 @@ comes from and whether writes are allowed.
 | **hendrix** | `/projects` (disk) | ✅ | `npm run dev` on the node |
 | **Cloud Run** | source.coop (HTTP) | ❌ read-only | GitHub Pages |
 
-The frontend builds three pages from the same `src/`:
+What is published, all from the same `src/`:
 
 | URL | Page | Weight (gzip) |
 |---|---|---|
-| `/` (`index.html`) | Story | ~64 KB |
-| `/explore.html` | Simple map — what reviewers use | ~174 KB |
+| `/` (`index.html`) | Title page — the dataset in two sentences | ~61 KB |
+| `/map.html` | The map, reached from the title page | ~175 KB |
+| `/explore.html` | The same map, older URL | ~174 KB |
 | `/dev.html` | Full app — the working tool | ~746 KB |
 
-> ⚠️ The full app moved to **`/dev.html`**. `/` is now the story page.
+> ⚠️ **The story is not published.** Its chapters are still drafts and reviewers
+> must not see them. `index.html` is left out of the main build and a plugin
+> strips `public/story/`'s frames from the artifact; `hero.webp` is the one file
+> that survives, for the title page. `PUBLISH_STORY=1` puts the story back —
+> opt *in*, so forgetting the variable keeps the draft private.
+>
+> `npm run dev` is unaffected: the dev server serves `index.html` whatever the
+> build inputs are, so writing the story locally works exactly as before.
 
-Plus the review site, built separately by `vite.config.review.ts` — two more
-pages from the same `src/`, for someone sent the dataset cold:
-
-| URL | Page | Weight (gzip) |
-|---|---|---|
-| `/review/` | The story's title slide, alone | ~61 KB |
-| `/review/map.html` | The explore map | ~175 KB |
-
-No chapters, no `dev.html`. The landing page is 1 kB of code over React and
-loads none of the map's bundle, and `hero.webp` is the only file under
-`public/story/` that the build copies — the 40 chapter frames stay behind.
+The title page and `/map.html` come from `vite.config.review.ts` — the hero
+slide alone, with none of the deck: no chapters, no figures, no swipe
+machinery. It is 1 kB of code over React and loads none of the map's bundle.
 
 ```bash
-npm run build:web                        # dist/         — the three pages above
-npm run build:review                     # dist/review/  — must run second
+npm run build:web                        # dist/ — explore.html, dev.html
+npm run build:review                     # adds index.html + map.html — second
 ```
 
-The order matters: `build:web` empties `dist/`. CI runs both in
+The order matters: `build:web` empties `dist/`, and `build:review` writes into
+it rather than clearing it. CI runs both in
 [.github/workflows/pages.yml](.github/workflows/pages.yml) and ships one
-artifact, so `/review/` deploys with everything else.
+artifact.
+
+Because the title page occupies `index.html`, `PUBLISH_STORY=1` and the review
+build cannot both run — the story wants the same filename. `build:review`
+refuses with an explicit error rather than letting one overwrite the other.
 
 ### Giving the review site its own URL
 
-Pages takes the path from the repository name, so `/map-explorer/review/` is as
-close as one repo gets. To publish it as `huizhml.github.io/map-explorer-review/`
-instead, set both of these under Settings → Secrets and variables → Actions:
+Pages takes the path from the repository name. To publish it as
+`huizhml.github.io/map-explorer-review/` instead, set both of these under
+Settings → Secrets and variables → Actions:
 
 | | |
 |---|---|

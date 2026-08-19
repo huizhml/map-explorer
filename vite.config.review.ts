@@ -15,14 +15,28 @@ import { resolve } from 'node:path'
 // swipe machinery, no dev.html. So the landing page stays cheap, and its only
 // story asset is the hero background.
 //
-// It nests inside the main site's output (dist/review/) so one Pages deploy
-// publishes both. Build order therefore matters: the main build empties dist/,
-// so it has to run first. See `npm run build:review` and .github/workflows.
+// These land at the *root* of the site, so the title page is what a bare URL
+// gives you. That is only possible while the story is unpublished, since the
+// story wants the same index.html — the guard below makes the clash loud rather
+// than letting one silently overwrite the other.
+//
+// Writing into the main build's directory means this must run second, and must
+// not empty what it finds (`emptyOutDir: false`). The main build clears dist/
+// first; this adds to it.
 
 const root = resolve(__dirname, 'review')
-const outDir = resolve(__dirname, 'dist/review')
+const outDir = resolve(__dirname, 'dist')
 const storyArt = resolve(__dirname, 'public/story')
 const heroImage = resolve(storyArt, 'hero.webp')
+
+if (process.env.PUBLISH_STORY === '1') {
+  throw new Error(
+    'PUBLISH_STORY=1 and the review build both want dist/index.html.\n' +
+      'The review landing page occupies the site root while the story is\n' +
+      'unpublished. To publish the story, give one of them a different\n' +
+      'filename first — this build refuses to guess which.',
+  )
+}
 
 // `publicDir: false` below, then copy by hand — Vite's publicDir is all or
 // nothing, and we want public/ minus the chapter artwork.
@@ -64,9 +78,11 @@ export default defineConfig({
   define: { __REVIEW__: 'true', __STORY__: 'false' },
   build: {
     outDir,
-    // dist/ sits outside `root`, so Vite wants this said explicitly before it
-    // will clear the directory.
-    emptyOutDir: true,
+    // Never clear: the main build's explore.html, dev.html and assets are
+    // already here, and this build adds to them rather than replacing them.
+    // (When CI publishes to a separate repository it overrides outDir, and the
+    // directory is fresh on every runner, so nothing accumulates there either.)
+    emptyOutDir: false,
     rollupOptions: {
       input: {
         landing: resolve(root, 'index.html'),

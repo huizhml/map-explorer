@@ -38,16 +38,19 @@ jobs:
           # e.g. https://your-user-gvsm-map-explorer-api.hf.space
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
 
-      # The review site, nested in this artifact at /<repo>/review/ — but only
-      # while it has nowhere better to live. Setting the REVIEW_SITE_REPO
+      # The review site, written into this artifact's root: /<repo>/ is the
+      # title page and /<repo>/map.html the map. It shares the directory with
+      # explore.html and dev.html rather than sitting in a subfolder, so a bare
+      # URL lands somewhere real instead of on a 404.
+      #
+      # Only while it has nowhere better to live: setting the REVIEW_SITE_REPO
       # variable moves it to its own repository (see the review-site job) and
       # this step stops running, so the two never publish at once and there is
       # no window where neither URL works.
       #
-      # It must run *after* build:web, which empties dist/ and would otherwise
-      # take dist/review/ with it.
+      # Must run *after* build:web, which empties dist/; this one adds to it.
       - if: vars.REVIEW_SITE_REPO == ''
-        run: npm run build:review -- --base=/${{ github.event.repository.name }}/review/
+        run: npm run build:review -- --base=/${{ github.event.repository.name }}/
         env:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
 
