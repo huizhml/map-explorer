@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CHAPTERS, type Chapter, type ChapterVisual } from './chapters';
+import { Hero, STORY_TITLE } from './Hero';
 import ForestPair from './ForestPair';
 import GediShot, { GEDI_STEPS } from './GediShot';
 import { useCountUp } from './useInView';
@@ -8,28 +9,6 @@ import './story.css';
 
 /** Links are relative so they keep working under the /map-explorer/ Pages base. */
 const EXPLORE_URL = './explore.html';
-
-/**
- * The story's title. Used twice — the hero headline and the carousel's
- * aria-label — so editing it in one place keeps what is announced to a screen
- * reader the same as what is on screen.
- *
- * Separate from the browser tab's <title> in index.html, which names the
- * dataset rather than the story.
- */
-const STORY_TITLE = "A Vertical Vegetation Structure Model of the Earth";
-
-/**
- * Hero background. Drop a file at public/story/hero.webp and it appears; leave
- * it out and the title slide falls back to flat dark, which is why this is an
- * inline style with a relative URL rather than a CSS url(): a missing file is a
- * 404 at runtime instead of a failed build, and the path survives the Pages
- * base.
- *
- * WebP, ~2560 px wide, under ~300 KB. The whole story page is 64 KB of code —
- * an unoptimised background would dominate the first paint several times over.
- */
-const HERO_IMAGE = './story/hero.webp';
 
 /** `**like this**` in a chapter's prose comes out bold. */
 function emphasise(text: string) {
@@ -214,26 +193,14 @@ export default function Story() {
           const active = i === pos.chapter;
           if (slide.kind === 'hero') {
             return (
-              <section
+              <Hero
                 key="hero"
-                className="story-slide story-slide--hero"
-                style={{ backgroundImage: `url(${HERO_IMAGE})` }}
-                aria-hidden={!active}
-              >
-                {/* Scrim, not a filter on the image: it keeps the text legible
-                    whatever the photograph turns out to be, and costs nothing
-                    when there is no image at all. */}
-                <div className="story-hero__scrim" aria-hidden="true" />
-                <div className="story-hero__content">
-                  {/* <p className="story-hero__eyebrow">Global Vegetation Structure Model</p> */}
-                  <h1>{STORY_TITLE}</h1>
-                  <p className="story-hero__lede">
-                    A 10-metre dataset of Earth’s vegetation vertical structure for the year 2020, derived from NASA's GEDI LiDAR data and Sentinel-2 imagery.
-                  </p>
-                  {/* Two ways in from the title slide. The story ends on a link
-                      to the map, but a reader who came for the data should not
-                      have to swipe through the whole deck to reach it. */}
-                  <div className="story-hero__actions">
+                hidden={!active}
+                /* Two ways in from the title slide. The story ends on a link to
+                   the map, but a reader who came for the data should not have
+                   to swipe through the whole deck to reach it. */
+                actions={
+                  <>
                     <button
                       type="button"
                       className="story-cta story-cta--ghost"
@@ -244,10 +211,9 @@ export default function Story() {
                     <a className="story-cta" href={EXPLORE_URL}>
                       Explore the map →
                     </a>
-                  </div>
-                  {/* <p className="story-hint">Swipe, scroll, or use ← →</p> */}
-                </div>
-              </section>
+                  </>
+                }
+              />
             );
           }
 
