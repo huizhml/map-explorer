@@ -32,6 +32,41 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
   const debounceTimersRef = useRef<globalThis.Map<string, ReturnType<typeof setTimeout>>>(new globalThis.Map());
   const [showZoomMessage, setShowZoomMessage] = useState(false);
 
+  /**
+   * Tear everything down when the map goes away — and only then.
+   *
+   * This used to live in the cleanup of the effect below, which also depends on
+   * `addedVsmLayers`. So adding or removing one RH ran it: every layer already
+   * on the map was removed and its in-flight tile loads cancelled, and the
+   * effect body then rebuilt all of them from nothing, re-requesting the mosaic
+   * URL and every visible tile. On screen that is the current layer vanishing
+   * to bare basemap and coming back seconds later alongside the new one.
+   *
+   * The body's own diffing — skip what is already there, remove what is no
+   * longer wanted — was correct all along, but could never fire, because this
+   * cleanup had just emptied the map it diffs against.
+   *
+   * Reads the LayerManager from the store at teardown time rather than closing
+   * over it: this effect does not re-run when the manager is created, so a
+   * captured one would be the null from the first render.
+   */
+  useEffect(() => {
+    if (!map) return;
+    return () => {
+      const mgr = useMapStore.getState().layerManager;
+      for (const [id, state] of globalLayersRef.current.entries()) {
+        state.cancelled = true;
+        const t = debounceTimersRef.current.get(id);
+        if (t) { clearTimeout(t); debounceTimersRef.current.delete(id); }
+        if (mgr?.getLayer(id)) mgr.removeLayer(id);
+        if (map.getLayers().getArray().includes(state.outerGroup)) map.removeLayer(state.outerGroup);
+      }
+      globalLayersRef.current.clear();
+      debounceTimersRef.current.clear();
+      updateLayersList();
+    };
+  }, [map, fgbLayer, updateLayersList]);
+
   useEffect(() => {
     if (!map || !fgbLayer) {
       setShowZoomMessage(false);
@@ -220,19 +255,11 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
     map.on('moveend', onMoveEnd);
     map.getView().on('change:resolution', onZoomChange);
 
+    // Listeners only. The layers themselves outlive a change to
+    // `addedVsmLayers` — see the teardown effect above for why that matters.
     return () => {
-      for (const [id, state] of globalLayersRef.current.entries()) {
-        state.cancelled = true;
-        const t = debounceTimersRef.current.get(id);
-        if (t) { clearTimeout(t); debounceTimersRef.current.delete(id); }
-        if (mgr?.getLayer(id)) mgr.removeLayer(id);
-        if (map.getLayers().getArray().includes(state.outerGroup)) map.removeLayer(state.outerGroup);
-      }
-      globalLayersRef.current.clear();
-      debounceTimersRef.current.clear();
       map.un('moveend', onMoveEnd);
       map.getView().un('change:resolution', onZoomChange);
-      updateLayersList();
     };
   }, [map, fgbLayer, addedVsmLayers, updateLayersList]);
 
