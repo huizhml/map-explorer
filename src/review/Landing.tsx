@@ -19,7 +19,7 @@ export default function Landing() {
   return (
     <div className="story story-deck">
       <div className="story-deck__track">
-        <Hero actions={<a className="story-cta" href="./map.html">Explore the map →</a>} />
+        <Hero actions={<a className="story-cta" href="./explore.html">Explore the map →</a>} />
       </div>
     </div>
   );

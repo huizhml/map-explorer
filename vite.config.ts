@@ -63,7 +63,18 @@ export default defineConfig({
     rollupOptions: {
       input: {
         ...(publishStory ? { story: resolve(__dirname, 'index.html') } : {}),
-        explore: resolve(__dirname, 'explore.html'),
+        // explore.html is deliberately absent.
+        //
+        // It is built by vite.config.review.ts instead, from review/, and lands
+        // at the same path. Building it here as well published the same app
+        // twice: two ~400 KB bundles of one source file, differing only in the
+        // __REVIEW__ flag — and the copy from *this* config had it false, so
+        // its footer carried no way back to the title page. A reviewer who
+        // arrived there was in a dead end.
+        //
+        // The file at the repo root stays, because `npm run dev` serves it: the
+        // dev server resolves HTML from the project root regardless of what the
+        // build inputs say.
         dev: resolve(__dirname, 'dev.html'),
       },
     },

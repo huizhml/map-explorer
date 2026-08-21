@@ -39,9 +39,13 @@ jobs:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
 
       # The review site, written into this artifact's root: /<repo>/ is the
-      # title page and /<repo>/map.html the map. It shares the directory with
-      # explore.html and dev.html rather than sitting in a subfolder, so a bare
-      # URL lands somewhere real instead of on a 404.
+      # title page and /<repo>/explore.html the map. It shares the directory
+      # with dev.html rather than sitting in a subfolder, so a bare URL lands
+      # somewhere real instead of on a 404.
+      #
+      # This step is what puts a map on the site at all — build:web above no
+      # longer builds explore.html, so that the app is not published twice
+      # under two names.
       #
       # Only while it has nowhere better to live: setting the REVIEW_SITE_REPO
       # variable moves it to its own repository (see the review-site job) and

@@ -14,8 +14,7 @@ What is published, all from the same `src/`:
 | URL | Page | Weight (gzip) |
 |---|---|---|
 | `/` (`index.html`) | Title page — the dataset in two sentences | ~61 KB |
-| `/map.html` | The map, reached from the title page | ~175 KB |
-| `/explore.html` | The same map, older URL | ~174 KB |
+| `/explore.html` | The map, reached from the title page | ~180 KB |
 | `/dev.html` | Full app — the working tool | ~746 KB |
 
 > ⚠️ **The story is not published.** Its chapters are still drafts and reviewers
@@ -27,13 +26,22 @@ What is published, all from the same `src/`:
 > `npm run dev` is unaffected: the dev server serves `index.html` whatever the
 > build inputs are, so writing the story locally works exactly as before.
 
-The title page and `/map.html` come from `vite.config.review.ts` — the hero
-slide alone, with none of the deck: no chapters, no figures, no swipe
-machinery. It is 1 kB of code over React and loads none of the map's bundle.
+Both the title page and `/explore.html` come from `vite.config.review.ts`. The
+title page is the hero slide alone, with none of the deck: no chapters, no
+figures, no swipe machinery — 1 kB of code over React, loading none of the
+map's bundle.
+
+`build:web` deliberately does *not* build `explore.html`, even though the file
+sits at the repo root. It used to, and the site ended up publishing the same
+app twice under two names: `/explore.html` from this config and `/map.html`
+from the review one. They differed only in the `__REVIEW__` flag, and the
+main-build copy had it false — so its footer offered no way back to the title
+page, leaving anyone who landed there stuck. The root `explore.html` stays
+because `npm run dev` serves it; only the build input was removed.
 
 ```bash
-npm run build:web                        # dist/ — explore.html, dev.html
-npm run build:review                     # adds index.html + map.html — second
+npm run build:web                        # dist/ — dev.html (and the story, if published)
+npm run build:review                     # adds index.html + explore.html — second
 ```
 
 The order matters: `build:web` empties `dist/`, and `build:review` writes into

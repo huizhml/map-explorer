@@ -8,8 +8,8 @@ import { resolve } from 'node:path'
 // Same `src/` as the main build — this is a different set of entry points, not
 // a fork. Two pages, mirroring how the main site already splits story from map:
 //
-//   review/index.html  the story's hero slide alone — what the dataset is
-//   review/map.html    the explore map
+//   review/index.html    the story's hero slide alone — what the dataset is
+//   review/explore.html  the explore map
 //
 // What is absent is the deck: no chapters, no ForestPair/GediShot figures, no
 // swipe machinery, no dev.html. So the landing page stays cheap, and its only
@@ -86,7 +86,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         landing: resolve(root, 'index.html'),
-        map: resolve(root, 'map.html'),
+        explore: resolve(root, 'explore.html'),
       },
     },
   },
