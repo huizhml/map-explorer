@@ -1,9 +1,5 @@
-import { useMemo } from 'react';
-import {
-  DEFAULT_VSM_VERSION,
-  getVsmLayerId,
-  type VsmLayerEntry,
-} from '../constants/predictions';
+import { PartnerLogos } from '../components/PartnerLogos';
+import { DownloadPanel } from './DownloadPanel';
 import './explore.css';
 
 /**
@@ -41,31 +37,13 @@ type Props = {
 };
 
 export function SimpleControls(props: Props) {
-  const { rhIndexes, year } = props;
-
-  // One id per selected RH, highest first — the footer shows the single id when
-  // there is one and a count otherwise, with the full list on hover.
-  const layerIds = useMemo(
-    () =>
-      [...rhIndexes]
-        .sort((a, b) => b - a)
-        .map((rhIndex) => {
-          const entry: VsmLayerEntry = {
-            year,
-            rhIndex,
-            qChoice: 'median',
-            version: DEFAULT_VSM_VERSION,
-          };
-          return getVsmLayerId(entry);
-        }),
-    [rhIndexes, year],
-  );
+  const { rhIndexes } = props;
 
   return (
     <aside className="ex-panel">
       <header className="ex-panel__head">
         <h1>Vertical Vegetation Structure</h1>
-        <p>Global canopy structure at 10 m, 2020.</p>
+        <p>A 10-metre dataset of Earth's vertical vegetation structure, derived from NASA's GEDI LiDAR data and Sentinel-2 imagery.</p>
       </header>
 
       {/* Ahead of the controls, since it explains what they are for. Numbered
@@ -128,12 +106,53 @@ export function SimpleControls(props: Props) {
             </option>
           ))}
         </select>
+        {/* A one-entry dropdown otherwise reads as a broken control. This says
+            it is a control with one value so far, not a control that failed. */}
+        <span className="ex-hint">More years in preparation.</span>
       </section>
 
+      {/* A button here, a flyout over the map. Under the controls that seed it
+          — the download defaults to the RH levels on screen and the tiles under
+          the view — but out of the column, because the panel it opens is taller
+          than everything above it put together. */}
+      <DownloadPanel rhIndexes={rhIndexes} year={props.year} />
+
+      {/* After the controls, not before: these are caveats about what you get
+          once you have used them, and read as warnings-not-to-bother if they
+          come first. */}
+      <section className="ex-notes">
+        <h2>Please note</h2>
+        <ul>
+          <li>
+            The satellite basemap is not from the same date as the VSM data — imagery and
+            predictions can disagree where the ground has changed since 2020.
+          </li>
+          <li>
+            Loading can be slow: it depends on how much of the world is in view and on how
+            many people are using the site at once.
+          </li>
+          {/* Sits with the caveats rather than in the foot: what you may do
+              with the data is a condition of using it, and the foot is a place
+              readers skip. Named with a link, since "CC BY 4.0" alone asks the
+              reader to already know what that permits. */}
+          <li>
+            The data are released under{' '}
+            <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">
+              CC BY 4.0
+            </a>
+            {' '}— free to use and adapt, including commercially, with attribution.
+          </li>
+        </ul>
+      </section>
+
+      {/* The layer id that used to head this block — vsm_2020_rh98_median_v1
+          and the like — is gone. It was internal bookkeeping printed at a
+          reviewer, who has the RH buttons above and the layer list on the map
+          to tell them what is loaded.
+
+          Holding the logos too, so the two travel to the bottom of the panel
+          together: the foot is what carries `margin-top: auto`. */}
       <footer className="ex-panel__foot">
-        <span className="ex-layer-id" title={layerIds.join('\n')}>
-          {layerIds.length === 1 ? layerIds[0] : `${layerIds.length} layers`}
-        </span>
         {/* './index.html' is the way back — the review site's title page, or
             the story deck when it is published. While the story is unpublished
             there is no such page on the main site, so there is no link either:
@@ -143,6 +162,8 @@ export function SimpleControls(props: Props) {
         ) : (
           __STORY__ && <a href="./index.html">← Story</a>
         )}
+
+        <PartnerLogos variant="panel" />
       </footer>
     </aside>
   );

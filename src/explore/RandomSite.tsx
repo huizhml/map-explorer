@@ -122,6 +122,47 @@ export function RandomSite({ map }: { map: Map | null }) {
     show(site);
   }, [sites, map, current, pos, show]);
 
+  /**
+   * The opening move: hold the global view, then fly into one of the curated
+   * sites.
+   *
+   * A page that lands on the whole world shows only the low-zoom mosaic, and a
+   * reviewer who does not know to zoom in never sees the 10 m data at all — the
+   * auto-loader does not fetch tiles below zoom 8. Starting global and *then*
+   * moving teaches the gesture instead of skipping it: you see the coverage,
+   * then you see what it becomes up close.
+   *
+   * Camera only — no transect drawn, no card opened. This is a way in, not a
+   * tour; "Visit a random site" stays the thing the reader chooses to do.
+   */
+  const flownRef = useRef(false);
+  useEffect(() => {
+    if (!map || !sites?.length || flownRef.current) return;
+    const site = sites[Math.floor(Math.random() * sites.length)];
+    if (!site.center) return;
+    flownRef.current = true;
+
+    // Anyone who has already grabbed the map means it: flying the view out from
+    // under them would be the page fighting its reader.
+    const viewport = map.getViewport();
+    const cancel = () => {
+      clearTimeout(timer);
+      viewport.removeEventListener('pointerdown', cancel);
+      viewport.removeEventListener('wheel', cancel);
+    };
+    const timer = setTimeout(() => {
+      cancel();
+      // Zoom 10, two past the auto-loader's threshold, so the high-resolution
+      // tiles are already loading when the flight lands. Slow enough to read as
+      // travel rather than a jump cut.
+      map.getView().animate({ center: fromLonLat(site.center!), zoom: 10, duration: 2800 });
+    }, 1400);
+    viewport.addEventListener('pointerdown', cancel);
+    viewport.addEventListener('wheel', cancel);
+
+    return cancel;
+  }, [map, sites]);
+
   const back = useCallback(() => {
     if (pos <= 0) return;
     setPos(pos - 1);

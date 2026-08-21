@@ -1,0 +1,98 @@
+/* Partner logo strip. Shared by the title page and the explore sidebar, so this
+   file is imported by the component rather than living in story.css or
+   explore.css — neither page owns it. */
+
+.pl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Capped by height *and* by the space it is given, whichever binds first, with
+   the aspect ratio preserved either way. The six run from 2.3:1 to 4.9:1, so a
+   plain shared height makes the widest nearly twice the area of the narrowest
+   and, in a 320 px sidebar, pushes it out of the column entirely.
+
+   --pl-scale is the per-logo correction from PartnerLogos.tsx. */
+.pl img {
+  max-height: calc(var(--pl-h) * var(--pl-scale, 1));
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  display: block;
+}
+
+/* --- title page: a light band under the call to action ------------------- */
+
+/* The logos are colour versions and the hero is near-black, so they need
+   something to sit on. A band rather than white cut-outs per logo: it reads as
+   one credit line instead of six pale rectangles scattered on the image.
+
+   Anchored to the foot of the slide and centred, so it belongs to the page
+   rather than to the text column. `bottom` matches the deck's own chrome, which
+   sits at the same height in the two bottom corners of a story slide. */
+.pl--hero {
+  --pl-h: clamp(22px, 2.2vw, 34px);
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(3vw, 2rem);
+  z-index: 2;
+  /* One row, always — the six read as a single credit line, and wrapping the
+     last two onto a second row makes them look like a different group. Narrow
+     viewports shrink the logos instead (see the min-width below). */
+  flex-wrap: nowrap;
+  gap: clamp(1rem, 2.2vw, 2.4rem);
+  padding: clamp(0.7rem, 1.4vw, 1.1rem) clamp(1rem, 2vw, 1.6rem);
+  border-radius: 10px;
+  /* Not fully opaque: the hero image stays faintly visible through it, which
+     keeps the band part of the slide rather than a card dropped onto it. */
+  background: rgba(255, 255, 255, 0.92);
+  /* Clear of the chapter dots on the left and the controls on the right. */
+  max-width: min(58rem, 62%);
+}
+/* Lets the row shrink below its natural width rather than overflowing: with
+   min-width at its default (auto) a nowrap flex item refuses to go below its
+   content, and the band would run under the deck's controls. */
+.pl--hero li {
+  min-width: 0;
+}
+
+/* --- explore sidebar: a quiet block in the panel foot -------------------- */
+
+/* No band of its own — the sidebar is already light. Full colour, like the
+   hero: these are institutions' marks, and greying them out both breaks their
+   brand guidelines and makes half of them unrecognisable at this size.
+
+   A two-column grid rather than a wrapping row. Left to flow, six marks of six
+   different widths pack 2-3 per line at ragged positions, and the only way to
+   fit three across 280 px is to make each one too small to read. Fixed slots
+   mean each logo gets a predictable ~130 px to fill and the strip lands as
+   three tidy rows. */
+.pl--panel {
+  --pl-h: 34px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: 0.9rem 1rem;
+}
+/* The cell, not the image, is what carries the slot width — `max-width: 100%`
+   on the image resolves against this. Letting the grid size items to their
+   content instead makes that cap resolve against the image itself, which is no
+   cap at all. */
+.pl--panel li {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  /* The band is the first thing worth dropping on a phone: the title and the
+     way into the map have to fit above the fold. */
+  .pl--hero {
+    display: none;
+  }
+}

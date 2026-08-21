@@ -84,7 +84,7 @@ export default function SimpleApp() {
   // the layer list *is* the selection. Held newest-last, which is the order
   // LayerManager draws in.
   const [layers, setLayers] = useState<ExploreLayer[]>([
-    { id: 'l0', rhIndex: 98, visible: true, opacity: 1 },
+    { id: 'l0', rhIndex: 98, visible: true },
   ]);
   const nextId = useRef(1);
 
@@ -102,14 +102,10 @@ export default function SimpleApp() {
   const toggleRh = useCallback((rh: number) => {
     setLayers((prev) => {
       if (prev.some((l) => l.rhIndex === rh)) return prev.filter((l) => l.rhIndex !== rh);
-      // Stacked layers hide each other at full opacity, so anything joining an
-      // existing stack comes in half-transparent; the first one stays opaque.
-      return [...prev, {
-        id: `l${nextId.current++}`,
-        rhIndex: rh,
-        visible: true,
-        opacity: prev.length ? 0.5 : 1,
-      }];
+      // Appended, so the RH just switched on is the one drawn on top. Layers are
+      // always opaque — blending two height maps produced a colour that is not a
+      // height — so it hides the rest of the stack; LayerControl badges it.
+      return [...prev, { id: `l${nextId.current++}`, rhIndex: rh, visible: true }];
     });
   }, []);
 
@@ -237,24 +233,19 @@ export default function SimpleApp() {
     for (const [id, entry] of Object.entries(wanted)) if (!present.has(id)) addVsmLayer(entry);
   }, [layers, year, qChoice, addVsmLayer, removeVsmLayerByLayerId]);
 
-  // Visibility and opacity, applied per layer.
+  // Visibility, applied per layer. Opacity is left at the OpenLayers default of
+  // 1: the eye toggle is the only way a layer gets out of the way, which keeps
+  // every pixel on the map a true colour-ramp reading of one RH.
   useEffect(() => {
     if (!layerManager) return;
     for (const l of layers) {
       const managed = layerManager.getLayer(getVsmLayerId(vsmEntry(l.rhIndex, year, qChoice)));
-      if (managed?.layer) {
-        managed.layer.setVisible(l.visible);
-        managed.layer.setOpacity(l.opacity);
-      }
+      if (managed?.layer) managed.layer.setVisible(l.visible);
     }
   }, [layers, year, layerManager, qChoice]);
 
   const toggleVisible = useCallback((id: string) => {
     setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, visible: !l.visible } : l)));
-  }, []);
-
-  const setOpacity = useCallback((id: string, opacity: number) => {
-    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, opacity } : l)));
   }, []);
 
   // Which RH each sampled row came from. inspectPointAtLonLat keys rows by the
@@ -287,6 +278,11 @@ export default function SimpleApp() {
   useEffect(() => {
     if (!map) return;
     const onClick = async (evt: any) => {
+      // The download flyout borrows the click while it is open, to pick
+      // Sentinel-2 tiles. Reading a profile at the same point would open a card
+      // over the map the reader is trying to select on.
+      if (map.get('exSelectingTiles')) return;
+
       const [lon, lat] = toLonLat(evt.coordinate);
       setReading({ lon, lat, rows: [], loading: true, profileLoading: true });
 
@@ -352,7 +348,6 @@ export default function SimpleApp() {
           year={year}
           ramps={ramps}
           onToggleVisible={toggleVisible}
-          onOpacity={setOpacity}
         />
         <BasemapControl value={basemap} onChange={setBasemap} />
         <MiniMap map={map} />

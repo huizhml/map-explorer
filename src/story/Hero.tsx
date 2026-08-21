@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { PartnerLogos } from '../components/PartnerLogos';
 
 /**
  * The title slide, shared by the story deck and the standalone review landing.
@@ -22,7 +23,7 @@ import type { ReactNode } from 'react';
 export const STORY_TITLE = 'A Vertical Vegetation Structure Model of the Earth';
 
 export const HERO_LEDE =
-  "A 10-metre dataset of Earth’s vegetation vertical structure for the year 2020, derived from NASA's GEDI LiDAR data and Sentinel-2 imagery.";
+  "A 10-metre dataset of Earth’s vertical vegetation structure for the year 2020, derived from NASA's GEDI LiDAR data and Sentinel-2 imagery.";
 
 /**
  * Hero background. Drop a file at public/story/hero.webp and it appears; leave
@@ -52,6 +53,16 @@ export function Hero({ actions, hidden }: { actions: ReactNode; hidden?: boolean
         <p className="story-hero__lede">{HERO_LEDE}</p>
         <div className="story-hero__actions">{actions}</div>
       </div>
+
+      {/* Outside the content column, along the foot of the slide. A credit line
+          is not part of the argument the headline is making, and centring it
+          under both halves — text on the left, render on the right — reads as
+          belonging to the whole page rather than to the paragraph above it.
+
+          In the story deck the same corners carry the chapter dots (left) and
+          the controls (right); the strip is centred and width-capped to stay
+          out of both. */}
+      <PartnerLogos variant="hero" />
     </section>
   );
 }

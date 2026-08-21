@@ -4,45 +4,50 @@ export type ExploreLayer = {
   id: string;
   rhIndex: number;
   visible: boolean;
-  /** 0-1. Stacked layers hide each other otherwise. */
-  opacity: number;
 };
 
 /**
  * Layer list, on the map rather than in the sidebar.
  *
- * The sidebar chooses *what* to look at; whether a layer is drawn and how
- * strongly is a property of the map and belongs next to it — which is where the
- * full app puts its layer panel too.
+ * The sidebar chooses *what* to look at; whether a layer is drawn is a property
+ * of the map and belongs next to it — which is where the full app puts its
+ * layer panel too.
  *
  * Which layers exist is no longer decided here: the sidebar's RH buttons are a
  * multi-select, so adding and removing a layer is toggling its button. A delete
  * control here would be a second, desynchronised way to do the same thing, and
  * pinning meant nothing once changing RH stopped replacing the current layer.
+ *
+ * Every layer is drawn opaque, so the stack really does hide what is under it
+ * and which layer is on top is the whole story of what you are looking at. The
+ * list therefore reads the way the map is stacked — topmost first, the reverse
+ * of SimpleApp's draw order — and the topmost *visible* layer is badged, since
+ * hiding the top one promotes the next one down.
  */
 export function LayerControl({
   layers,
   year,
   ramps,
   onToggleVisible,
-  onOpacity,
 }: {
   layers: ExploreLayer[];
   year: number;
   /** Colour scales for the visible layers, from buildRamps. */
   ramps: ColorRamp[];
   onToggleVisible: (id: string) => void;
-  onOpacity: (id: string, value: number) => void;
 }) {
   if (!layers.length) return null;
+
+  const stacked = [...layers].reverse();
+  // Undefined when everything is hidden — then no row is on top of anything.
+  const topId = stacked.find((l) => l.visible)?.id;
 
   return (
     <div className="ex-layers">
       <h2 className="ex-layers__head">Layers</h2>
       <ul className="ex-layers__list">
-        {layers.map((l) => (
+        {stacked.map((l) => (
           <li key={l.id}>
-            <div className="ex-layers__main">
             <button
               type="button"
               className={`ex-layers__icon${l.visible ? ' is-on' : ''}`}
@@ -70,22 +75,14 @@ export function LayerControl({
             <span className="ex-layers__name">
               RH{l.rhIndex} · {year}
             </span>
-            </div>
 
-            {/* Its own line: a slider squeezed in beside the icon row is too
-                short to be usable. */}
-            <input
-              className="ex-layers__opacity"
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={l.opacity}
-              disabled={!l.visible}
-              onChange={(e) => onOpacity(l.id, Number(e.target.value))}
-              title={`Opacity ${Math.round(l.opacity * 100)}%`}
-              aria-label={`Opacity of RH${l.rhIndex}`}
-            />
+            {/* Only worth saying when there is something underneath: with a
+                single layer "top layer" answers a question nobody asked. */}
+            {layers.length > 1 && l.id === topId && (
+              <span className="ex-layers__top" title="Drawn on top — it hides the layers below it">
+                top layer
+              </span>
+            )}
           </li>
         ))}
       </ul>

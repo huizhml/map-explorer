@@ -135,6 +135,286 @@ body {
   background: #f2f7f5;
   border-radius: 7px;
 }
+
+/* ------------------------------------------------------------ download ---- */
+
+/* All the sidebar keeps of the download machinery. Sized like the RH choices
+   above it rather than like a call to action: it opens a panel, and the page's
+   one emphatic button is "Visit a random site" on the map. */
+.ex-download-trigger {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid #cfdad5;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-size: 0.78rem;
+  color: #2c3a34;
+  cursor: pointer;
+}
+.ex-download-trigger:hover,
+.ex-download-trigger.is-open {
+  border-color: #10796a;
+  color: #10796a;
+  background: #f2f7f5;
+}
+
+/* The panel itself, out over the map.
+   Fixed rather than absolute: the sidebar scrolls and clips its overflow, so a
+   child positioned inside it would be cut off at the first edge it crossed. The
+   position comes from JS, which measures the trigger — see DownloadPanel. */
+.ex-flyout {
+  position: fixed;
+  z-index: 30;
+  width: 320px;
+  max-width: calc(100vw - 1rem);
+  max-height: calc(100vh - 1rem);
+  overflow-y: auto;
+  padding: 0.9rem 1rem 1rem;
+  background: #fff;
+  border: 1px solid #e3e8e5;
+  border-radius: 9px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.ex-flyout__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.ex-flyout__head h2 {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6b7a74;
+}
+.ex-flyout__head button {
+  border: 0;
+  background: none;
+  padding: 0 0.15rem;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: #9aa8a2;
+  cursor: pointer;
+}
+.ex-flyout__head button:hover {
+  color: #47544e;
+}
+/* The title takes the slack so the two icons sit together at the right edge. */
+.ex-flyout__head h2 {
+  flex: 1;
+}
+/* Tilted when loose, upright when pinned — the state is legible without
+   reading the tooltip, which is the only way a toggle this small works. */
+.ex-flyout__pin {
+  display: flex;
+  align-items: center;
+  padding: 0.15rem;
+  border-radius: 4px;
+  transform: rotate(35deg);
+  transition: transform 0.15s, color 0.15s, background-color 0.15s;
+}
+.ex-flyout__pin.is-on {
+  transform: none;
+  color: #10796a;
+  background: #e7efec;
+}
+.ex-download__row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.ex-download__label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #2c3a34;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+/* How many files the row is about, next to the label rather than in the hint
+   below it: it is the number the reader is deciding on. */
+.ex-download__count {
+  font-weight: 400;
+  font-size: 0.72rem;
+  color: #8b9993;
+  white-space: nowrap;
+}
+.ex-download__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+/* Links and buttons share one look: both start a download, and which is which
+   is an implementation detail — one is a URL, the other builds a file. */
+.ex-download__links a,
+.ex-download__links button {
+  padding: 0.28rem 0.55rem;
+  border: 1px solid #cfdad5;
+  border-radius: 5px;
+  background: #fff;
+  color: #10796a;
+  font: inherit;
+  font-size: 0.74rem;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ex-download__links a:hover,
+.ex-download__links button:hover {
+  background: #f2f7f5;
+  border-color: #10796a;
+}
+.ex-download__picker {
+  padding: 0.5rem;
+  border: 1px solid #e3e8e5;
+  border-radius: 6px;
+  background: #fbfdfc;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.ex-download__picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.ex-download__picker-actions button {
+  padding: 0.2rem 0.45rem;
+  border: 1px solid #cfdad5;
+  border-radius: 4px;
+  background: #fff;
+  font: inherit;
+  font-size: 0.7rem;
+  color: #47544e;
+  cursor: pointer;
+}
+.ex-download__picker-actions button:hover {
+  border-color: #10796a;
+  color: #10796a;
+}
+/* 101 levels: a fixed grid of bare numbers, scrolling. Anything wordier —
+   "RH98" on every cell — halves the columns and doubles the scrolling for a
+   prefix that is the same on all of them. */
+.ex-download__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(2.1rem, 1fr));
+  gap: 2px;
+  max-height: 9.5rem;
+  overflow-y: auto;
+}
+.ex-download__grid button {
+  padding: 0.2rem 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: #eef2f0;
+  font: inherit;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  color: #6b7a74;
+  cursor: pointer;
+}
+.ex-download__grid button:hover {
+  border-color: #b3c0ba;
+}
+.ex-download__grid button.is-active {
+  background: #10796a;
+  border-color: #10796a;
+  color: #fff;
+}
+/* The row's one action, weighted as such: the reader has already chosen the
+   levels, so this is the thing left to do. Anything beside it (Stop, Copy URLs)
+   stays in the outline style. */
+.ex-download__go {
+  background: #10796a;
+  border-color: #10796a;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.ex-download__links .ex-download__go:hover {
+  background: #0d6255;
+  border-color: #0d6255;
+}
+.ex-download__links button:disabled {
+  color: #8b9993;
+  border-color: #e3e8e5;
+  background: #f7faf9;
+  cursor: default;
+  font-variant-numeric: tabular-nums;
+}
+/* The one that is actually working keeps its colour while every other button
+   greys out — otherwise a running batch looks exactly like a blocked one. */
+.ex-download__links button.is-running:disabled {
+  background: #10796a;
+  border-color: #10796a;
+  color: #fff;
+}
+.ex-flyout code {
+  font-size: 0.9em;
+  padding: 0.05rem 0.25rem;
+  border-radius: 3px;
+  background: #f2f5f4;
+  color: #47544e;
+}
+.ex-flyout a:not([class]) {
+  color: #10796a;
+}
+
+/* Caveats, in the panel's quietest register: no tinted card like .ex-intro,
+   which would give them the same weight as the instructions. A rule and small
+   grey text is enough to make them findable without making them the first
+   thing read. */
+.ex-notes {
+  padding-top: 0.85rem;
+  border-top: 1px solid #eef2f0;
+}
+.ex-notes h2 {
+  margin: 0 0 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #8b9993;
+}
+.ex-notes ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.ex-notes li {
+  position: relative;
+  padding-left: 0.85rem;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: #6b7a74;
+}
+.ex-notes a {
+  color: #10796a;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ex-notes li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.5em;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: #b3c0ba;
+}
 .ex-intro h2 {
   margin: 0 0 0.5rem;
   font-size: 0.72rem;
@@ -180,21 +460,17 @@ body {
   line-height: 1;
 }
 
+/* A column now that it holds the back link and the logo strip rather than two
+   things side by side. */
 .ex-panel__foot {
   margin-top: auto;
   padding-top: 0.9rem;
   border-top: 1px solid #eef2f0;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.8rem;
   font-size: 0.72rem;
-}
-.ex-layer-id {
-  color: #9aa8a2;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .ex-panel__foot a {
   color: #10796a;
@@ -571,7 +847,7 @@ body {
   left: 50%;
   transform: translateX(-50%);
   z-index: 11;
-  width: min(clamp(560px, 36vw, 900px), calc(100% - 15rem));
+  width: min(clamp(616px, 39.6vw, 990px), calc(100% - 15rem));
   max-height: calc(100vh - 7rem);
   overflow-y: auto;
   background: rgba(255, 255, 255, 0.98);
@@ -741,6 +1017,33 @@ body {
   white-space: nowrap;
 }
 
+/* The axis rule itself: shaft and head, spanning the canvas exactly. Shares the
+   label row's padding below — the two have to line up or the arrow points past
+   its own end label. */
+.ex-heat__arrow {
+  display: flex;
+  align-items: center;
+  margin-top: 0.35rem;
+  padding-left: 1.6rem;
+  padding-right: calc(var(--ex-cbar-w) + 0.4rem);
+}
+.ex-heat__arrow::before {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #b3c0ba;
+}
+/* Border triangle rather than an SVG marker: it cannot be stretched out of
+   shape by the row it sits in, however wide the card gets. */
+.ex-heat__arrow::after {
+  content: '';
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid #b3c0ba;
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+}
 .ex-heat__xaxis {
   display: flex;
   justify-content: space-between;
@@ -756,6 +1059,16 @@ body {
   margin-top: 0.45rem;
   padding-top: 0.45rem;
   border-top: 1px solid #eef2f0;
+}
+/* Quieter than the axis labels: it is a credit, not part of the reading. */
+.ex-heat__cite {
+  /* Set well clear of the axis labels: at 0.5rem it read as a third line of
+     the plot rather than a note about it. */
+  margin: 1.1rem 0 0;
+  font-size: clamp(0.6rem, 0.5vw, 0.75rem);
+  font-style: italic;
+  color: #97a49e;
+  text-align: left;
 }
 .ex-heat__lines {
   flex: 1;
@@ -824,8 +1137,8 @@ body {
 }
 .ex-layers__list li {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  align-items: center;
+  gap: 0.3rem;
   padding: 0.4rem 0.5rem 0.45rem;
   font-size: 0.76rem;
   color: #2c3a34;
@@ -857,31 +1170,17 @@ body {
   color: #10796a;
 }
 
-.ex-layers__main {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  width: 100%;
-}
-/* Muted by default and brought up on hover or focus. Always present rather
-   than revealed, so the row does not change height under the pointer — but
-   quiet, because it is a secondary adjustment sitting under every layer. */
-.ex-layers__opacity {
-  width: 100%;
-  margin: 0.3rem 0 0;
-  height: 2px;
-  accent-color: #b3c0ba;
-  opacity: 0.45;
-  cursor: pointer;
-  transition: opacity 0.15s, accent-color 0.15s;
-}
-.ex-layers__list li:hover .ex-layers__opacity,
-.ex-layers__opacity:focus-visible {
-  opacity: 1;
-  accent-color: #10796a;
-}
-.ex-layers__opacity:disabled {
-  opacity: 0.18;
+/* A quiet tag, not a button: it reports where the stack is, it does not change
+   it. Pushed to the right edge by the name's flex:1. */
+.ex-layers__top {
+  flex: none;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  background: #e7efec;
+  color: #10796a;
+  font-size: 0.66rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
   cursor: default;
 }
 

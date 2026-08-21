@@ -31,7 +31,7 @@ export type Transect = {
   heatmap_max_height?: number | null;
 };
 
-/** Metric lines under the heatmap, sharing its x-axis. */
+/** Metric lines under the heatmap, sharing the x-axis printed below them. */
 const METRICS = [
   { key: 'fhd', label: 'FHD', colour: '#2f7ed8' },
   { key: 'enl1d', label: '1D ENL', colour: '#1a9850' },
@@ -99,8 +99,9 @@ function MetricLines({ samples }: { samples: TransectSample[] }) {
           ))}
         </ul>
 
-        {/* Holds the width the heatmap gives its colorbar. These lines share the
-            heatmap's x-axis, so the two plots have to start and end together. */}
+        {/* Holds the width the heatmap gives its colorbar. These lines share
+            the x-axis printed under them, so the two plots have to start and
+            end together. */}
         <div className="ex-heat__cbar-gap" aria-hidden="true" />
       </div>
     </div>
@@ -206,12 +207,30 @@ export function TransectHeatmap({ transect, max = 10 }: { transect: Transect; ma
         <canvas ref={ref} className="ex-heat__canvas" />
         <EnergyColorbar max={max} />
       </div>
+      <MetricLines samples={transect.samples} />
+
+      {/* Below both plots rather than between them. The metric lines are held
+          to the canvas's start and end by the spacer in MetricLines, so one
+          axis serves the pair — and at the foot it reads as the axis of the
+          plot immediately above it instead of belonging to neither.
+
+          The rule is drawn as an arrow because the transect has a direction:
+          the samples run start-to-end left to right, and without a head the
+          line says only "this is a range". Shaft and head are CSS pseudo-
+          elements sharing the axis row's padding, so the arrow spans exactly
+          the canvas — no viewBox to keep in step with the plot width. */}
+      <div className="ex-heat__arrow" aria-hidden="true" />
       <div className="ex-heat__xaxis">
         <span>0</span>
         <span>{lengthKm ? `${lengthKm} km along transect` : 'along transect'}</span>
         <span>{lengthKm ? `${lengthKm} km` : ''}</span>
       </div>
-      <MetricLines samples={transect.samples} />
+
+      {/* The source of the profiles, under the plot they belong to rather than
+          once in a page footer: the site card is what gets screenshotted. */}
+      <p className="ex-heat__cite">
+        Zhang H, Lang N, Mazurczyk TM, Oehmcke S, Huang K, Brandt SM , Fensholt R, Kariryaa A, and Igel C. (2026) A vertical vegetation structure model of the Earth
+      </p>
     </div>
   );
 }

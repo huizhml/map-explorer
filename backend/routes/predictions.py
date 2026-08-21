@@ -453,6 +453,55 @@ async def get_mosaic_url(
         return {"success": True, "url": url, "year": year, "location": "remote"}
 
 
+@router.get("/predictions/download-info")
+async def get_download_info():
+    """Where the published COGs live, so the frontend can build download links.
+
+    The explore page offers direct downloads from the object store rather than
+    proxying bytes: source.coop serves the COGs with ``Access-Control-Allow-
+    Origin: *`` and range support, so a browser can fetch them itself. A proxy
+    would put 100-170 MB per file through this process for no gain.
+
+    Which means the frontend needs the base URL and the path layout — and those
+    are configuration, known only here. Hardcoding them in the bundle would put
+    the same fact in two places that are deployed separately; that is exactly
+    how PREDICTIONS_MOSAIC_REMOTE_URL went missing once already.
+
+    ``available`` is false when this deployment serves predictions from local
+    disk, which has no public URL to hand out. The caller hides its download
+    controls instead of offering links into a filesystem nobody else can reach.
+    """
+    base = PREDICTIONS_BASE_URL.rstrip("/")
+    mosaic = os.environ.get("PREDICTIONS_MOSAIC_REMOTE_URL", "")
+
+    return {
+        # Templates carry {year}/{tile}/{rh}/{q} placeholders, filled in by the
+        # caller. Returned as templates rather than as a list of URLs because
+        # the set of interesting files is a property of the map view, not of
+        # the server: the visible MGRS tiles change on every pan.
+        "available": bool(base),
+        "base_url": base,
+        "tile_url_template": f"{base}/{PREDICTIONS_REMOTE_PATH_TEMPLATE.lstrip('/')}" if base else "",
+        "mosaic_url_template": mosaic,
+        # Only Q1 is published. The caller has no quantile control, but the
+        # templates have a {q} hole, so say which value belongs in it rather
+        # than leaving the frontend to assume.
+        "q_index": 1,
+        # Every RH level from 0 to 100 exists, for the mosaics and for each
+        # tile. The map only offers seven — the ones worth *looking* at — but a
+        # download has no such reason to choose, so the panel lists all of them.
+        # Overridable because a future year may be published incrementally.
+        "rh_min": int(os.environ.get("PREDICTIONS_RH_MIN", "0")),
+        "rh_max": int(os.environ.get("PREDICTIONS_RH_MAX", "100")),
+        # Where a reader goes for the dataset as a whole: the repository page,
+        # its README and its own bulk-download instructions.
+        "repository_url": os.environ.get(
+            "PREDICTIONS_REPOSITORY_URL", "https://source.coop/geoai-ucph/gvsm"
+        ),
+        "license": "CC-BY-4.0",
+    }
+
+
 @router.post("/predictions/load")
 async def load_predictions(request: PredictionsRequest):
     zone = request.tile_name[:3].lower()
