@@ -8,6 +8,7 @@ import { Stroke, Style } from 'ol/style';
 import { fromLonLat } from 'ol/proj';
 import { TransectHeatmap, type Transect } from './TransectHeatmap';
 import { placeLabel, reverseGeocode, type Place } from '../utils/reverseGeocode';
+import { takeCamera } from './takeCamera';
 
 /**
  * "Visit a random site" — jumps to one of the curated sites, draws its transect
@@ -85,6 +86,11 @@ export function RandomSite({ map }: { map: Map | null }) {
   const show = useCallback(
     (site: Site) => {
       if (!map) return;
+
+      // Before anything else: the opening fly-in, or a previous visit still
+      // animating, would otherwise win the view off us. See takeCamera.
+      takeCamera(map);
+
       const source = layerRef.current?.getSource();
       source?.clear();
 
@@ -149,7 +155,12 @@ export function RandomSite({ map }: { map: Map | null }) {
       clearTimeout(timer);
       viewport.removeEventListener('pointerdown', cancel);
       viewport.removeEventListener('wheel', cancel);
+      map.set('exCancelIntro', null);
     };
+    // Published on the map so anything else that moves the view can call off
+    // the flight first — the controls that do are overlays outside the
+    // viewport, so they never trip the listeners above.
+    map.set('exCancelIntro', cancel);
     const timer = setTimeout(() => {
       cancel();
       // Zoom 10, two past the auto-loader's threshold, so the high-resolution
