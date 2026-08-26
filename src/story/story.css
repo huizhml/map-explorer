@@ -295,7 +295,10 @@ body {
 .story-hero__content {
   position: relative;
   z-index: 1;
-  max-width: 46rem;
+  /* Wider than the lede's measure below it. The headline is seven words, and at
+     46rem it broke into four ragged lines with "Earth" stranded on the last;
+     the scrim only reaches halfway across, so the room was there to take. */
+  max-width: 52rem;
 }
 
 .story-hero__eyebrow {
@@ -306,9 +309,15 @@ body {
   margin: 0 0 1.5rem;
 }
 
+/* Sized to hold the headline in whole phrases rather than to fill the column:
+   at 7rem it ran to four lines and broke mid-phrase. `balance` then evens what
+   is left, so it lands as "A Vertical Vegetation / Structure Model / of the
+   Earth" on a wide screen and two lines on a laptop. Below ~640px the clamp is
+   already at its floor, so phones read exactly as before. */
 .story-slide--hero h1 {
-  font-size: clamp(2.4rem, 6vw, 7rem);
+  font-size: clamp(2.4rem, 4vw, 5rem);
   line-height: 1.05;
+  text-wrap: balance;
   margin: 0 0 1.5rem;
   letter-spacing: -0.02em;
 }
