@@ -29,6 +29,8 @@ import { LayerControl, type ExploreLayer } from './LayerControl';
 import { buildRamps } from './Colorbar';
 import { RhProfileChart, VerticalProfileChart } from './ProfileCharts';
 import { RandomSite } from './RandomSite';
+import { LocationSearch } from './LocationSearch';
+import { InspectMarker } from './InspectMarker';
 import { fetchVerticalProfile, type VerticalProfileResponse } from '../utils/verticalProfile';
 import { placeLabel, reverseGeocode, type Place } from '../utils/reverseGeocode';
 import './explore.css';
@@ -350,6 +352,10 @@ export default function SimpleApp() {
           onToggleVisible={toggleVisible}
         />
         <BasemapControl value={basemap} onChange={setBasemap} />
+        <LocationSearch map={map} />
+        {/* Renders nothing itself — it owns a layer on the map. Mounted here
+            so the mark and the card that explains it come and go together. */}
+        <InspectMarker map={map} lon={reading?.lon} lat={reading?.lat} />
         <MiniMap map={map} />
         <RandomSite map={map} />
 

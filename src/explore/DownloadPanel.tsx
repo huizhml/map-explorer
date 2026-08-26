@@ -214,10 +214,16 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
    * Keep the flyout beside its trigger.
    *
    * Preferred position is immediately to the right, top-aligned — out over the
-   * map, which is empty at that edge. It falls back to the left of the trigger,
+   * map, which is empty at that edge. It falls back to the left of the sidebar,
    * then to the viewport edge, and is always pulled up far enough to fit; on a
    * phone, where the sidebar is a full-width bar across the top, the first
    * fallback is what puts it back inside the screen.
+   *
+   * Measured off the *sidebar's* right edge, not the trigger's. The trigger is
+   * `align-self: flex-start`, so it is only as wide as its label — a little
+   * over 140 px inside a 320 px column — and clearing it left the flyout lying
+   * across the right half of the sidebar, over the "Please note" caveats
+   * underneath. What the panel has to clear is the column, not the button.
    *
    * Recomputed on scroll and resize rather than only on open: the sidebar
    * scrolls under a fixed panel, and a flyout that stays behind while its
@@ -230,12 +236,15 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
       const trigger = triggerRef.current;
       if (!trigger) return;
       const r = trigger.getBoundingClientRect();
+      // Falls back to the trigger where there is no sidebar to measure, so the
+      // panel still places itself if it is ever mounted somewhere else.
+      const host = trigger.closest('.ex-panel')?.getBoundingClientRect() ?? r;
       const w = panelRef.current?.offsetWidth ?? FLYOUT_WIDTH;
       const h = panelRef.current?.offsetHeight ?? 0;
       const M = 8;
 
-      let left = r.right + 10;
-      if (left + w > window.innerWidth - M) left = r.left - w - 10;
+      let left = Math.max(r.right, host.right) + 10;
+      if (left + w > window.innerWidth - M) left = Math.min(r.left, host.left) - w - 10;
       if (left < M) left = Math.max(M, window.innerWidth - w - M);
 
       let top = r.top;
@@ -703,7 +712,12 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
               dropdown inside a popup is one lid too many. */}
           <div className="ex-download__row">
             <span className="ex-download__label">
-              Relative heights
+              <span className="ex-download__step">
+                <span className="ex-download__step-n" aria-hidden="true">
+                  1
+                </span>
+                Choose relative heights
+              </span>
               <span className="ex-download__count">{summary}</span>
             </span>
             <div className="ex-download__picker">
@@ -740,83 +754,101 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
             </div>
           </div>
 
-          {/* The whole-world file first: it is one click, it always works, and
-              it is the right answer for anyone who does not care about a
-              specific place. The per-tile machinery below is for people who
-              do. */}
-          {info.mosaic_url_template && (
-            <div className="ex-download__row">
-              <span className="ex-download__label">
-                Global overview, ~1 km
-                {mosaicTargets.length > 0 && (
-                  <span className="ex-download__count">
-                    {mosaicTargets.length} file{mosaicTargets.length === 1 ? '' : 's'}
-                  </span>
-                )}
-              </span>
-              {mosaicTargets.length === 0 ? (
-                <span className="ex-hint">Choose at least one relative height.</span>
-              ) : (
-                targetControls(mosaicTargets, 'mosaic', 'global_mosaic_1km')
-              )}
-            </div>
-          )}
-
-          <div className="ex-download__row">
+          {/* Both rows below download the levels chosen above, at the two
+              granularities the store is published in — so they are one step
+              with a choice inside it, not two more steps. Saying so here is
+              the whole reason for the numbering: without it the levels read
+              as belonging only to the row they sit next to. */}
+          <div className="ex-download__group">
             <span className="ex-download__label">
-              Full resolution, 10 m
-              {tileTargets.length > 0 && (
-                <span className="ex-download__count">
-                  {activeTiles.length} tile{activeTiles.length === 1 ? '' : 's'} × {rhs.length}
+              <span className="ex-download__step">
+                <span className="ex-download__step-n" aria-hidden="true">
+                  2
                 </span>
-              )}
+                Download those RHs
+              </span>
             </span>
-
-            {/* The map is the tile picker; this is only the instruction and the
-                two bulk shortcuts.
-
-                The list of tile names that used to sit here is gone. It was a
-                second copy of the selection with no advantage over the first:
-                the names mean nothing without the geography, so reading
-                "47QPB" told you neither where it was nor whether it was the one
-                you wanted — you had to look at the map anyway. The count in the
-                label above says how many are chosen, which is the part the list
-                was actually carrying. */}
-            <span className="ex-hint">
-              {zoom !== null && zoom < GRID_ZOOM
-                ? 'Zoom in to see the tile grid — the 10 m data is published per Sentinel-2 (MGRS) tile.'
-                : 'Click tiles on the map to choose them.'}
-            </span>
-            <div className="ex-download__picker-actions">
-              <button type="button" onClick={() => setPicked(null)}>
-                All in view
-              </button>
-              <button type="button" onClick={() => setPicked([])}>
-                None
-              </button>
-            </div>
-
-            {/* Nothing to download is the normal starting state now, and the
-                line above already says what to do about it — so the only cases
-                worth their own words are the two the reader cannot act on: no
-                levels chosen, and a view with no data under it. */}
-            {rhs.length === 0 ? (
-              <span className="ex-hint">Choose at least one relative height.</span>
-            ) : zoom !== null && zoom >= TILE_ZOOM && tiles.length === 0 && activeTiles.length === 0 ? (
-              <span className="ex-hint">No tiles here — the view is off the data.</span>
-            ) : tileTargets.length === 0 ? null : (
-              <>
-                {targetControls(tileScripted, 'tiles', 'tiles_10m')}
-                {tileTargets.length > MAX_DIRECT_FILES && (
-                  <span className="ex-hint">
-                    Roughly 100 MB each.{' '}
-                    {tilesCapped &&
-                      `Capped at ${MAX_SCRIPT_FILES} of ${tileTargets.length} files — zoom in, choose fewer levels, or take the whole repository instead. `}
-                    Run it with <code>sh</code>; it names each file and resumes a broken transfer.
+            <span className="ex-hint">At either resolution — both use the levels above.</span>
+            <div className="ex-download__group-body">
+              {/* The whole-world file first: it is one click, it always works, and
+                  it is the right answer for anyone who does not care about a
+                  specific place. The per-tile machinery below is for people who
+                  do. */}
+              {info.mosaic_url_template && (
+                <div className="ex-download__row">
+                  <span className="ex-download__label">
+                    Global overview, ~1 km
+                    {mosaicTargets.length > 0 && (
+                      <span className="ex-download__count">
+                        {mosaicTargets.length} file{mosaicTargets.length === 1 ? '' : 's'}
+                      </span>
+                    )}
                   </span>
+                  {mosaicTargets.length === 0 ? (
+                    <span className="ex-hint">Choose at least one relative height.</span>
+                  ) : (
+                    targetControls(mosaicTargets, 'mosaic', 'global_mosaic_1km')
+                  )}
+                </div>
+              )}
+
+              <div className="ex-download__row">
+                <span className="ex-download__label">
+                  Full resolution, 10 m
+                  {tileTargets.length > 0 && (
+                    <span className="ex-download__count">
+                      {activeTiles.length} tile{activeTiles.length === 1 ? '' : 's'} × {rhs.length}
+                    </span>
+                  )}
+                </span>
+
+                {/* The map is the tile picker; this is only the instruction and the
+                    two bulk shortcuts.
+
+                    The list of tile names that used to sit here is gone. It was a
+                    second copy of the selection with no advantage over the first:
+                    the names mean nothing without the geography, so reading
+                    "47QPB" told you neither where it was nor whether it was the one
+                    you wanted — you had to look at the map anyway. The count in the
+                    label above says how many are chosen, which is the part the list
+                    was actually carrying. */}
+                <span className="ex-hint">
+                  {zoom !== null && zoom < GRID_ZOOM
+                    ? 'Zoom in to see the tile grid — the 10 m data is published per Sentinel-2 (MGRS) tile.'
+                    : 'Click tiles on the map to choose them.'}
+                </span>
+                <div className="ex-download__picker-actions">
+                  <button type="button" onClick={() => setPicked(null)}>
+                    All in view
+                  </button>
+                  <button type="button" onClick={() => setPicked([])}>
+                    None
+                  </button>
+                </div>
+
+                {/* Nothing to download is the normal starting state now, and the
+                    line above already says what to do about it — so the only cases
+                    worth their own words are the two the reader cannot act on: no
+                    levels chosen, and a view with no data under it. */}
+                {rhs.length === 0 ? (
+                  <span className="ex-hint">Choose at least one relative height.</span>
+                ) : zoom !== null && zoom >= TILE_ZOOM && tiles.length === 0 && activeTiles.length === 0 ? (
+                  <span className="ex-hint">No tiles here — the view is off the data.</span>
+                ) : tileTargets.length === 0 ? null : (
+                  <>
+                    {targetControls(tileScripted, 'tiles', 'tiles_10m')}
+                    {tileTargets.length > MAX_DIRECT_FILES && (
+                      <span className="ex-hint">
+                        Roughly 100 MB each.{' '}
+                        {tilesCapped &&
+                          `Capped at ${MAX_SCRIPT_FILES} of ${tileTargets.length} files — zoom in, choose fewer levels, or take the whole repository instead. `}
+                        Run it with <code>sh</code>; it names each file and resumes a broken transfer.
+                      </span>
+                    )}
+                  </>
                 )}
-              </>
-            )}
+              </div>
+            </div>
           </div>
 
           {/* The one thing this panel cannot do, and where to go for it. The

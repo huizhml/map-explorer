@@ -1,5 +1,6 @@
 /**
- * Coordinates to a place name, via OpenStreetMap's Nominatim.
+ * Place names and coordinates, in both directions, via OpenStreetMap's
+ * Nominatim.
  *
  * Called straight from the browser rather than proxied through the backend:
  * the public deployment's backend is read-only and the reviewer site is served
@@ -14,6 +15,7 @@
  */
 
 const ENDPOINT = 'https://nominatim.openstreetmap.org/reverse';
+const SEARCH_ENDPOINT = 'https://nominatim.openstreetmap.org/search';
 const MIN_INTERVAL_MS = 1100;
 const ZOOM = 14;
 
@@ -99,6 +101,73 @@ export async function reverseGeocode(lon: number, lat: number): Promise<Place | 
     });
     cache.set(key, place);
     return place;
+  } catch {
+    return null;
+  }
+}
+
+/** A place found by name: where it is, and how much of the map it covers. */
+export type FoundPlace = {
+  /** Full address line, as the provider formats it. */
+  address: string;
+  lon: number;
+  lat: number;
+  /** [minLon, minLat, maxLon, maxLat], when the provider gives one. */
+  bbox?: [number, number, number, number];
+};
+
+const searchCache = new Map<string, FoundPlace | null>();
+
+/**
+ * A place name to a point on the map — "Copenhagen", "Amazonas", "Mount Kenya".
+ *
+ * Shares the queue and the one-request-a-second pacing with reverseGeocode
+ * above, because the usage policy counts requests to the provider, not requests
+ * per function. Which means a search issued while the site card is naming a
+ * transect waits its turn rather than doubling the rate.
+ *
+ * Returns the first result and the bounding box that comes with it. The box is
+ * what makes the difference between framing a country and landing in the middle
+ * of it at street level, so it is passed through rather than reduced to a point
+ * and a guessed zoom.
+ *
+ * Null when nothing matches or the lookup fails. Failures are not cached; a
+ * genuine "no such place" is.
+ */
+export async function searchPlace(query: string): Promise<FoundPlace | null> {
+  const key = query.trim().toLowerCase();
+  if (!key) return null;
+  const cached = searchCache.get(key);
+  if (cached !== undefined) return cached;
+
+  try {
+    const found = await throttle(async () => {
+      // limit=1: the box below is the only disambiguation this control offers,
+      // and a list of candidates is a bigger control than the page has room for.
+      const url =
+        `${SEARCH_ENDPOINT}?format=jsonv2&q=${encodeURIComponent(query)}` +
+        `&limit=1&accept-language=en`;
+      const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const hit = Array.isArray(data) ? data[0] : null;
+      if (!hit) return null;
+
+      const lon = Number(hit.lon);
+      const lat = Number(hit.lat);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+
+      // Nominatim orders it [south, north, west, east], as strings.
+      let bbox: FoundPlace['bbox'];
+      const bb = Array.isArray(hit.boundingbox) ? hit.boundingbox.map(Number) : null;
+      if (bb && bb.length === 4 && bb.every(Number.isFinite)) {
+        bbox = [bb[2], bb[0], bb[3], bb[1]];
+      }
+
+      return { address: String(hit.display_name ?? query), lon, lat, bbox } satisfies FoundPlace;
+    });
+    searchCache.set(key, found);
+    return found;
   } catch {
     return null;
   }

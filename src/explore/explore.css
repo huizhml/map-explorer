@@ -241,6 +241,55 @@ body {
   justify-content: space-between;
   gap: 0.5rem;
 }
+/* The two numbered steps. A download here is a sentence with two halves —
+   which levels, then at which resolution — and the second half was being read
+   as a fresh start, as though each granularity carried its own idea of what to
+   download. Numbers say the order and, more importantly, say there are only
+   two of them: the levels are not a setting that belongs to whichever row
+   happens to sit next to them. */
+.ex-download__step {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+/* A filled disc rather than "Step 1": at this size the word costs more width
+   than the number is worth, and two discs down the left edge are countable at
+   a glance in a way a repeated word is not. Tabular figures and a fixed
+   width so 1 and 2 sit on the same centre. */
+.ex-download__step-n {
+  flex: none;
+  width: 1.05rem;
+  height: 1.05rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #10796a;
+  color: #fff;
+  font-size: 0.66rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.ex-download__group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+/* One rule down the left for both granularities. It is what makes step 2 look
+   like a choice inside a step rather than two more steps, and it has to run
+   unbroken past the gap between the rows — hence a wrapper around the pair
+   rather than a border on each. Indented to the number's text, so the rows
+   hang off the "2" the way the sentence reads. */
+.ex-download__group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding-left: 0.75rem;
+  margin-left: 0.5rem;
+  border-left: 2px solid #e7efec;
+}
+
 /* How many files the row is about, next to the label rather than in the hint
    below it: it is the number the reader is deciding on. */
 .ex-download__count {
@@ -494,6 +543,106 @@ body {
   height: 100%;
 }
 
+/* How far into the map the download flyout reaches: the 10 px gap it leaves
+   after the sidebar plus its own 320 px. Kept in step with FLYOUT_WIDTH and the
+   placement in DownloadPanel — the two numbers are one fact, and the panel is
+   the half that measures itself at runtime. */
+.ex-map {
+  --ex-flyout-clear: 330px;
+}
+
+/* -------------------------------------------------------------- search ---- */
+
+/* Top-left, the one free corner: the layer list holds top-right, the basemap
+   card and locator the bottom-right, the reading card the bottom-left and the
+   random-site button the bottom-centre. Top-centre looks free but is where the
+   site card opens, which is why this starts collapsed. */
+.ex-search__open,
+.ex-search {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  z-index: 12;
+}
+.ex-search__open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #e3e8e5;
+  border-radius: 7px;
+  background: #fff;
+  color: #47544e;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+}
+.ex-search__open:hover {
+  color: #10796a;
+  border-color: #10796a;
+}
+.ex-search {
+  width: 268px;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #e3e8e5;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+}
+.ex-search__row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #8b9993;
+}
+.ex-search__row input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  font: inherit;
+  font-size: 0.78rem;
+  color: #2c3a34;
+}
+.ex-search__row button {
+  border: 0;
+  background: none;
+  padding: 0 0.15rem;
+  font-size: 1.05rem;
+  line-height: 1;
+  color: #9aa8a2;
+  cursor: pointer;
+}
+.ex-search__row button:hover {
+  color: #47544e;
+}
+/* Both lines occupy the same slot, so the card does not change height as an
+   error replaces the hint under the reader's pointer. */
+.ex-search__error,
+.ex-search__found,
+.ex-search__hint {
+  margin: 0.3rem 0 0.1rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+.ex-search__hint {
+  color: #8b9993;
+}
+/* The full address a name resolved to. One line, clipped — the title attribute
+   carries the rest, and a wrapping address would push the card down over the
+   map every time a search succeeded. */
+.ex-search__found {
+  color: #47544e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ex-search__error {
+  color: #b4453a;
+}
+
 /* ------------------------------------------------------------- minimap ---- */
 
 /* Sits directly above the basemap card, matching its radius and shadow so the
@@ -640,6 +789,25 @@ body {
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
 }
+
+/* The reading card sits clear of the flyout's column, open or not.
+ *
+ * It used to move only while the flyout was up, which meant the card jumped
+ * sideways whenever the panel was opened or closed — and the panel is opened
+ * and closed repeatedly while choosing tiles, which is exactly when someone is
+ * also reading values off the map. A card that holds still in the wrong place
+ * is easier to use than one that keeps finding the right one.
+ *
+ * Below 900 px there is nowhere to slide to: the map is then narrower than the
+ * card plus the flyout, and moving it would only trade an overlap on the left
+ * for one running off the right. So it stays in the corner there. */
+@media (min-width: 900px) {
+  .ex-reading {
+    left: calc(var(--ex-flyout-clear) + 1rem);
+    max-width: min(560px, calc(100vw - 360px - var(--ex-flyout-clear)));
+  }
+}
+
 .ex-reading__close {
   position: absolute;
   top: 0.25rem;
