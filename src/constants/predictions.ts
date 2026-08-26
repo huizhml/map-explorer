@@ -1,5 +1,3 @@
-/** Default rescale max by RH index for prediction visualization. Fallback 500. */
-
 /**
  * Pipeline version of the prediction outputs. Only year==2020 has on-disk
  * versioned tiles — 'original' is the raw model output, 'blended' fills
@@ -97,8 +95,22 @@ export function getQIndexForApi(qChoice: VsmQChoice): number | string {
   }
 }
 
+/** RH10 and RH25 read on one shared scale.
+ *
+ *  They sit far below RH98 in absolute terms, and the 500 fallback squeezes
+ *  both into the bottom fifth of the colormap, where they stop being
+ *  distinguishable from each other. One shared ceiling rather than a value
+ *  each, because the two are looked at in comparison: a scale that moved with
+ *  the level would make them render alike when the point is that they differ.
+ *
+ *  RH50 is deliberately absent — it belongs with RH98 on the full 0-500 scale,
+ *  since the canopy median runs high enough that 120 clips it. Leaving it out
+ *  of the table is what puts it there. */
+const LOW_RH_RESCALE_MAX = 120;
+
 export const DEFAULT_RESCALE_MAX_BY_RH: Record<number, number> = {
-  25: 120,
+  10: LOW_RH_RESCALE_MAX,
+  25: LOW_RH_RESCALE_MAX,
 };
 
 const FALLBACK_RESCALE_MAX = 500;
@@ -114,7 +126,7 @@ export function getDefaultRescaleForRh(rhIndex: number): { min: number; max: num
  *  single-Q range, so the absolute-height defaults clip them too aggressively.
  *  Anything not in this table falls back to getDefaultRescaleForRh. */
 const INTERVAL_RESCALE_MAX: Partial<Record<IntervalQChoice, Record<number, number>>> = {
-  '95%-5%': { 98: 300, 25: 200 },
+  '95%-5%': { 98: 300, 50: 300, 25: 200, 10: 200 },
 };
 
 /** Rescale and colormap for visualization. Skewness (e.g. RH98) uses -40..180 and RdBu.
