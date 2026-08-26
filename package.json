@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "build:web": "vite build",
     "build:review": "vite build --config vite.config.review.ts",
+    "dev:review": "vite --config vite.config.review.ts",
     "lint": "eslint .",
     "preview": "vite preview",
     "sites:publish": "node scripts/publish-sites.mjs"

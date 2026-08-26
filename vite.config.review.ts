@@ -69,13 +69,28 @@ function publicAssetsMinusChapterArt(): Plugin {
   }
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   root,
-  publicDir: false,
+  // Hiding the chapter frames is a build-time concern — there is nobody to hide
+  // them from on a laptop — and `false` would take hero.webp and sites.json down
+  // with them, leaving the dev server a landing page with no background. So the
+  // filtered copy below applies to the artifact, and dev serves public/ whole.
+  publicDir: command === 'serve' ? resolve(__dirname, 'public') : false,
   plugins: [react(), publicAssetsMinusChapterArt()],
   // The review site never has the story deck — only its own title page — so
   // __STORY__ is false here whatever the main build is doing.
   define: { __REVIEW__: 'true', __STORY__: 'false' },
+  // Both pages import from src/, one level above `root`. A build resolves that
+  // through the filesystem: rollup is handed each HTML file's own path and
+  // follows `../src/...` from there. The dev server never sees that path — the
+  // browser resolves `../src/review/main.tsx` against the page URL `/` and asks
+  // for `/src/review/main.tsx`, which Vite looks for under root, i.e. in a
+  // review/src/ that does not exist. That failed as a blank page with one
+  // `Failed to load url` line in the terminal and nothing in the browser.
+  //
+  // So: point that URL back at the real src/, and allow reads above root.
+  resolve: { alias: { '/src': resolve(__dirname, 'src') } },
+  server: { fs: { allow: [__dirname] } },
   build: {
     outDir,
     // Never clear: the main build's explore.html, dev.html and assets are
@@ -90,4 +105,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))
