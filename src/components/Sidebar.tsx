@@ -50,6 +50,7 @@ import {
   CloudOutlined as CloudOutlinedIcon,
   SpaOutlined as SpaOutlinedIcon,
   ParkOutlined as ParkOutlinedIcon,
+  CarpenterOutlined as CarpenterOutlinedIcon,
 } from '@mui/icons-material';
 import type { VsmQChoice, VsmVersion } from '../constants/predictions';
 import { VSM_VERSION_OPTIONS } from '../constants/predictions';
@@ -213,6 +214,7 @@ interface SidebarProps {
   onLoadNaturalnessMap: () => void;
   onLoadForestNaturalnessData: () => void;
   onLoadForestNaturalnessDataVal: () => void;
+  onLoadSelectiveLogging: () => void;
   fgbPathInput: string;
   onFgbPathInputChange: (value: string) => void;
   onLoadFgbPath: () => void;
@@ -721,6 +723,7 @@ export function Sidebar({
   onLoadNaturalnessMap,
   onLoadForestNaturalnessData,
   onLoadForestNaturalnessDataVal,
+  onLoadSelectiveLogging,
   fgbPathInput,
   onFgbPathInputChange,
   onLoadFgbPath,
@@ -1264,6 +1267,12 @@ export function Sidebar({
                           })}
                         </>
                       }
+                      ui={ui}
+                    />
+                    <DataLayerRow
+                      icon={<CarpenterOutlinedIcon fontSize="inherit" />}
+                      label="Selective logging"
+                      onClick={onLoadSelectiveLogging}
                       ui={ui}
                     />
 

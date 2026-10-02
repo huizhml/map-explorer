@@ -18,6 +18,7 @@ import { inspectPointAtLonLat } from '../utils/inspectPoint';
 import { fetchVerticalProfile, fetchVerticalProfileLine } from '../utils/verticalProfile';
 import type { GediPointData } from '../components/GediPointPopup';
 import type { SavedMapFeatureGeometry } from '../stores/mapStore';
+import { SELECTIVE_LOGGING_LAYER_ID } from '../utils/selectiveLogging';
 
 const MIN_CLUSTER_SIZE = 20;
 
@@ -832,7 +833,7 @@ export function useMapInteractions(updateLayersList: () => void) {
       // Uploaded vector layer click
       const uploadMgr = useMapStore.getState().layerManager;
       if (uploadMgr) {
-        const uploadLayers = uploadMgr.getLayersByType('vector').filter((m: any) => m.id.startsWith('upload-'));
+        const uploadLayers = uploadMgr.getLayersByType('vector').filter((m: any) => m.id.startsWith('upload-') || m.id === SELECTIVE_LOGGING_LAYER_ID);
         if (uploadLayers.length > 0) {
           let uploadHit = false;
           map.forEachFeatureAtPixel(evt.pixel, (feature: any) => {

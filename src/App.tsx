@@ -171,6 +171,7 @@ function App() {
   const {
     handleToggleVisibility, handleChangeOpacity, handleChangeZIndex,
     handleChangePredictionRescale, handleChangePredictionColormap, handleChangeDiversityBandConfig,
+    handleChangeVectorDateRange,
     handleReorderLayers, handleRemoveLayer,
     handleLocateLayer, vectorFeatures, handleHighlightFeature, handleRemoveFeature,
   } = useLayerControls(updateLayersList, globalLayersRef);
@@ -234,6 +235,7 @@ function App() {
           onChangePredictionRescale={handleChangePredictionRescale}
           onChangePredictionColormap={handleChangePredictionColormap}
           onChangeDiversityBandConfig={handleChangeDiversityBandConfig}
+          onChangeVectorDateRange={handleChangeVectorDateRange}
           onHighlightFeature={handleHighlightFeature}
           onRemoveFeature={handleRemoveFeature}
           vectorFeatures={vectorFeatures}

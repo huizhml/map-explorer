@@ -46,6 +46,7 @@ import { useMapStore, type ConditionalStyle } from '../stores/mapStore';
 import { PALETTES, type PaletteName } from '../constants/palettes';
 import { COLORMAPS } from '../constants/colormaps';
 import { getDefaultRescaleForRh } from '../constants/predictions';
+import { SELECTIVE_LOGGING_LAYER_TYPE } from '../utils/selectiveLogging';
 import {
   DIVERSITY_INDICES_BAND_NAMES,
   getDiversityBandColormap,
@@ -76,6 +77,7 @@ export interface LayerControlProps {
   onChangePredictionRescale?: (layerId: string, min: number, max: number) => void;
   onChangePredictionColormap?: (layerId: string, colormap: string) => void;
   onChangeDiversityBandConfig?: (layerId: string, config: Partial<DiversityBandConfig>) => void;
+  onChangeVectorDateRange?: (layerId: string, range: [number, number]) => void;
   onHighlightFeature?: (layerId: string, featureIndex: number | null) => void;
   onRemoveFeature?: (layerId: string, featureIndex: number) => void;
   vectorFeatures?: Record<string, { name: string; index: number }[]>;
@@ -331,6 +333,106 @@ function DiversityIndicesStylePanel({ layer, onChangeOpacity, onChangeDiversityB
   );
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const formatDay = (ts: number) => new Date(ts).toISOString().slice(0, 10);
+
+/** Date-range filter and category legend for a vector layer with dated points. */
+function DateRangeFilter({ layer, onChange }: {
+  layer: Layer;
+  onChange?: (layerId: string, range: [number, number]) => void;
+}) {
+  const meta = layer.metadata ?? {};
+  const min: number = meta.dateMin;
+  const max: number = meta.dateMax;
+  const committed: [number, number] = meta.dateRange ?? [min, max];
+  // Follow the thumbs locally while dragging; filter the map on release.
+  const [draft, setDraft] = useState<[number, number] | null>(null);
+  const value = draft ?? committed;
+  const colors: Record<string, string> = meta.categoryColors ?? {};
+
+  const marks = useMemo(() => {
+    const out: { value: number }[] = [];
+    const first = new Date(min).getUTCFullYear() + 1;
+    const last = new Date(max).getUTCFullYear();
+    for (let y = first; y <= last; y += 1) out.push({ value: Date.UTC(y, 0, 1) });
+    return out;
+  }, [min, max]);
+
+  const commit = (range: [number, number]) => {
+    setDraft(null);
+    onChange?.(layer.id, range);
+  };
+  const setYears = (from: number, to: number) =>
+    commit([Math.max(min, Date.UTC(from, 0, 1)), Math.min(max, Date.UTC(to + 1, 0, 1) - 1)]);
+
+  const years: number[] = [];
+  for (let y = new Date(min).getUTCFullYear(); y <= new Date(max).getUTCFullYear(); y += 1) years.push(y);
+  const fromYear = new Date(value[0]).getUTCFullYear();
+  const toYear = new Date(value[1]).getUTCFullYear();
+
+  return (
+    <Box sx={{ px: 2, pb: 1.5 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Typography variant="caption" color="text.secondary">
+          Reported {formatDay(value[0])} → {formatDay(value[1])}
+        </Typography>
+        <Button
+          size="small"
+          sx={{ minWidth: 0, py: 0, fontSize: '0.7rem' }}
+          disabled={committed[0] === min && committed[1] === max}
+          onClick={() => commit([min, max])}
+        >
+          All
+        </Button>
+      </Box>
+      <Slider
+        value={value}
+        min={min}
+        max={max}
+        step={DAY_MS}
+        marks={marks}
+        size="small"
+        valueLabelDisplay="auto"
+        valueLabelFormat={formatDay}
+        onChange={(_, v) => setDraft(v as [number, number])}
+        onChangeCommitted={(_, v) => commit(v as [number, number])}
+      />
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Typography variant="caption" color="text.secondary">Years</Typography>
+        <Select
+          size="small"
+          variant="standard"
+          value={fromYear}
+          onChange={(e) => setYears(Number(e.target.value), Math.max(Number(e.target.value), toYear))}
+          sx={{ fontSize: '0.8rem' }}
+        >
+          {years.map((y) => <MenuItem key={y} value={y}>{y}</MenuItem>)}
+        </Select>
+        <Typography variant="caption" color="text.secondary">to</Typography>
+        <Select
+          size="small"
+          variant="standard"
+          value={toYear}
+          onChange={(e) => setYears(Math.min(fromYear, Number(e.target.value)), Number(e.target.value))}
+          sx={{ fontSize: '0.8rem' }}
+        >
+          {years.map((y) => <MenuItem key={y} value={y}>{y}</MenuItem>)}
+        </Select>
+      </Box>
+      {Object.keys(colors).length > 0 && (
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mt: 1 }}>
+          {Object.entries(colors).map(([category, color]) => (
+            <Box key={category} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Box sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: color, border: '1px solid #fff', boxShadow: '0 0 0 1px rgba(0,0,0,0.2)' }} />
+              <Typography variant="caption">{category}</Typography>
+            </Box>
+          ))}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 export function LayerControl({
   layers,
   onToggleVisibility,
@@ -341,6 +443,7 @@ export function LayerControl({
   onChangePredictionRescale,
   onChangePredictionColormap,
   onChangeDiversityBandConfig,
+  onChangeVectorDateRange,
   onHighlightFeature,
   onRemoveFeature: _onRemoveFeature,
   vectorFeatures,
@@ -1563,7 +1666,10 @@ export function LayerControl({
                             >
                               <FilterListIcon fontSize="small" color="action" />
                               <Typography variant="body2" color={canBrowseFeatures ? 'primary' : 'text.secondary'} sx={{ fontWeight: 500 }}>
-                                {featureCount} features
+                                {featureCount}
+                                {layer.metadata?.layerType === SELECTIVE_LOGGING_LAYER_TYPE && featureCount !== layer.metadata?.totalCount
+                                  ? ` of ${layer.metadata?.totalCount}`
+                                  : ''} features
                               </Typography>
                               {canBrowseFeatures && featureListLayerId === layer.id ? (
                                 <ExpandLessIcon fontSize="small" />
@@ -1576,6 +1682,9 @@ export function LayerControl({
                                 </Typography>
                               )}
                             </Box>
+                            {layer.metadata?.layerType === SELECTIVE_LOGGING_LAYER_TYPE && (
+                              <DateRangeFilter layer={layer} onChange={onChangeVectorDateRange} />
+                            )}
                             {/* Feature list slide-in panel */}
                             <Collapse in={canBrowseFeatures && featureListLayerId === layer.id}>
                               <Box sx={{ maxHeight: 300, overflowY: 'auto', bgcolor: 'grey.50' }}>

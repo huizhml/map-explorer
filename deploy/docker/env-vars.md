@@ -41,7 +41,8 @@ The same set on every host; only how you set them differs:
 `PREDICTIONS_LOCAL_PATH`, `PREDICTIONS_MOSAIC_LOCAL_PATH`, `GEDI_LOCAL_BASE_PATH`,
 `ALS_LOCAL_PATH`, `LVIS_LOCAL_PATH`, `DISTANCE_MAPS_LOCAL_BASE_PATH`,
 `CR_LOCAL_BASE_PATH`, `DIVERSITY_INDICES_LOCAL_PATH`, `NATURALNESS_MAP_PATH`,
-`NATURALNESS_REF_DATA_PATH`, `NATURALNESS_REF_DATA_VAL_PATH`, `S2_GRID_LOCAL_PATH`.
+`NATURALNESS_REF_DATA_PATH`, `NATURALNESS_REF_DATA_VAL_PATH`, `SELECTIVE_LOGGING_REF_DATA_PATH`,
+`S2_GRID_LOCAL_PATH`.
 
 These point at HPC-local files. Unset, the corresponding endpoints return a clear
 "env var is not set" error rather than crashing — so those sidebar layers are

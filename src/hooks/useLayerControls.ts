@@ -5,6 +5,7 @@ import { Geometry } from 'ol/geom';
 import { Style, Stroke, Fill, Text as TextStyle } from 'ol/style';
 import { useMapStore } from '../stores/mapStore';
 import { buildDiversityTileUrl, type DiversityBandConfig } from './useLayerLoaders';
+import { applySelectiveLoggingDateRange } from '../utils/selectiveLogging';
 
 const MAX_VECTOR_FEATURE_LIST_PREVIEW = 300;
 
@@ -133,6 +134,15 @@ export function useLayerControls(
     updateLayersList();
   }, [layerManager, updateLayersList]);
 
+  const handleChangeVectorDateRange = useCallback((layerId: string, range: [number, number]) => {
+    if (!layerManager) return;
+    const managed = layerManager.getLayer(layerId);
+    if (!managed || managed.type !== 'vector' || !managed.metadata) return;
+    managed.metadata.dateRange = range;
+    managed.metadata.featureCount = applySelectiveLoggingDateRange(managed.layer as any, range);
+    updateLayersList();
+  }, [layerManager, updateLayersList]);
+
   const handleReorderLayers = useCallback((fromIndex: number, toIndex: number) => {
     if (layerManager?.reorderLayers(fromIndex, toIndex)) updateLayersList();
   }, [layerManager, updateLayersList]);
@@ -220,6 +230,7 @@ export function useLayerControls(
   return {
     handleToggleVisibility, handleChangeOpacity, handleChangeZIndex,
     handleChangePredictionRescale, handleChangePredictionColormap, handleChangeDiversityBandConfig,
+    handleChangeVectorDateRange,
     handleReorderLayers, handleRemoveLayer,
     handleLocateLayer, vectorFeatures, handleHighlightFeature, handleRemoveFeature,
   };

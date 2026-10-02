@@ -16,6 +16,7 @@ S2_GRID_LOCAL_PATH = os.environ.get("S2_GRID_LOCAL_PATH", "")
 NATURALNESS_REF_DATA_PATH = os.environ.get("NATURALNESS_REF_DATA_PATH", "")
 NATURALNESS_REF_DATA_VAL_PATH = os.environ.get("NATURALNESS_REF_DATA_VAL_PATH", "")
 NATURALNESS_MAP_PATH = os.environ.get("NATURALNESS_MAP_PATH", "")
+SELECTIVE_LOGGING_REF_DATA_PATH = os.environ.get("SELECTIVE_LOGGING_REF_DATA_PATH", "")
 
 # 8 KB chunks meant one ASGI send() per 8 KB. Through the middleware stack that
 # measured ~0.15 s each, so streaming the 5 MB MGRS grid stalled entirely.
@@ -272,6 +273,76 @@ async def get_naturalness_map_path():
     if not os.path.exists(NATURALNESS_MAP_PATH):
         return {"error": f"Naturalness map file not found at path: {NATURALNESS_MAP_PATH}"}
     return {"path": NATURALNESS_MAP_PATH}
+
+
+# ---------------------------------------------------------------------------
+# Selective logging reference points (xlsx: Category, Latitude, Longitude,
+# Reported Date). Small enough to send whole; the frontend filters by date.
+# ---------------------------------------------------------------------------
+
+_selective_logging_cache: dict = {}
+
+
+def _find_column(columns, *candidates: str) -> Optional[str]:
+    lowered = {str(c).strip().lower(): c for c in columns}
+    for cand in candidates:
+        if cand in lowered:
+            return lowered[cand]
+    return None
+
+
+def _load_selective_logging_geojson(path: str) -> dict:
+    import pandas as pd
+
+    mtime = os.path.getmtime(path)
+    cached = _selective_logging_cache.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+
+    df = pd.read_excel(path)
+    cat_col = _find_column(df.columns, "category", "class", "type")
+    lat_col = _find_column(df.columns, "latitude", "lat")
+    lon_col = _find_column(df.columns, "longitude", "lon", "lng")
+    date_col = _find_column(df.columns, "reported date", "date", "reported_date")
+    if not (lat_col and lon_col and date_col):
+        raise ValueError(f"Expected Latitude, Longitude and Reported Date columns, found {list(df.columns)}")
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df[lat_col] = pd.to_numeric(df[lat_col], errors="coerce")
+    df[lon_col] = pd.to_numeric(df[lon_col], errors="coerce")
+    df = df.dropna(subset=[lat_col, lon_col, date_col])
+
+    features = []
+    for i, r in enumerate(df.to_dict("records")):
+        date = r[date_col]
+        features.append({
+            "type": "Feature",
+            "id": i,
+            "geometry": {"type": "Point", "coordinates": [float(r[lon_col]), float(r[lat_col])]},
+            "properties": {
+                "category": str(r[cat_col]) if cat_col and pd.notna(r[cat_col]) else "Unknown",
+                "reported_date": date.strftime("%Y-%m-%d %H:%M:%S"),
+                # Epoch ms, so the frontend compares numbers instead of parsing strings.
+                "reported_ts": int(date.timestamp() * 1000),
+            },
+        })
+
+    result = {"type": "FeatureCollection", "features": features}
+    _selective_logging_cache[path] = (mtime, result)
+    return result
+
+
+@router.get("/selective-logging")
+async def get_selective_logging():
+    path = SELECTIVE_LOGGING_REF_DATA_PATH
+    if not path:
+        return Response(content=json.dumps({"error": "SELECTIVE_LOGGING_REF_DATA_PATH not set"}).encode(), media_type="application/json", status_code=404)
+    if not os.path.isfile(path):
+        return Response(content=json.dumps({"error": f"Selective logging file not found at path: {path}"}).encode(), media_type="application/json", status_code=404)
+    try:
+        return _load_selective_logging_geojson(path)
+    except Exception as e:
+        return Response(content=json.dumps({"error": f"Failed to read selective logging data: {e}"}).encode(), media_type="application/json", status_code=500)
 
 
 @router.get("/fgb/path")

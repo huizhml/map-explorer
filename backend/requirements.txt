@@ -3,6 +3,7 @@ uvicorn
 titiler.core
 titiler.mosaic
 geopandas
+openpyxl  # pandas.read_excel, for the selective logging reference
 pandas
 pyarrow
 shapely

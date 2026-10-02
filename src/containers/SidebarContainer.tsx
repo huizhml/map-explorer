@@ -23,6 +23,14 @@ import { unByKey } from 'ol/Observable';
 import { deserialize } from 'flatgeobuf/lib/mjs/ol';
 import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore';
 import { parseUploadedFile } from '../utils/parseUploadedFile';
+import GeoJSON from 'ol/format/GeoJSON';
+import {
+  SELECTIVE_LOGGING_LAYER_ID,
+  SELECTIVE_LOGGING_LAYER_TYPE,
+  selectiveLoggingCategoryColors,
+  makeSelectiveLoggingStyle,
+  applySelectiveLoggingDateRange,
+} from '../utils/selectiveLogging';
 import { API_BASE_URL, apiUrl } from '../utils/apiBase';
 import { getDiversityBandRange, getDiversityBandColormap } from '../constants/layerRanges';
 import { NATURALNESS_MAP_CLASSES, buildNaturalnessColormapParam } from '../constants/naturalnessMap';
@@ -1411,6 +1419,57 @@ export function SidebarContainer() {
     })));
   }, [map, layerManager, setLayers]);
 
+  const handleLoadSelectiveLogging = React.useCallback(async () => {
+    if (!map || !layerManager) return;
+    // Toggle off if already loaded, like the naturalness map.
+    if (layerManager.getLayer(SELECTIVE_LOGGING_LAYER_ID)) {
+      layerManager.removeLayer(SELECTIVE_LOGGING_LAYER_ID);
+      updateLayersList();
+      return;
+    }
+    try {
+      const resp = await fetch(apiUrl('/selective-logging'));
+      const data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
+
+      const features = new GeoJSON().readFeatures(data, { featureProjection: 'EPSG:3857' });
+      if (features.length === 0) throw new Error('The file has no rows with coordinates and a date.');
+      const source = new VectorSource({ features });
+
+      const timestamps = features.map((f) => f.get('reported_ts') as number);
+      const dateMin = Math.min(...timestamps);
+      const dateMax = Math.max(...timestamps);
+      const categories = [...new Set(features.map((f) => String(f.get('category'))))].sort();
+      const categoryColors = selectiveLoggingCategoryColors(categories);
+
+      const layer = new VectorLayer({ source, zIndex: 700 });
+      layer.setStyle(makeSelectiveLoggingStyle(layer, categoryColors));
+      applySelectiveLoggingDateRange(layer, [dateMin, dateMax]);
+      map.addLayer(layer);
+
+      const extent = source.getExtent();
+      const metadata: Record<string, any> = {
+        layerType: SELECTIVE_LOGGING_LAYER_TYPE,
+        featureCount: features.length,
+        totalCount: features.length,
+        skipFeatureList: true,
+        dateMin,
+        dateMax,
+        dateRange: [dateMin, dateMax],
+        categoryColors,
+      };
+      if (extent?.length === 4 && extent.every((v: number) => isFinite(v))) {
+        metadata.extent = extent;
+        map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 14 });
+      }
+      layerManager.addLayer(SELECTIVE_LOGGING_LAYER_ID, 'Selective logging', 'vector', layer, metadata);
+      updateLayersList();
+    } catch (error) {
+      console.error('Error loading selective logging data:', error);
+      alert(`Failed to load selective logging data: ${error instanceof Error ? error.message : error}`);
+    }
+  }, [map, layerManager, updateLayersList]);
+
   const handleLoadNaturalnessMap = React.useCallback(async () => {
     if (!map || !layerManager) return;
     const layerId = 'naturalness-map';
@@ -2553,6 +2612,7 @@ export function SidebarContainer() {
       onLoadNaturalnessMap={handleLoadNaturalnessMap}
       onLoadForestNaturalnessData={handleLoadForestNaturalnessData}
       onLoadForestNaturalnessDataVal={handleLoadForestNaturalnessDataVal}
+      onLoadSelectiveLogging={handleLoadSelectiveLogging}
       fgbPathInput={fgbPathInput}
       onFgbPathInputChange={setFgbPathInput}
       onLoadFgbPath={handleLoadFgbPath}

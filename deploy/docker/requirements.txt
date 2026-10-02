@@ -20,6 +20,7 @@ rasterio==1.4.3
 
 numpy
 pandas
+openpyxl  # pandas.read_excel, for the selective logging reference
 geopandas
 shapely
 pyproj
