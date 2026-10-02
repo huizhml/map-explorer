@@ -34,6 +34,7 @@ import {
 import { API_BASE_URL, apiUrl } from '../utils/apiBase';
 import { getDiversityBandRange, getDiversityBandColormap } from '../constants/layerRanges';
 import { NATURALNESS_MAP_CLASSES, buildNaturalnessColormapParam } from '../constants/naturalnessMap';
+import type { FigureExportFormat } from '../constants/figureExport';
 import {
   listSavedFeatures,
   listSavedFeatureTags,
@@ -199,7 +200,7 @@ export interface FigureLayerOverrides {
 export function SidebarContainer() {
   const [uploadingFile, setUploadingFile] = React.useState(false);
   const [fgbPathInput, setFgbPathInput] = React.useState('');
-  const [figureFormat, setFigureFormat] = React.useState<'jpg' | 'png' | 'pdf'>('pdf');
+  const [figureFormat, setFigureFormat] = React.useState<FigureExportFormat>('pdf');
   const [figureOutputFolder, setFigureOutputFolder] = React.useState('/maps/projects/dereeco/data/gvs');
   const [figureFilenameStem, setFigureFilenameStem] = React.useState('');
   /** Also save a high-resolution Google Satellite snapshot of the drawn area. */

@@ -1182,7 +1182,20 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
                 VSM
               </Typography>
 
-              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 1.5, mb: 2 }}>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Year</InputLabel>
+                  <Select
+                    value={year}
+                    label="Year"
+                    onChange={(e) => setYear(e.target.value)}
+                    MenuProps={{ sx: { zIndex: 2100 } }}
+                    sx={inputSx}
+                  >
+                    <MenuItem value="2020">2020</MenuItem>
+                    <MenuItem value="2024">2024</MenuItem>
+                  </Select>
+                </FormControl>
                 {/* `version` only applies to the on-disk 2020 outputs; other years
                     are served from a remote URL layout with no version branches. */}
                 <FormControl size="small" fullWidth disabled={year !== '2020'}>

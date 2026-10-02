@@ -62,8 +62,7 @@ ALS_LOCAL_PATH = os.environ.get("ALS_LOCAL_PATH", "")
 LVIS_LOCAL_PATH = os.environ.get("LVIS_LOCAL_PATH", "")
 GEDI_LOCAL_BASE_PATH = os.environ.get("GEDI_LOCAL_BASE_PATH", "")
 
-# Allowed values for the prediction `version` parameter (matches predictions.py).
-VersionLiteral = Literal["original", "blended", "masked"]
+from routes.predictions import VersionLiteral
 
 # ---------------------------------------------------------------------------
 # Computation helpers
@@ -374,7 +373,9 @@ async def load_gedi_points(request: AuxiliaryGEDIRequest):
         if sampled_count == 0:
             return Response(status_code=204, headers={"X-Tile-Name": tile_id, "X-Sampled-Count": "0", "X-Total-Count": str(total_count), "X-Sample-Size": str(sample_size)})
 
-        with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as tmp:
+        app_tmp = Path.home() / "app_tmp"
+        app_tmp.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False, dir=str(app_tmp)) as tmp:
             temp_path = Path(tmp.name)
         try:
             gdf.to_file(temp_path, driver="FlatGeobuf")

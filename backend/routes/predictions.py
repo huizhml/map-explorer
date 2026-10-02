@@ -13,8 +13,9 @@ from typing import Literal
 
 # Allowed values for the prediction `version` parameter. Only year==2020
 # has on-disk versioned outputs ('original' is the raw model output,
-# 'blended' fills cross-tile seams, 'masked' applies the no-veg mask).
-VersionLiteral = Literal["original", "blended", "masked"]
+# 'blended' fills cross-tile seams, 'masked' applies the no-veg mask,
+# 'bias_corrected' is used by auxiliary products).
+VersionLiteral = Literal["original", "blended", "masked", "bias_corrected"]
 
 import mgrs as mgrs_lib
 import numpy as np

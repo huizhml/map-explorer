@@ -6,8 +6,8 @@
 #
 # Usage:
 #   bash restore.sh                     # → ~/saved_features.restored.db
-#   bash restore.sh /tmp/out.db
-#   bash restore.sh /tmp/out.db -timestamp 2026-05-26T12:00:00Z
+#   bash restore.sh ~/app_tmp/out.db
+#   bash restore.sh ~/app_tmp/out.db -timestamp 2026-05-26T12:00:00Z
 
 set -euo pipefail
 

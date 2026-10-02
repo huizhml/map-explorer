@@ -11,7 +11,9 @@
     "dev:review": "vite --config vite.config.review.ts",
     "lint": "eslint .",
     "preview": "vite preview",
-    "sites:publish": "node scripts/publish-sites.mjs"
+    "sites:publish": "node scripts/publish-sites.mjs",
+    "sync-types": "curl -sf http://localhost:8006/openapi.json | python3 scripts/dedupe_openapi.py > shared/openapi.json && openapi-typescript shared/openapi.json -o src/api-types.ts",
+    "sync-types:offline": "python3 scripts/dump_openapi.py && python3 scripts/dedupe_openapi.py < shared/openapi.json > shared/openapi.json.tmp && mv shared/openapi.json.tmp shared/openapi.json && openapi-typescript shared/openapi.json -o src/api-types.ts"
   },
   "dependencies": {
     "@ant-design/plots": "^2.6.8",
@@ -45,6 +47,7 @@
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
     "globals": "^16.3.0",
+    "openapi-typescript": "^7.13.0",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.35.1",
     "vite": "^7.0.4"

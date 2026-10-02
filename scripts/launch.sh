@@ -41,6 +41,7 @@ BACKEND_PORT=8006
 FRONTEND_PORT=9036
 PARTITION="ml4good"
 SSH_HOST="hendrix3"
+LITESTREAM="${LITESTREAM:-0}"
 
 STATE_DIR="$HOME/.map-explorer-cluster"
 LOG_DIR="$STATE_DIR/logs"
@@ -351,7 +352,11 @@ launch_backend() {
   fi
 
   # Start continuous DB backup to R2
-  start_litestream
+  if [[ "$LITESTREAM" == "1" ]]; then
+    start_litestream
+  else
+    warn "Litestream disabled (LITESTREAM=$LITESTREAM) — DB changes will NOT be backed up to R2"
+  fi
 }
 
 launch_frontend() {

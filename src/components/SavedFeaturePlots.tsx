@@ -44,6 +44,7 @@ import {
   DEFAULT_HEATMAP_MAX_HEIGHT_M,
   HEATMAP_COLORMAP_MAX,
 } from '../constants/diversityMetrics';
+import type { FigureXAxis } from '../constants/figureExport';
 
 const CHART_H = 260;
 const HEATMAP_H = 320;
@@ -604,7 +605,7 @@ export function TransectProfileHeatmap({
     profile: VerticalProfilePoint[];
   }>;
   totalLengthMeters?: number;
-  xAxis: 'lon' | 'lat';
+  xAxis: FigureXAxis;
   dimmed?: boolean;
   chartHeight?: number;
   svgWidth?: number;
@@ -1026,8 +1027,8 @@ export function TransectMetricsChart({
     enl2d?: number | null;
     cr?: number | null;
   }>;
-  xAxis: 'lon' | 'lat';
-  onXAxisChange: (axis: 'lon' | 'lat') => void;
+  xAxis: FigureXAxis;
+  onXAxisChange: (axis: FigureXAxis) => void;
   dimmed?: boolean;
   chartHeight?: number;
   fontSize?: number;
@@ -1496,7 +1497,7 @@ export function SavedFeaturePlots({
     return () => setTransectHeatmapSampleIndex(null);
   }, [setTransectHeatmapSampleIndex]);
 
-  const [transectMetricXAxis, setTransectMetricXAxis] = useState<'lon' | 'lat'>('lon');
+  const [transectMetricXAxis, setTransectMetricXAxis] = useState<FigureXAxis>('lon');
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [imageLayoutMode, setImageLayoutMode] = useState<'grid' | 'compact' | 'carousel'>('grid');
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);

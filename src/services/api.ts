@@ -112,11 +112,15 @@ class ApiService {
 
     async getEarthEngineTileUrl(body: {
         asset_id: string;
-        asset_kind?: 'image' | 'image_collection';
+        asset_kind?: 'image' | 'image_collection' | 'feature_collection';
         reduce_collection?: 'mosaic' | 'median' | 'first';
         band?: string;
         mask_self?: boolean;
         vis?: { min?: number; max?: number; palette?: string[] };
+        filter_property?: string;
+        filter_value?: string | number;
+        style_color?: string;
+        style_width?: number;
     }): Promise<{ tile_url: string; asset_id: string; band?: string | null }> {
         return this.request('/earthengine/tile-url', {
             method: 'POST',

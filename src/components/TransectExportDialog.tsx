@@ -27,20 +27,16 @@ import {
 } from '../constants/diversityMetrics';
 import { EOX_S2CLOUDLESS_YEARS } from './Sidebar';
 import { apiUrl } from '../utils/apiBase';
-
-type ExportFormat = 'pdf' | 'png' | 'jpg';
+import type {
+  ApiBasemapSource,
+  BasemapSource,
+  FigureExportFormat as ExportFormat,
+  FigureXAxis,
+} from '../constants/figureExport';
 
 /** Figure layout: stacked 2D panels, or the BIOMASS-style 3D perspective
  *  (satellite ground plane + vertical heatmap wall along the transect). */
 type ViewMode = '2d' | '3d';
-
-/** Map-snapshot source for the transect figure export.
- *
- *  - `none`            — omit the map panel entirely.
- *  - `google`          — Google Satellite HD tiles (pre-EOX behaviour).
- *  - `eox_s2cloudless` — EOX `s2cloudless-<year>` cloud-free Sentinel-2 mosaic.
- */
-type BasemapSource = 'none' | 'google' | 'eox_s2cloudless';
 
 type TransectExportDialogProps = {
   open: boolean;
@@ -48,7 +44,7 @@ type TransectExportDialogProps = {
   samples: VerticalProfileLineSample[];
   lineCoordinates?: Array<[number, number]>;
   totalLengthMeters?: number;
-  xAxis: 'lon' | 'lat';
+  xAxis: FigureXAxis;
   /** Y-axis top (m) for heatmap raster only (not diversity `max_height`). */
   heatmapMaxHeight?: number;
   /** Meters per vertical bin (matches transect profile histogram); defaults to Tools setting. */
@@ -93,11 +89,11 @@ function slimSamples(samples: VerticalProfileLineSample[]) {
 /** Build the JSON payload the `/transect/figure` endpoint expects. */
 function buildFigurePayload(args: {
   samples: VerticalProfileLineSample[];
-  xAxis: 'lon' | 'lat';
+  xAxis: FigureXAxis;
   heightBinM: number;
   heatmapMaxHeight: number;
   includeMap: boolean;
-  basemapSource: 'google' | 'eox_s2cloudless';
+  basemapSource: ApiBasemapSource;
   eoxYear: number;
   eoxBrightness: number;
   includeEeAnnualChanges: boolean;
@@ -157,10 +153,10 @@ function buildFigurePayload(args: {
  * ground plane and the heatmap is always the wall). */
 function build3DFigurePayload(args: {
   samples: VerticalProfileLineSample[];
-  xAxis: 'lon' | 'lat';
+  xAxis: FigureXAxis;
   heightBinM: number;
   heatmapMaxHeight: number;
-  basemapSource: 'google' | 'eox_s2cloudless';
+  basemapSource: ApiBasemapSource;
   eoxYear: number;
   eoxBrightness: number;
   figureWidth: number;

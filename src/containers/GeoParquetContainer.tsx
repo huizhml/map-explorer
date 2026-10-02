@@ -36,7 +36,7 @@ export function GeoParquetContainer({ map }: GeoParquetContainerProps) {
 
     try {
       // Create a temporary file path (in a real app, you'd upload to server)
-      const filePath = `/tmp/${file.name}`;
+      const filePath = `~/app_tmp/${file.name}`;
       
       // Get file info
       const infoResponse = await fetch(getApiUrl('geoparquet/info'), {

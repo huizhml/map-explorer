@@ -7,7 +7,7 @@ import json
 import os
 from collections.abc import Mapping
 from functools import partial
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -33,11 +33,24 @@ class EEVisParams(BaseModel):
 
 class EETileUrlRequest(BaseModel):
     asset_id: str = Field(..., min_length=2, description="EE asset id, e.g. projects/JRC/TMF/v1_2025/AnnualChanges")
-    asset_kind: Literal["image", "image_collection"] = "image_collection"
+    asset_kind: Literal["image", "image_collection", "feature_collection"] = "image_collection"
     reduce_collection: Literal["mosaic", "median", "first"] = "mosaic"
     band: Optional[str] = Field(None, description="Band name to select, e.g. Dec2020")
     mask_self: bool = Field(False, description="Mask out zeros / nodata using the band itself")
     vis: EEVisParams = Field(default_factory=EEVisParams)
+    filter_property: Optional[str] = Field(
+        None, description="FeatureCollection property name for an equality filter, e.g. 'Year'"
+    )
+    filter_value: Optional[Union[int, float, str]] = Field(
+        None, description="Equality value for filter_property; numeric strings are coerced."
+    )
+    style_color: Optional[str] = Field(
+        None,
+        description="FeatureCollection stroke color (hex, with or without #). Default ff3333.",
+    )
+    style_width: Optional[float] = Field(
+        None, description="FeatureCollection line/stroke width in pixels. Default 1.5."
+    )
 
 
 def _credentials_path() -> Optional[str]:
@@ -103,12 +116,39 @@ def _normalize_palette(palette: Optional[list[str]]) -> Optional[list[str]]:
     return out or None
 
 
+def _coerce_filter_value(raw: Union[int, float, str]) -> Any:
+    """EE filters are type-strict; coerce numeric-looking strings to int/float."""
+    if isinstance(raw, (int, float)):
+        return raw
+    s = raw.strip()
+    if not s:
+        return s
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        return s
+
+
 def _build_image(req: EETileUrlRequest):
     """Sync: construct ee.Image from request (runs in thread pool)."""
     ensure_ee()
     assert ee is not None
 
     aid = req.asset_id.strip()
+
+    if req.asset_kind == "feature_collection":
+        fc = ee.FeatureCollection(aid)
+        if req.filter_property and req.filter_value is not None:
+            value = _coerce_filter_value(req.filter_value)
+            fc = fc.filter(ee.Filter.eq(req.filter_property, value))
+        color = (req.style_color or "ff3333").lstrip("#")
+        width = req.style_width if req.style_width is not None else 1.5
+        styled = fc.style(color=color, width=width)
+        return styled.getMapId({})
 
     if req.asset_kind == "image":
         img: ee.Image = ee.Image(aid)

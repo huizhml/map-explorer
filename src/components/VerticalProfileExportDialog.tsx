@@ -17,8 +17,7 @@ import {
 } from '@mui/material';
 import { apiUrl } from '../utils/apiBase';
 import type { VerticalProfileCurvePoint } from '../stores/mapStore';
-
-type ExportFormat = 'png' | 'jpg' | 'pdf';
+import type { FigureExportFormat as ExportFormat } from '../constants/figureExport';
 
 type VerticalProfileExportDialogProps = {
   open: boolean;
