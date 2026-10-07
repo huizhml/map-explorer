@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>spike: many COGs at once</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #111; }
+      #map { position: absolute; inset: 0; }
+      #status {
+        position: absolute; top: 0; left: 0; z-index: 10;
+        font: 13px/1.5 ui-monospace, Menlo, monospace;
+        color: #eee; background: rgba(0,0,0,.75); padding: 10px 14px;
+        white-space: pre; max-width: 70ch;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div id="status">loading MGRS grid…</div>
+    <script type="module" src="./many.js"></script>
+  </body>
+</html>
