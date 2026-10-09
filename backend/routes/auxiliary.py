@@ -223,6 +223,9 @@ def _get_geoparquet_crs(file_path: Path, geometry_column: str) -> Optional[str]:
         return None
 
 
+GEDI_MAX_SAMPLE_SIZE = 50000
+
+
 def _sample_gedi_geodataframe(tile_id: str, year: int, sample_size: int, seed: int):
     if not GEDI_LOCAL_BASE_PATH:
         raise ValueError("GEDI_LOCAL_BASE_PATH env var is not set.")
@@ -364,7 +367,10 @@ class SaveFiguresRequest(BaseModel):
 async def load_gedi_points(request: AuxiliaryGEDIRequest):
     tile_id = request.tile_name
     year = request.year
-    sample_size = max(1, min(int(request.sample_size), 10000))
+    # Each shot carries every attribute column (~1.6 KB in FlatGeobuf), so the
+    # cap is a download-size limit — 50,000 is ~80 MB. The map itself draws
+    # far more than that.
+    sample_size = max(1, min(int(request.sample_size), GEDI_MAX_SAMPLE_SIZE))
     seed = int(request.seed)
     print(f"[auxiliary/gedi] tile={tile_id}, sample_size={sample_size}")
 

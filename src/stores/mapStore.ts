@@ -1,8 +1,7 @@
 import { create } from 'zustand';
-import type { Map } from 'ol';
-import type { WebGLTileLayer } from '../components/Map';
-import VectorLayer from 'ol/layer/Vector';
-import { Geometry } from 'ol/geom';
+import type { Map } from 'maplibre-gl';
+import type { MapLayer, RasterLayer } from '../map/layers';
+import type { VectorLayer } from '../map/vector';
 import { LayerManager } from '../utils/LayerManager';
 import type { Layer } from '../components/LayerControl';
 import type { VsmLayerEntry, VsmQChoice, VsmVersion } from '../constants/predictions';
@@ -154,7 +153,7 @@ export interface ConditionalStyle {
 export type ConditionalLogicMode = 'any' | 'all';
 
 export interface Sentinel2Layer {
-  layer: WebGLTileLayer;
+  layer: RasterLayer;
   id: string;
   imageId: string;
   tileName?: string;
@@ -162,7 +161,7 @@ export interface Sentinel2Layer {
 }
 
 export interface PredictionLayer {
-  layer: any; // Can be TileLayer or WebGLTileLayer
+  layer: MapLayer;
   id: string;
   tileName: string;
   rhIndex: number;
@@ -177,8 +176,8 @@ interface MapStore {
   setMap: (map: Map | null) => void;
 
   // COG Layer
-  cogLayer: WebGLTileLayer | null;
-  setCogLayer: (layer: WebGLTileLayer | null) => void;
+  cogLayer: RasterLayer | null;
+  setCogLayer: (layer: RasterLayer | null) => void;
   currentFileName: string | null;
   setCurrentFileName: (fileName: string | null) => void;
   cogOpacity: number;
@@ -189,8 +188,8 @@ interface MapStore {
   setPalette: (palette: string) => void;
 
   // FlatGeobuf Layer
-  fgbLayer: any | null;
-  setFgbLayer: (layer: any | null) => void;
+  fgbLayer: VectorLayer | null;
+  setFgbLayer: (layer: VectorLayer | null) => void;
   fgbUrl: string;
   setFgbUrl: (url: string) => void;
   fgbLoading: boolean;
@@ -268,8 +267,9 @@ interface MapStore {
   setPopupProperties: (properties: Record<string, any> | null) => void;
   popupPosition: { x: number; y: number } | null;
   setPopupPosition: (position: { x: number; y: number } | null) => void;
-  popupGeometry: Geometry | null;
-  setPopupGeometry: (geometry: Geometry | null) => void;
+  /** Longitude/latitude GeoJSON. */
+  popupGeometry: GeoJSON.Geometry | null;
+  setPopupGeometry: (geometry: GeoJSON.Geometry | null) => void;
   popupCoordinates: { lon: number; lat: number } | null;
   setPopupCoordinates: (coordinates: { lon: number; lat: number } | null) => void;
 
@@ -290,8 +290,8 @@ interface MapStore {
   setFeatureDraft: (draft: SavedMapFeatureDraft | null) => void;
 
   // Highlight layer
-  highlightLayer: VectorLayer<any> | null;
-  setHighlightLayer: (layer: VectorLayer<any> | null) => void;
+  highlightLayer: VectorLayer | null;
+  setHighlightLayer: (layer: VectorLayer | null) => void;
 
   // Actions
   closePopup: () => void;

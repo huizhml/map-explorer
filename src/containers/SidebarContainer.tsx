@@ -1,29 +1,13 @@
 import React from 'react';
 import { Sidebar } from '../components/Sidebar';
 import { PALETTES, type PaletteName } from '../constants/palettes';
-import GeoTIFF from 'ol/source/GeoTIFF';
-import WebGLTile from 'ol/layer/WebGLTile';
-import TileLayer from 'ol/layer/Tile';
-import XYZ from 'ol/source/XYZ';
-import VectorLayer from 'ol/layer/Vector';
-import VectorImageLayer from 'ol/layer/VectorImage';
-import VectorSource from 'ol/source/Vector';
-import Cluster from 'ol/source/Cluster';
-import { Style, Fill, Stroke, Circle as CircleStyle, Text as TextStyle } from 'ol/style';
-import { transformExtent, fromLonLat } from 'ol/proj';
-import OLFeature from 'ol/Feature';
-import OLPoint from 'ol/geom/Point';
-import OLLineString from 'ol/geom/LineString';
-import OLPolygon from 'ol/geom/Polygon';
-
-import PointerInteraction from 'ol/interaction/Pointer';
-import { containsCoordinate } from 'ol/extent';
-
-import { unByKey } from 'ol/Observable';
-import { deserialize } from 'flatgeobuf/lib/mjs/ol';
+import type { MapMouseEvent } from 'maplibre-gl';
+import { RasterLayer } from '../map/layers';
+import { VectorLayer, type AppFeature, type FeatureStyle } from '../map/vector';
+import { bboxFromMercator, fromMercator, geometryBBox, isFiniteBBox, pointInGeometry, toMercator } from '../map/proj';
+import { deserialize } from 'flatgeobuf/lib/mjs/geojson';
 import { useMapStore, type FgbInfo, type StyleOptions } from '../stores/mapStore';
 import { parseUploadedFile } from '../utils/parseUploadedFile';
-import GeoJSON from 'ol/format/GeoJSON';
 import {
   SELECTIVE_LOGGING_LAYER_ID,
   SELECTIVE_LOGGING_LAYER_TYPE,
@@ -51,13 +35,10 @@ import { defaultFigureFilenameStem } from '../utils/figureFilenameStem';
 
 const max = 500;
 const MIN_CLUSTER_SIZE = 20;
-const LARGE_POINT_DATASET_SIZE = 100000;
-const CLUSTER_MAX_ZOOM = 6;
-
-function createColorRamp(colors: readonly string[]) {
-  const stops = colors.map((color, i) => [i / (colors.length - 1) * max, color]).flat();
-  return ['interpolate', ['linear'], ['band', 1], ...stops];
-}
+/** MapLibre zoom up to which large point datasets are clustered — OpenLayers' 6, less one. */
+const CLUSTER_MAX_ZOOM = 5;
+/** Clustering radius in pixels, as OpenLayers' Cluster `distance`. */
+const CLUSTER_RADIUS = 36;
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -120,11 +101,11 @@ function buildFgbStyleKey(options: StyleOptions, geometryType: string, propertyC
 }
 
 function getCachedFgbStyle(
-  cache: globalThis.Map<string, Style>,
+  cache: globalThis.Map<string, FeatureStyle>,
   options: StyleOptions,
   geometryType: string,
   propertyColor: string | null,
-): Style {
+): FeatureStyle {
   const cacheKey = buildFgbStyleKey(options, geometryType, propertyColor);
   const cached = cache.get(cacheKey);
   if (cached) return cached;
@@ -133,51 +114,18 @@ function getCachedFgbStyle(
   const strokeColor = hexToRgbaColor(options.strokeColor || '#000000');
   const resolvedFillColor = propertyColor ? hexToRgbaColor(propertyColor) : fillColor;
   const resolvedStrokeColor = propertyColor ? hexToRgbaColor(propertyColor) : strokeColor;
+  // A fully transparent fill is no fill: the polygon is then only hit on its
+  // outline, as it was with OpenLayers.
   const fill = resolvedFillColor && resolvedFillColor.includes('rgba') && resolvedFillColor.endsWith(', 0)')
     ? undefined
-    : new Fill({ color: resolvedFillColor || 'transparent' });
+    : (resolvedFillColor || 'transparent');
+  const stroke = resolvedStrokeColor || '#000000';
+  const strokeWidth = options.strokeWidth || 2;
 
-  const style = new Style({
-    fill,
-    stroke: new Stroke({
-      color: resolvedStrokeColor || '#000000',
-      width: options.strokeWidth || 2,
-    }),
-    image: (geometryType === 'Point' || geometryType === 'MultiPoint')
-      ? new CircleStyle({
-          radius: options.pointRadius || 5,
-          fill,
-          stroke: new Stroke({
-            color: resolvedStrokeColor || '#000000',
-            width: options.strokeWidth || 2,
-          }),
-        })
-      : undefined,
-  });
+  const style: FeatureStyle = (geometryType === 'Point' || geometryType === 'MultiPoint')
+    ? { circle: { radius: options.pointRadius || 5, fill, stroke, strokeWidth } }
+    : { fill, stroke, strokeWidth };
   cache.set(cacheKey, style);
-  return style;
-}
-
-function getCachedClusterStyle(
-  cache: globalThis.Map<number, Style>,
-  clusterSize: number,
-): Style {
-  const cached = cache.get(clusterSize);
-  if (cached) return cached;
-  const style = new Style({
-    image: new CircleStyle({
-      radius: Math.max(8, Math.min(20, 8 + Math.log2(clusterSize))),
-      fill: new Fill({ color: 'rgba(33, 150, 243, 0.75)' }),
-      stroke: new Stroke({ color: '#ffffff', width: 1.5 }),
-    }),
-    text: new TextStyle({
-      text: String(clusterSize),
-      fill: new Fill({ color: '#ffffff' }),
-      stroke: new Stroke({ color: 'rgba(0,0,0,0.45)', width: 2 }),
-      font: 'bold 12px sans-serif',
-    }),
-  });
-  cache.set(clusterSize, style);
   return style;
 }
 
@@ -228,21 +176,21 @@ export function SidebarContainer() {
   const [updateImageLayerError, setUpdateImageLayerError] = React.useState<{ layer_id: string; message: string } | null>(null);
   const [savedFeaturesLoading, setSavedFeaturesLoading] = React.useState(false);
   const [savedFeaturesError, setSavedFeaturesError] = React.useState<string | null>(null);
-  const highlightLayerRef = React.useRef<VectorLayer<VectorSource> | null>(null);
+  const highlightLayerRef = React.useRef<VectorLayer | null>(null);
 
   // ---- Edit-shape mode (move/reshape a saved Polygon, then re-render) -----
   // Only the editable polygon's *bbox in EPSG:3857* is sent to the backend.
   // The saved geometry for area_images is always a rectangle derived from
   // that bbox, so reshaping via Modify and translating via Translate are
   // both lossless: the backend rewrites the ring from the new extent.
-  const editShapeLayerRef = React.useRef<VectorLayer<VectorSource> | null>(null);
-  const editShapeFeatureRef = React.useRef<OLFeature | null>(null);
-  // Global Shift tracker read by the rect-edit custom interaction. OL's
-  // synthesized pointerdrag events sometimes lose the modifier on the
-  // wrapped DOM event, so a direct window-level listener is the reliable
-  // way to know whether Shift is currently held.
+  const editShapeLayerRef = React.useRef<VectorLayer | null>(null);
+  /** The rectangle being edited, as an EPSG:3857 extent. */
+  const editShapeExtentRef = React.useRef<[number, number, number, number] | null>(null);
+  // Global Shift tracker read by the rect-edit handlers, alongside the
+  // modifier on the mouse event itself.
   const shiftHeldRef = React.useRef(false);
-  const editShapeInteractionsRef = React.useRef<Array<PointerInteraction>>([]);
+  /** Removes the rect-edit mouse handlers. */
+  const editShapeCleanupRef = React.useRef<(() => void) | null>(null);
   const [editingGeometryFeatureId, setEditingGeometryFeatureId] = React.useState<number | null>(null);
   const [editingGeometryDirty, setEditingGeometryDirty] = React.useState(false);
   const [editingGeometrySaving, setEditingGeometrySaving] = React.useState(false);
@@ -251,11 +199,6 @@ export function SidebarContainer() {
   // Zustand store
   const {
     map,
-    cogLayer,
-    setCogLayer,
-    cogOpacity,
-    cogVisible,
-    palette,
     fgbLayer,
     setFgbLayer,
     fgbUrl,
@@ -277,81 +220,6 @@ export function SidebarContainer() {
     setLayers,
     layers,
   } = useMapStore();
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !map) return;
-
-    const url = URL.createObjectURL(file);
-    setCurrentFileName(file.name);
-
-    try {
-      const tiff = await (await import('geotiff')).fromUrl(url);
-      const image = await tiff.getImage();
-      const samples = image.getSamplesPerPixel();
-      let bands: number[] = [1];
-      if (samples >= 3) {
-        bands = [1, 2, 3];
-      }
-
-      const imageWindow = image.getBoundingBox();
-      const geoKeys = image.getGeoKeys();
-
-      let sourceCRS = 'EPSG:4326';
-      if (geoKeys?.ProjectedCSTypeGeoKey) {
-        sourceCRS = `EPSG:${geoKeys.ProjectedCSTypeGeoKey}`;
-      } else if (geoKeys?.GeographicTypeGeoKey) {
-        sourceCRS = `EPSG:${geoKeys.GeographicTypeGeoKey}`;
-      }
-
-      const extent = transformExtent(
-        imageWindow,
-        sourceCRS,
-        'EPSG:3857'
-      );
-
-      const geoTiffSource = new GeoTIFF({
-        sources: [
-          {
-            url,
-            bands,
-          }
-        ],
-        interpolate: true,
-        normalize: false,
-      });
-
-      if (cogLayer) {
-        map.removeLayer(cogLayer);
-      }
-
-      const layer = new WebGLTile({
-        source: geoTiffSource,
-        opacity: cogOpacity,
-        visible: cogVisible,
-        extent: extent,
-        style: {
-          variables: {
-            max: max,
-            nodata: 32767,
-          },
-          color: samples >= 3 ? undefined : createColorRamp(PALETTES[palette as PaletteName])
-        }
-      });
-
-      map.addLayer(layer);
-      setCogLayer(layer);
-
-      map.getView().fit(extent, {
-        padding: [50, 50, 50, 50],
-        duration: 1000
-      });
-    } catch (err) {
-      console.error('Error loading GeoTIFF:', err);
-      alert('Could not read GeoTIFF: ' + (err instanceof Error ? err.message : err));
-    }
-  };
-
 
   // FlatGeobuf handlers
   const handleLoadFGB = async (urlOverride?: string) => {
@@ -377,7 +245,7 @@ export function SidebarContainer() {
         (datasetKind === 'naturalness' || datasetKind === 'naturalness-val' || datasetKind === 'other') &&
         fgbLayer?.get('datasetKind') === 'sentinel2-grid';
       if (fgbLayer && !keepExistingSentinelGrid) {
-        map.removeLayer(fgbLayer);
+        fgbLayer.detach();
       }
 
       // Check if URL is cross-origin and use proxy if needed
@@ -408,45 +276,32 @@ export function SidebarContainer() {
 
       // Fetch entire file as buffer then deserialize — avoids spatial-index
       // and range-request issues; fine for files up to ~50 MB.
-      const source = new VectorSource();
+      const loadedFeatures: GeoJSON.Feature[] = [];
       try {
         const resp = await fetch(fgbFileUrl);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
         const buffer = new Uint8Array(await resp.arrayBuffer());
-        const iter = deserialize(buffer, undefined, undefined, false, {}, false, 'EPSG:4326', 'EPSG:3857');
-        for await (const feature of iter) {
-          source.addFeature(feature as any);
+        for await (const feature of deserialize(buffer) as AsyncGenerator<GeoJSON.Feature>) {
+          loadedFeatures.push(feature);
         }
-        console.log(`Loaded ${source.getFeatures().length} features from FlatGeobuf`);
+        console.log(`Loaded ${loadedFeatures.length} features from FlatGeobuf`);
       } catch (error) {
         console.error('Error loading FlatGeobuf features:', error);
         setFgbError(`Failed to load features: ${error instanceof Error ? error.message : String(error)}`);
       }
 
-      const loadedFeatures = source.getFeatures();
       const pointOnlyDataset = loadedFeatures.length > 0 && loadedFeatures.every((feature) => {
-        const geometryType = feature.getGeometry()?.getType();
+        const geometryType = feature.geometry?.type;
         return geometryType === 'Point' || geometryType === 'MultiPoint';
       });
       const canClusterDataset = pointOnlyDataset && loadedFeatures.length > 15000;
-      const clusterSource = canClusterDataset
-        ? new Cluster({
-            source,
-            distance: 36,
-            minDistance: 10,
-          })
+      const clusterOptions = canClusterDataset && fgbStyleOptions.clusterPoints
+        ? { radius: CLUSTER_RADIUS, maxZoom: CLUSTER_MAX_ZOOM }
         : null;
-      const initialZoom = map.getView().getZoom() ?? 0;
-      const shouldUseClusterAtLoad = Boolean(
-        canClusterDataset && fgbStyleOptions.clusterPoints && initialZoom <= CLUSTER_MAX_ZOOM
-      );
-      const layerSource: VectorSource | Cluster = shouldUseClusterAtLoad && clusterSource
-        ? clusterSource
-        : source;
 
       // Helper function to evaluate conditional style
-      const evaluateCondition = (feature: any, condition: any): boolean | string => {
-        const properties = feature.getProperties();
+      const evaluateCondition = (feature: AppFeature, condition: any): boolean | string => {
+        const properties = feature.properties;
         const propValue = properties[condition.property];
         
         if (propValue === undefined || propValue === null) {
@@ -492,7 +347,7 @@ export function SidebarContainer() {
       };
 
       // Helper function to get style for a feature based on conditions
-      const getFeatureStyle = (feature: any): StyleOptions => {
+      const getFeatureStyle = (feature: AppFeature): StyleOptions => {
         // If conditional rendering is enabled, check conditions
         if (enableConditionalRendering && conditionalStyles.length > 0) {
           const activeConditions = conditionalStyles.filter((condition: any) => condition.property);
@@ -548,9 +403,9 @@ export function SidebarContainer() {
         return fgbStyleOptions;
       };
 
-      const getPropertyColor = (feature: any, options: StyleOptions): string | null => {
+      const getPropertyColor = (feature: AppFeature, options: StyleOptions): string | null => {
         if (!options.colorByProperty) return null;
-        const rawValue = feature.get(options.colorByProperty);
+        const rawValue = feature.properties[options.colorByProperty];
         if (rawValue === undefined || rawValue === null) return null;
         if (options.colorScaleType === 'discrete') {
           const valueKey = String(rawValue);
@@ -573,39 +428,22 @@ export function SidebarContainer() {
         return colorFromPalette(value, min, max, options.colorPalette || 'Viridis');
       };
 
-      const styleCache = new globalThis.Map<string, Style>();
-      const clusterStyleCache = new globalThis.Map<number, Style>();
+      const styleCache = new globalThis.Map<string, FeatureStyle>();
 
-      const useVectorImageLayer = pointOnlyDataset && loadedFeatures.length >= LARGE_POINT_DATASET_SIZE;
-      const FgbLayerClass = useVectorImageLayer ? VectorImageLayer : VectorLayer;
-
-      // Create vector layer with FlatGeobuf source
-      const newVectorLayer = new FgbLayerClass({
-        source: layerSource,
-        style: (feature: any) => {
-          const clusterMembers = feature.get('features') as any[] | undefined;
-          const clusterSize = clusterMembers?.length ?? 0;
-          if (clusterSize >= MIN_CLUSTER_SIZE) {
-            return getCachedClusterStyle(clusterStyleCache, clusterSize);
-          }
-          if (clusterMembers && clusterMembers.length >= 1) {
-            const originalFeature = clusterMembers[0];
-            const geometryType = originalFeature.getGeometry()?.getType() || 'Point';
-            const styleOptions = getFeatureStyle(originalFeature);
-            return getCachedFgbStyle(styleCache, styleOptions, geometryType, getPropertyColor(originalFeature, styleOptions));
-          }
-          const geometry = feature.getGeometry();
-          if (!geometry) return undefined;
-          const geometryType = geometry.getType();
+      // Clusters of MIN_CLUSTER_SIZE or more are drawn by the layer itself;
+      // smaller groups are not clustered at all, so every feature here is a
+      // feature.
+      const newVectorLayer = new VectorLayer({
+        style: (feature) => {
           const styleOptions = getFeatureStyle(feature);
-          return getCachedFgbStyle(styleCache, styleOptions, geometryType, getPropertyColor(feature, styleOptions));
+          return getCachedFgbStyle(styleCache, styleOptions, feature.geometry.type, getPropertyColor(feature, styleOptions));
         },
         opacity: fgbStyleOptions.opacity || 0.7,
         zIndex: fgbStyleOptions.zIndex || 100,
-        ...(useVectorImageLayer ? { imageRatio: 1 } : {}),
+        cluster: clusterOptions,
+        clusterMinPoints: MIN_CLUSTER_SIZE,
       });
-      newVectorLayer.set('rawSource', source);
-      newVectorLayer.set('clusterSource', clusterSource);
+      newVectorLayer.setFeatures(loadedFeatures);
       newVectorLayer.set('isPointOnlyDataset', pointOnlyDataset);
       newVectorLayer.set('canClusterDataset', canClusterDataset);
       newVectorLayer.set('datasetKind', datasetKind);
@@ -624,7 +462,7 @@ export function SidebarContainer() {
       // This function updates the info incrementally as features are loaded
       const extractFgbInfo = (updateExisting = false) => {
         try {
-          const features = source.getFeatures();
+          const features = newVectorLayer.getFeatures();
           
           // Only extract info if we have features
           if (features.length === 0) {
@@ -632,7 +470,7 @@ export function SidebarContainer() {
             return false;
           }
           
-          const extent = source.getExtent();
+          const extent = newVectorLayer.getBounds();
           
           // Get existing properties if updating, otherwise start fresh
           const existingInfo = updateExisting ? currentFgbInfo : null;
@@ -651,11 +489,10 @@ export function SidebarContainer() {
           // Check all features to get all possible properties
           // This ensures we don't miss any columns that might appear in later features
           features.forEach(feature => {
-            const geom = feature.getGeometry();
-            if (geom) {
-              geometryTypes.add(geom.getType());
+            if (feature.geometry) {
+              geometryTypes.add(feature.geometry.type);
             }
-            const props = feature.getProperties();
+            const props = feature.properties;
             Object.keys(props).forEach(key => {
               if (key !== 'geometry') {
                 properties.add(key);
@@ -706,10 +543,10 @@ export function SidebarContainer() {
           setFgbInfo(info);
           
           // Only fit to extent on first extraction
-          if (extent && extent.length === 4 && !updateExisting) {
+          if (extent && !updateExisting) {
             console.log('FlatGeobuf loaded with extent:', extent);
             // Optionally fit map to extent
-            map.getView().fit(extent, { padding: [50, 50, 50, 50] });
+            map.fitBounds(extent, { padding: 50 });
           }
           
           return true;
@@ -720,11 +557,11 @@ export function SidebarContainer() {
       };
 
       // Add layer to map
-      map.addLayer(newVectorLayer);
+      newVectorLayer.attach(map);
       console.log(`FlatGeobuf layer added with zIndex: ${fgbStyleOptions.zIndex}`);
       if (keepExistingSentinelGrid && layerManager && (datasetKind === 'naturalness' || datasetKind === 'naturalness-val' || datasetKind === 'other')) {
         // Must match the layer id App.tsx assigns for this datasetKind, else the
-        // same OL layer gets registered under two ids → duplicate synced rows.
+        // same layer gets registered under two ids → duplicate synced rows.
         const managedId =
           datasetKind === 'naturalness' ? 'fgb-naturalness'
           : datasetKind === 'naturalness-val' ? 'fgb-naturalness-val'
@@ -734,7 +571,7 @@ export function SidebarContainer() {
           : datasetKind === 'naturalness-val' ? 'Forest naturalness (val)'
           : 'FlatGeobuf Layer';
         layerManager.removeLayer(managedId);
-        layerManager.addLayer(managedId, managedName, 'fgb', newVectorLayer as any, {
+        layerManager.addLayer(managedId, managedName, 'fgb', newVectorLayer, {
           datasetKind,
         });
         const managedLayers = layerManager.getAllLayers();
@@ -749,64 +586,9 @@ export function SidebarContainer() {
         setFgbLayer(newVectorLayer);
       }
 
-      // Try to extract info when features are added
-      // With bbox strategy, features load incrementally, so we need to check multiple times
-      let infoExtracted = false;
-      let lastUpdateTime = 0;
-      const UPDATE_THROTTLE_MS = 500; // Throttle updates to once per 500ms
-      
-      // Listen for when features are added - update info incrementally with throttling
-      const onFeatureAdd = () => {
-        const now = Date.now();
-        // Throttle updates to prevent excessive logging
-        if (now - lastUpdateTime < UPDATE_THROTTLE_MS) {
-          return;
-        }
-        lastUpdateTime = now;
-        
-        // Always update to capture new properties from newly loaded features
-        extractFgbInfo(true); // true = update existing info
-        if (!infoExtracted) {
-          infoExtracted = true;
-        }
-      };
-      
-      source.on('addfeature', onFeatureAdd);
-      
-      // Also try after featuresloadend event
-      source.once('featuresloadend', () => {
-        extractFgbInfo(true); // Update with any new properties
-        if (!infoExtracted) {
-          infoExtracted = extractFgbInfo(false); // Initial extraction
-        }
-      });
-      
-      // Fallback: try after a short delay in case events don't fire
-      setTimeout(() => {
-        if (!infoExtracted) {
-          infoExtracted = extractFgbInfo(false);
-        } else {
-          // Still update to catch any properties we might have missed
-          extractFgbInfo(true);
-        }
-      }, 1000);
-      
-      // Also try when the map view changes (bbox strategy loads features on view change)
-      const view = map.getView();
-      const viewChangeKey = view.on('change:center', () => {
-        if (!infoExtracted) {
-          setTimeout(() => {
-            infoExtracted = extractFgbInfo();
-            if (infoExtracted) {
-              // Unlisten once we have info
-              unByKey(viewChangeKey);
-            }
-          }, 500);
-        } else {
-          // Unlisten once we have info
-          unByKey(viewChangeKey);
-        }
-      });
+      // The whole file is already in memory, so the info can be read off it
+      // once rather than built up as features arrive.
+      extractFgbInfo(false);
 
     } catch (err) {
       console.error('FlatGeobuf loading error:', err);
@@ -818,7 +600,7 @@ export function SidebarContainer() {
 
   const handleRemoveFGBLayer = () => {
     if (fgbLayer && map) {
-      map.removeLayer(fgbLayer);
+      fgbLayer.detach();
       setFgbLayer(null);
       setFgbUrl('');
       setFgbError(null);
@@ -864,31 +646,13 @@ export function SidebarContainer() {
   // Update layer style when conditional styles or style options change
   React.useEffect(() => {
     if (!fgbLayer || !map) return;
-    let zoomKey: any = null;
-    const rawSource = fgbLayer.get('rawSource') as VectorSource | undefined;
-    const existingClusterSource = fgbLayer.get('clusterSource') as Cluster | null | undefined;
-    const isPointOnlyDataset = Boolean(fgbLayer.get('isPointOnlyDataset'));
+    // Clustering follows the "cluster points" option; the layer clusters
+    // only below CLUSTER_MAX_ZOOM by itself.
     const canClusterDataset = Boolean(fgbLayer.get('canClusterDataset')) || (
-      !!rawSource && isPointOnlyDataset && rawSource.getFeatures().length > 15000
+      Boolean(fgbLayer.get('isPointOnlyDataset')) && fgbLayer.getFeatures().length > 15000
     );
-    if (rawSource && canClusterDataset) {
-      const clusterSource = existingClusterSource ?? new Cluster({ source: rawSource, distance: 36, minDistance: 10 });
-      if (!existingClusterSource) fgbLayer.set('clusterSource', clusterSource);
-
-      const applyClusterForZoom = () => {
-        const currentZoom = map.getView().getZoom() ?? 0;
-        const shouldUseCluster = Boolean(fgbStyleOptions.clusterPoints && currentZoom <= CLUSTER_MAX_ZOOM);
-        const currentSource = fgbLayer.getSource();
-        const currentlyClustered = currentSource instanceof Cluster;
-        if (shouldUseCluster && !currentlyClustered) {
-          fgbLayer.setSource(clusterSource);
-        } else if (!shouldUseCluster && currentlyClustered) {
-          fgbLayer.setSource(rawSource);
-        }
-      };
-
-      applyClusterForZoom();
-      zoomKey = map.getView().on('change:resolution', applyClusterForZoom);
+    if (canClusterDataset) {
+      fgbLayer.setCluster(fgbStyleOptions.clusterPoints ? { radius: CLUSTER_RADIUS, maxZoom: CLUSTER_MAX_ZOOM } : null);
     }
 
     // Helper function to interpolate color from a palette
@@ -951,8 +715,8 @@ export function SidebarContainer() {
     };
 
     // Helper function to evaluate conditional style
-    const evaluateCondition = (feature: any, condition: any): boolean | string => {
-      const properties = feature.getProperties();
+    const evaluateCondition = (feature: AppFeature, condition: any): boolean | string => {
+      const properties = feature.properties;
       const propValue = properties[condition.property];
       
       if (propValue === undefined || propValue === null) {
@@ -1002,7 +766,7 @@ export function SidebarContainer() {
     };
 
     // Helper function to get style for a feature based on conditions
-    const getFeatureStyle = (feature: any): StyleOptions => {
+    const getFeatureStyle = (feature: AppFeature): StyleOptions => {
       if (enableConditionalRendering && conditionalStyles.length > 0) {
         const activeConditions = conditionalStyles.filter((condition: any) => condition.property);
         if (activeConditions.length === 0) return fgbStyleOptions;
@@ -1056,9 +820,9 @@ export function SidebarContainer() {
       return fgbStyleOptions;
     };
 
-    const getPropertyColor = (feature: any, options: StyleOptions): string | null => {
+    const getPropertyColor = (feature: AppFeature, options: StyleOptions): string | null => {
       if (!options.colorByProperty) return null;
-      const rawValue = feature.get(options.colorByProperty);
+      const rawValue = feature.properties[options.colorByProperty];
       if (rawValue === undefined || rawValue === null) return null;
       if (options.colorScaleType === 'discrete') {
         const valueKey = String(rawValue);
@@ -1081,33 +845,13 @@ export function SidebarContainer() {
       return colorFromPalette(value, min, max, options.colorPalette || 'Viridis');
     };
 
-    const styleCache = new globalThis.Map<string, Style>();
-    const clusterStyleCache = new globalThis.Map<number, Style>();
+    const styleCache = new globalThis.Map<string, FeatureStyle>();
 
-    // Update the layer's style function
-    fgbLayer.setStyle((feature: any) => {
-      const clusterMembers = feature.get('features') as any[] | undefined;
-      if (clusterMembers && clusterMembers.length >= MIN_CLUSTER_SIZE) {
-        return getCachedClusterStyle(clusterStyleCache, clusterMembers.length);
-      }
-      if (clusterMembers && clusterMembers.length >= 1) {
-        const originalFeature = clusterMembers[0];
-        const geometryType = originalFeature.getGeometry()?.getType() || 'Point';
-        const styleOptions = getFeatureStyle(originalFeature);
-        return getCachedFgbStyle(styleCache, styleOptions, geometryType, getPropertyColor(originalFeature, styleOptions));
-      }
-      const geometry = feature.getGeometry();
-      if (!geometry) return undefined;
-      const geometryType = geometry.getType();
+    // Update the layer's style function; setting it redraws.
+    fgbLayer.setStyle((feature) => {
       const styleOptions = getFeatureStyle(feature);
-      return getCachedFgbStyle(styleCache, styleOptions, geometryType, getPropertyColor(feature, styleOptions));
+      return getCachedFgbStyle(styleCache, styleOptions, feature.geometry.type, getPropertyColor(feature, styleOptions));
     });
-
-    // Trigger a redraw
-    fgbLayer.changed();
-    return () => {
-      if (zoomKey) unByKey(zoomKey);
-    };
   }, [fgbLayer, enableConditionalRendering, conditionalStyles, conditionalLogicMode, fgbStyleOptions, currentFgbInfo, map]);
 
   const {
@@ -1178,7 +922,7 @@ export function SidebarContainer() {
     // `extent_3857`, so the lookup hash matches a previous save of the same
     // rectangle (see `create_area_images_feature` in routes.py).
     const [xmin, ymin, xmax, ymax] = figureSelectionExtent as [number, number, number, number];
-    const wgs = transformExtent([xmin, ymin, xmax, ymax], 'EPSG:3857', 'EPSG:4326');
+    const wgs = bboxFromMercator([xmin, ymin, xmax, ymax]);
     const ring: [number, number][] = [
       [wgs[0], wgs[1]],
       [wgs[2], wgs[1]],
@@ -1219,7 +963,7 @@ export function SidebarContainer() {
   React.useEffect(() => {
     if (!drawingActive || !map) return;
     if (highlightLayerRef.current) {
-      map.removeLayer(highlightLayerRef.current);
+      highlightLayerRef.current.detach();
       highlightLayerRef.current = null;
     }
   }, [drawingActive, map]);
@@ -1236,45 +980,37 @@ export function SidebarContainer() {
 
     // Remove previous highlight
     if (highlightLayerRef.current) {
-      map.removeLayer(highlightLayerRef.current);
+      highlightLayerRef.current.detach();
       highlightLayerRef.current = null;
     }
 
-    // Build OL geometry in EPSG:3857
     const coords = feature.geometry.coordinates;
-    let olGeom: OLPoint | OLLineString | OLPolygon;
-    if (feature.geometry.type === 'Point') {
-      olGeom = new OLPoint(fromLonLat(coords as [number, number]));
-    } else if (feature.geometry.type === 'LineString') {
-      olGeom = new OLLineString((coords as [number, number][]).map((c) => fromLonLat(c)));
-    } else {
-      olGeom = new OLPolygon([(coords as [number, number][][])[0].map((c) => fromLonLat(c))]);
-    }
+    const geometry: GeoJSON.Geometry =
+      feature.geometry.type === 'Point'
+        ? { type: 'Point', coordinates: coords as [number, number] }
+        : feature.geometry.type === 'LineString'
+          ? { type: 'LineString', coordinates: coords as [number, number][] }
+          : { type: 'Polygon', coordinates: [(coords as [number, number][][])[0]] };
 
-    const olFeature = new OLFeature({ geometry: olGeom });
-    const highlightSource = new VectorSource({ features: [olFeature] });
     const highlightLayer = new VectorLayer({
-      source: highlightSource,
-      style: new Style({
-        image: new CircleStyle({
-          radius: 9,
-          fill: new Fill({ color: 'rgba(255, 90, 30, 0.9)' }),
-          stroke: new Stroke({ color: '#ffffff', width: 2.5 }),
-        }),
-        stroke: new Stroke({ color: 'rgba(255, 90, 30, 0.9)', width: 3 }),
-        fill: new Fill({ color: 'rgba(255, 90, 30, 0.18)' }),
-      }),
+      style: {
+        circle: { radius: 9, fill: 'rgba(255, 90, 30, 0.9)', stroke: '#ffffff', strokeWidth: 2.5 },
+        stroke: 'rgba(255, 90, 30, 0.9)',
+        strokeWidth: 3,
+        fill: 'rgba(255, 90, 30, 0.18)',
+      },
       zIndex: 9999,
     });
-
-    map.addLayer(highlightLayer);
+    highlightLayer.setFeatures([{ type: 'Feature', geometry, properties: {} }]);
+    highlightLayer.attach(map);
     highlightLayerRef.current = highlightLayer;
 
-    // Fly to feature
+    // Fly to feature. MapLibre zooms: OpenLayers' 14 and 16, less one.
     if (feature.geometry.type === 'Point') {
-      map.getView().animate({ center: fromLonLat(coords as [number, number]), zoom: 14, duration: 800 });
+      map.easeTo({ center: coords as [number, number], zoom: 13, duration: 800 });
     } else {
-      map.getView().fit(highlightSource.getExtent(), { padding: [80, 80, 80, 80], duration: 800, maxZoom: 16 });
+      const bounds = geometryBBox(geometry);
+      if (bounds) map.fitBounds(bounds, { padding: 80, duration: 800, maxZoom: 15 });
     }
   }, [map, setFigureSelectionExtent]);
 
@@ -1433,22 +1169,24 @@ export function SidebarContainer() {
       const data = await resp.json();
       if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
 
-      const features = new GeoJSON().readFeatures(data, { featureProjection: 'EPSG:3857' });
+      const features: GeoJSON.Feature[] = (data.features ?? []).filter((f: GeoJSON.Feature) => f?.geometry);
       if (features.length === 0) throw new Error('The file has no rows with coordinates and a date.');
-      const source = new VectorSource({ features });
 
-      const timestamps = features.map((f) => f.get('reported_ts') as number);
+      const timestamps = features.map((f) => f.properties?.reported_ts as number);
       const dateMin = Math.min(...timestamps);
       const dateMax = Math.max(...timestamps);
-      const categories = [...new Set(features.map((f) => String(f.get('category'))))].sort();
+      const categories = [...new Set(features.map((f) => String(f.properties?.category)))].sort();
       const categoryColors = selectiveLoggingCategoryColors(categories);
 
-      const layer = new VectorLayer({ source, zIndex: 700 });
+      const layer = new VectorLayer({ zIndex: 700 });
+      layer.setFeatures(features);
+      // Kept on the layer: re-applying a date range rebuilds the style from it.
+      layer.set('categoryColors', categoryColors);
       layer.setStyle(makeSelectiveLoggingStyle(layer, categoryColors));
       applySelectiveLoggingDateRange(layer, [dateMin, dateMax]);
-      map.addLayer(layer);
+      layer.attach(map);
 
-      const extent = source.getExtent();
+      const bbox = layer.getBounds();
       const metadata: Record<string, any> = {
         layerType: SELECTIVE_LOGGING_LAYER_TYPE,
         featureCount: features.length,
@@ -1459,9 +1197,10 @@ export function SidebarContainer() {
         dateRange: [dateMin, dateMax],
         categoryColors,
       };
-      if (extent?.length === 4 && extent.every((v: number) => isFinite(v))) {
-        metadata.extent = extent;
-        map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 14 });
+      if (bbox) {
+        metadata.bbox = bbox;
+        // MapLibre zoom: OpenLayers' 14, less one.
+        map.fitBounds(bbox, { padding: 50, duration: 1000, maxZoom: 13 });
       }
       layerManager.addLayer(SELECTIVE_LOGGING_LAYER_ID, 'Selective logging', 'vector', layer, metadata);
       updateLayersList();
@@ -1487,26 +1226,14 @@ export function SidebarContainer() {
       if (pathData.error || !pathData.path) throw new Error(pathData.error || 'Naturalness map path not available');
       const cogPath: string = pathData.path;
 
-      // Extent + CRS from TiTiler COG info.
-      const infoResp = await fetch(apiUrl(`/cog/info?url=${encodeURIComponent(cogPath)}`));
+      // Bounds from TiTiler, in lon/lat (the GeoJSON form of /cog/info).
+      const infoResp = await fetch(apiUrl(`/cog/info.geojson?url=${encodeURIComponent(cogPath)}`));
       if (!infoResp.ok) throw new Error(`Failed to get COG info: ${await infoResp.text()}`);
       const info = await infoResp.json();
-      const bbox = info.bounds;
-      if (!bbox || bbox.length !== 4) throw new Error('Bounds not available');
-      let sourceCRS = 'EPSG:4326';
-      if (info.crs) {
-        if (typeof info.crs === 'string') sourceCRS = info.crs;
-        else if (info.crs.properties?.name) sourceCRS = info.crs.properties.name;
-        else if (info.crs.code) sourceCRS = `EPSG:${info.crs.code}`;
-      }
-      let extent = (sourceCRS === 'EPSG:3857' || sourceCRS === 'EPSG:900913')
-        ? bbox
-        : transformExtent(bbox, sourceCRS, 'EPSG:3857');
-      if (!extent.every((v: number) => isFinite(v) && !isNaN(v))) {
-        extent = transformExtent(bbox, 'EPSG:4326', 'EPSG:3857');
-      }
-      const isGlobal = !extent.every((v: number) => isFinite(v) && !isNaN(v))
-        || (extent[2] - extent[0]) > 1_000_000;
+      const bbox = info.bbox;
+      if (!isFiniteBBox(bbox)) throw new Error('Bounds not available');
+      // ~9° is the 1,000 km the OpenLayers version took as "global".
+      const isGlobal = bbox[2] - bbox[0] > 9;
 
       // The naturalness map is categorical: render each class with its exact
       // colour via a discrete TiTiler colormap (kept in sync with the legend).
@@ -1515,26 +1242,22 @@ export function SidebarContainer() {
         + `&return_mask=true&colormap=${encodeURIComponent(buildNaturalnessColormapParam())}`,
       );
 
-      const layerOpts: any = {
-        source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18, wrapX: true }),
-        opacity: 1,
-        zIndex: 600,
-      };
-      if (!isGlobal) layerOpts.extent = extent;
-      const newLayer = new TileLayer(layerOpts);
+      const newLayer = new RasterLayer({
+        url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 600,
+        bounds: isGlobal ? undefined : bbox,
+      });
 
-      map.addLayer(newLayer);
       const metadata: any = {
         url: cogPath, layerType: 'naturalness_map',
         naturalnessLegend: NATURALNESS_MAP_CLASSES,
       };
-      if (!isGlobal) metadata.extent = extent;
+      if (!isGlobal) metadata.bbox = bbox;
       layerManager.addLayer(layerId, 'Naturalness map', 'prediction', newLayer, metadata);
       updateLayersList();
 
       if (!isGlobal) {
         try {
-          map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 18 });
+          map.fitBounds(bbox, { padding: 50, duration: 1000, maxZoom: 17 });
         } catch { /* ignore */ }
       }
     } catch (error) {
@@ -1554,19 +1277,14 @@ export function SidebarContainer() {
     }
     const tileUrl =
       `https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-${year}_3857/default/g/{z}/{y}/{x}.jpg`;
-    const newLayer = new TileLayer({
-      source: new XYZ({
-        url: tileUrl,
-        attributions:
-          `Sentinel-2 cloudless ${year} by <a href="https://s2maps.eu" target="_blank" rel="noreferrer">EOX IT Services GmbH</a> (contains modified Copernicus Sentinel data ${year})`,
-        crossOrigin: 'anonymous',
-        maxZoom: 14,
-        tilePixelRatio: 1,
-      }),
+    const newLayer = new RasterLayer({
+      url: tileUrl,
+      attribution:
+        `Sentinel-2 cloudless ${year} by <a href="https://s2maps.eu" target="_blank" rel="noreferrer">EOX IT Services GmbH</a> (contains modified Copernicus Sentinel data ${year})`,
+      maxTileZoom: 14,
       opacity: 1,
       zIndex: 50,
     });
-    map.addLayer(newLayer);
     layerManager.addLayer(
       layerId,
       `EOX Sentinel-2 cloudless ${year}`,
@@ -1596,53 +1314,47 @@ export function SidebarContainer() {
         return;
       }
 
-      const source = new VectorSource({ features: result.features });
       const hasPoints = result.features.some(
-        (f) => f.getGeometry()?.getType() === 'Point' || f.getGeometry()?.getType() === 'MultiPoint',
+        (f) => f.geometry?.type === 'Point' || f.geometry?.type === 'MultiPoint',
       );
 
-      const styleCache = new globalThis.Map<number, Style>();
-      const getZoomStyle = (zoom: number) => {
-        const rounded = Math.round(zoom);
+      // Sized by zoom. The numbers were tuned against OpenLayers' zoom
+      // levels, which are MapLibre's plus one.
+      const styleCache = new globalThis.Map<number, FeatureStyle>();
+      const getZoomStyle = (zoom: number): FeatureStyle => {
+        const rounded = Math.round(zoom + 1);
         let s = styleCache.get(rounded);
         if (s) return s;
         const radius = hasPoints ? Math.max(4000, Math.min(14000, rounded * 80)) : 0;
         const strokeW = Math.max(8, Math.min(16, rounded * 0.6));
-        s = new Style({
-          stroke: new Stroke({ color: '#1976d2', width: strokeW }),
-          fill: new Fill({ color: 'rgba(25, 118, 210, 0.15)' }),
+        s = {
+          stroke: '#1976d2',
+          strokeWidth: strokeW,
+          fill: 'rgba(25, 118, 210, 0.15)',
           ...(hasPoints
-            ? {
-                image: new CircleStyle({
-                  radius,
-                  fill: new Fill({ color: 'rgba(25, 118, 210, 0.7)' }),
-                  stroke: new Stroke({ color: '#fff', width: Math.max(1, strokeW * 0.5) }),
-                }),
-              }
+            ? { circle: { radius, fill: 'rgba(25, 118, 210, 0.7)', stroke: '#fff', strokeWidth: Math.max(1, strokeW * 0.5) } }
             : {}),
-        });
+        };
         styleCache.set(rounded, s);
         return s;
       };
 
       const layer = new VectorLayer({
-        source,
         zIndex: 700,
-        style: () => {
-          const zoom = map.getView().getZoom() ?? 10;
-          return getZoomStyle(zoom);
-        },
+        style: (_feature, zoom) => getZoomStyle(zoom),
+        restyleOnZoom: true,
       });
+      layer.setFeatures(result.features);
 
       const layerId = `upload-${Date.now()}`;
       const layerName = `${result.name} (${result.features.length})`;
-      map.addLayer(layer);
+      layer.attach(map);
 
-      const extent = source.getExtent();
+      const bbox = layer.getBounds();
       const metadata: Record<string, any> = { fileName: file.name, featureCount: result.features.length };
-      if (extent?.length === 4 && extent.every((v: number) => isFinite(v))) {
-        metadata.extent = extent;
-        map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000 });
+      if (bbox) {
+        metadata.bbox = bbox;
+        map.fitBounds(bbox, { padding: 50, duration: 1000 });
       }
 
       layerManager.addLayer(layerId, layerName, 'vector', layer, metadata);
@@ -1813,23 +1525,20 @@ export function SidebarContainer() {
     setDrawingActive(next);
   };
 
-  // Tear down any active edit-shape session: removes Translate/Modify
-  // interactions and the editable polygon layer from the map.
+  // Tear down any active edit-shape session: removes the mouse handlers and
+  // the editable polygon layer from the map.
   const cleanupEditShape = React.useCallback(() => {
     if (!map) return;
-    for (const i of editShapeInteractionsRef.current) {
-      map.removeInteraction(i);
-    }
-    editShapeInteractionsRef.current = [];
+    editShapeCleanupRef.current?.();
+    editShapeCleanupRef.current = null;
     if (editShapeLayerRef.current) {
-      map.removeLayer(editShapeLayerRef.current);
+      editShapeLayerRef.current.detach();
       editShapeLayerRef.current = null;
     }
-    editShapeFeatureRef.current = null;
-    // Reset any resize-affordance cursor we set via handleMoveEvent so the
-    // map doesn't keep showing 'move'/'nwse-resize' after edit mode ends.
-    const targetEl = map.getTargetElement() as HTMLElement | null;
-    if (targetEl) targetEl.style.cursor = '';
+    editShapeExtentRef.current = null;
+    // Reset any resize-affordance cursor set while hovering, so the map
+    // doesn't keep showing 'move'/'nwse-resize' after edit mode ends.
+    map.getCanvasContainer().style.cursor = '';
   }, [map]);
 
   const handleStartEditGeometry = React.useCallback((feature: SavedFeature) => {
@@ -1840,7 +1549,7 @@ export function SidebarContainer() {
     // The non-interactive jump-to-feature highlight would visually duplicate
     // the editable polygon — drop it for the duration of the edit session.
     if (highlightLayerRef.current) {
-      map.removeLayer(highlightLayerRef.current);
+      highlightLayerRef.current.detach();
       highlightLayerRef.current = null;
     }
 
@@ -1848,36 +1557,28 @@ export function SidebarContainer() {
     // (before the backend rewrote the ring on extent change) can still be
     // non-rectangular even though the area_images render pipeline only ever
     // uses the bbox — by snapping on entry, the user always edits a rectangle.
+    // The editing itself is done in EPSG:3857, which is what the backend takes
+    // and where a square on screen is a square in the data.
     const coords = feature.geometry.coordinates as [number, number][][];
-    const projectedRing = coords[0].map((c) => fromLonLat(c));
-    const tmpPoly = new OLPolygon([projectedRing]);
-    const [x0Init, y0Init, x1Init, y1Init] = tmpPoly.getExtent();
-    const buildRectRing = (x0: number, y0: number, x1: number, y1: number): [number, number][] => [
-      [x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0],
-    ];
-    const poly = new OLPolygon([buildRectRing(x0Init, y0Init, x1Init, y1Init)]);
-    const olFeature = new OLFeature({ geometry: poly });
+    const projectedRing = coords[0].map((c) => toMercator(c));
+    const xs = projectedRing.map((c) => c[0]);
+    const ys = projectedRing.map((c) => c[1]);
+    let extent: [number, number, number, number] = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 
-    const source = new VectorSource({ features: [olFeature] });
+    // Polygon stays rectangular (normalized on load, constrained during
+    // edits), so its own stroke is the visible edit box.
     const layer = new VectorLayer({
-      source,
-      // Polygon stays rectangular (normalized on load, constrained via Extent
-      // during edits), so its own stroke doubles as the visible edit box —
-      // no need for the Extent interaction to draw its own outline on top.
-      style: new Style({
-        stroke: new Stroke({ color: 'rgba(255, 90, 30, 0.95)', width: 3, lineDash: [6, 4] }),
-        fill: new Fill({ color: 'rgba(255, 90, 30, 0.15)' }),
-      }),
-      // VectorLayer defaults to `false` for both flags, which means the
-      // rectangle would freeze visually for the duration of any drag — the
-      // setCoordinates calls from `extentchanged` keep updating the data,
-      // but the layer doesn't repaint until the user releases. Opting in
-      // makes the resize feel live instead of "stuck until you let go".
-      updateWhileInteracting: true,
-      updateWhileAnimating: true,
+      style: { stroke: 'rgba(255, 90, 30, 0.95)', strokeWidth: 3, dashed: true, fill: 'rgba(255, 90, 30, 0.15)' },
       zIndex: 9999,
     });
-    map.addLayer(layer);
+    const render = () => {
+      const [x0, y0, x1, y1] = extent;
+      const ring = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]].map((c) => fromMercator(c as [number, number]));
+      layer.setFeatures([{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] }, properties: {} }]);
+      editShapeExtentRef.current = extent;
+    };
+    render();
+    layer.attach(map);
 
     // Single custom interaction owns the whole rectangle: it decides on
     // mousedown whether the click hits a corner, an edge, the body, or
@@ -1916,17 +1617,20 @@ export function SidebarContainer() {
     /** Decide which mode this pointer position would target. Returns null
      *  when the cursor is outside the rectangle and far from any edge — in
      *  that case the event falls through to default map interactions. */
+    const pixelOf = (c: [number, number]): [number, number] => {
+      const p = map.project(fromMercator(c));
+      return [p.x, p.y];
+    };
     const detectMode = (
       px: [number, number],
       coord: [number, number],
-      m: any,
     ): RectMode | null => {
-      const ext = poly.getExtent() as [number, number, number, number];
+      const ext = extent;
       const [x0, y0, x1, y1] = ext;
-      const tl = m.getPixelFromCoordinate([x0, y1]) as [number, number];
-      const tr = m.getPixelFromCoordinate([x1, y1]) as [number, number];
-      const bl = m.getPixelFromCoordinate([x0, y0]) as [number, number];
-      const br = m.getPixelFromCoordinate([x1, y0]) as [number, number];
+      const tl = pixelOf([x0, y1]);
+      const tr = pixelOf([x1, y1]);
+      const bl = pixelOf([x0, y0]);
+      const br = pixelOf([x1, y0]);
       const near = (a: [number, number], b: [number, number]) =>
         Math.hypot(a[0] - b[0], a[1] - b[1]) < HANDLE_HIT_PX;
       if (near(px, tl)) return 'tl';
@@ -1944,7 +1648,7 @@ export function SidebarContainer() {
         if (minEdge === dB) return 'b';
         return 'l';
       }
-      if (containsCoordinate(ext, coord)) return 'move';
+      if (coord[0] >= x0 && coord[0] <= x1 && coord[1] >= y0 && coord[1] <= y1) return 'move';
       return null;
     };
 
@@ -1958,29 +1662,41 @@ export function SidebarContainer() {
       }
     };
 
-    const rectEdit = new PointerInteraction({
-      handleDownEvent: (event: any) => {
-        const m = detectMode(event.pixel, event.coordinate, event.map);
-        if (!m) return false;  // pass to default map pan
-        mode = m;
-        dragAnchor = [event.coordinate[0], event.coordinate[1]];
-        const ext = poly.getExtent();
-        dragStartExtent = [ext[0], ext[1], ext[2], ext[3]];
-        return true;
-      },
-      handleDragEvent: (event: any) => {
-        if (!mode || !dragAnchor || !dragStartExtent) return;
+    const pointerAt = (e: MapMouseEvent) => ({
+      px: [e.point.x, e.point.y] as [number, number],
+      coord: toMercator([e.lngLat.lng, e.lngLat.lat]),
+    });
+
+    const onDown = (e: MapMouseEvent) => {
+      const { px, coord } = pointerAt(e);
+      const m = detectMode(px, coord);
+      if (!m) return;  // pass to default map pan
+      // This drag is the rectangle's, not the map's.
+      e.preventDefault();
+      mode = m;
+      dragAnchor = coord;
+      dragStartExtent = [...extent];
+    };
+
+    const onMove = (e: MapMouseEvent) => {
+      const { px, coord } = pointerAt(e);
+      if (!mode || !dragAnchor || !dragStartExtent) {
+        // Idle hover: surface the affordance via the cursor.
+        const m = detectMode(px, coord);
+        map.getCanvasContainer().style.cursor = m ? cursorFor(m) : '';
+        return;
+      }
+      {
         const [sx0, sy0, sx1, sy1] = dragStartExtent;
-        const cx = event.coordinate[0];
-        const cy = event.coordinate[1];
+        const cx = coord[0];
+        const cy = coord[1];
         const dx = cx - dragAnchor[0];
         const dy = cy - dragAnchor[1];
         // Shift-modifier policy:
         //   corner drag → square anchored at the opposite corner
         //   edge drag   → square; the perpendicular dimension grows symmetrically around the original midline
         //   body move   → translation locked to the dominant axis (horizontal OR vertical only)
-        const shift = shiftHeldRef.current
-          || !!(event.originalEvent && event.originalEvent.shiftKey);
+        const shift = shiftHeldRef.current || e.originalEvent.shiftKey;
         let nx0 = sx0, ny0 = sy0, nx1 = sx1, ny1 = sy1;
         switch (mode) {
           case 'move': {
@@ -2033,38 +1749,39 @@ export function SidebarContainer() {
         const fx1 = Math.max(nx0, nx1);
         const fy0 = Math.min(ny0, ny1);
         const fy1 = Math.max(ny0, ny1);
-        poly.setCoordinates([buildRectRing(fx0, fy0, fx1, fy1)]);
+        extent = [fx0, fy0, fx1, fy1];
+        render();
         setEditingGeometryDirty(true);
-      },
-      handleMoveEvent: (event: any) => {
-        // Idle hover: surface the affordance via the cursor.
-        const m = detectMode(event.pixel, event.coordinate, event.map);
-        const targetEl = event.map.getTargetElement() as HTMLElement | null;
-        if (!targetEl) return;
-        targetEl.style.cursor = m ? cursorFor(m) : '';
-      },
-      handleUpEvent: () => {
-        mode = null;
-        dragAnchor = null;
-        dragStartExtent = null;
-        return false;
-      },
-    });
+      }
+    };
 
-    map.addInteraction(rectEdit);
+    const onUp = () => {
+      mode = null;
+      dragAnchor = null;
+      dragStartExtent = null;
+    };
+
+    map.on('mousedown', onDown);
+    map.on('mousemove', onMove);
+    // On the window, so a drag released off the map still ends.
+    window.addEventListener('mouseup', onUp);
 
     editShapeLayerRef.current = layer;
-    editShapeFeatureRef.current = olFeature;
-    editShapeInteractionsRef.current = [rectEdit];
+    editShapeCleanupRef.current = () => {
+      map.off('mousedown', onDown);
+      map.off('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
 
     setEditingGeometryFeatureId(feature.id);
     setEditingGeometryDirty(false);
     setEditingGeometryError(null);
 
-    map.getView().fit(source.getExtent(), {
-      padding: [80, 80, 80, 80],
+    // MapLibre zoom: OpenLayers' 16, less one.
+    map.fitBounds(bboxFromMercator(extent), {
+      padding: 80,
       duration: 500,
-      maxZoom: 16,
+      maxZoom: 15,
     });
   }, [map, cleanupEditShape]);
 
@@ -2077,14 +1794,12 @@ export function SidebarContainer() {
 
   const handleSaveEditGeometry = React.useCallback(async () => {
     const featureId = editingGeometryFeatureId;
-    const olFeature = editShapeFeatureRef.current;
-    if (featureId == null || olFeature == null) return;
-    const geom = olFeature.getGeometry();
-    if (!geom) return;
+    const editedExtent = editShapeExtentRef.current;
+    if (featureId == null || editedExtent == null) return;
     // The polygon's EPSG:3857 extent is the new bbox the backend should use.
     // refresh-area-images rewrites the saved Polygon to match this extent
     // (rectangular ring), then re-renders every attached image.
-    const extent3857 = Array.from(geom.getExtent()) as number[];
+    const extent3857 = [...editedExtent];
     setEditingGeometrySaving(true);
     setEditingGeometryError(null);
     try {
@@ -2377,18 +2092,21 @@ export function SidebarContainer() {
       layer: typeof layersToUse[number],
       extent3857: number[],
     ): Promise<{ url: string; urlLow?: string; tileName: string } | null> => {
-      const source = fgbLayer?.getSource?.();
-      if (!source) return null;
-      const cx = (extent3857[0] + extent3857[2]) / 2;
-      const cy = (extent3857[1] + extent3857[3]) / 2;
-      let tileName: string | null = null;
-      // `getFeaturesAtCoordinate` is exact; fall back to the closest feature
+      if (!fgbLayer) return null;
+      const center = fromMercator([(extent3857[0] + extent3857[2]) / 2, (extent3857[1] + extent3857[3]) / 2]);
+      const tiles = fgbLayer.getFeatures();
+      // Containment is exact; fall back to the tile whose middle is closest
       // when the center is on a tile boundary or seam.
-      const atCenter = source.getFeaturesAtCoordinate?.([cx, cy]) as Array<any> | undefined;
-      tileName = atCenter?.[0]?.get?.('Name') ?? null;
+      let tileName: string | null =
+        tiles.find((f) => pointInGeometry(center, f.geometry))?.properties.Name ?? null;
       if (!tileName) {
-        const closest = source.getClosestFeatureToCoordinate?.([cx, cy]) as any;
-        tileName = closest?.get?.('Name') ?? null;
+        let best = Infinity;
+        for (const f of tiles) {
+          const b = geometryBBox(f.geometry);
+          if (!b) continue;
+          const d = Math.hypot((b[0] + b[2]) / 2 - center[0], (b[1] + b[3]) / 2 - center[1]);
+          if (d < best) { best = d; tileName = f.properties.Name ?? null; }
+        }
       }
       if (!tileName) return null;
 

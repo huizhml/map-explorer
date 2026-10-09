@@ -1,27 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type Map from 'ol/Map';
-import TileLayer from 'ol/layer/Tile';
-import OSM from 'ol/source/OSM';
-import XYZ from 'ol/source/XYZ';
-import { toLonLat } from 'ol/proj';
-import View from 'ol/View';
-
-import VectorLayer from 'ol/layer/Vector';
-import VectorSource from 'ol/source/Vector';
-import { deserialize } from 'flatgeobuf/lib/mjs/ol';
-
-import { MapComponent } from '../components/Map';
-import { LayerManager } from '../utils/LayerManager';
-import { useMapStore } from '../stores/mapStore';
-import { API_BASE_URL } from '../utils/apiBase';
-import { useAutoLoadVSM } from '../hooks/useAutoLoadVSM';
-import { inspectPointAtLonLat, type InspectLayerRow } from '../utils/inspectPoint';
 import {
-  DEFAULT_VSM_VERSION,
-  getVsmLayerId,
-  type VsmLayerEntry,
-  type VsmQChoice,
-} from '../constants/predictions';
+  Map as MlMap,
+  ScaleControl,
+  type MapMouseEvent,
+  type RasterTileSource,
+  type StyleSpecification,
+} from 'maplibre-gl';
+
+import { apiUrl } from '../utils/apiBase';
+import type { VsmQChoice } from '../constants/predictions';
 import { SimpleControls, type BasemapId } from './SimpleControls';
 import { BasemapControl } from './BasemapControl';
 import { MiniMap } from './MiniMap';
@@ -30,21 +17,100 @@ import { buildRamps } from './Colorbar';
 import { RhProfileChart, VerticalProfileChart } from './ProfileCharts';
 import { RandomSite } from './RandomSite';
 import { LocationSearch } from './LocationSearch';
+import { LocateMe } from './LocateMe';
 import { InspectMarker } from './InspectMarker';
+import { ExploreMapContext, isSelectingTiles, loadGrid, type Grid } from './exploreMap';
+import { VSM_TOP, VsmLayers, type Templates } from './vsmLayers';
 import { fetchVerticalProfile, type VerticalProfileResponse } from '../utils/verticalProfile';
 import { placeLabel, reverseGeocode, type Place } from '../utils/reverseGeocode';
 import './explore.css';
 
-/** EPSG:3857 bounds of the published mosaics: 82.8529°N .. −56.0371°S. */
-const DATA_EXTENT_3857 = [-20037508.34, -7565801.1, 20037508.34, 17688947.9];
+/**
+ * The explore page — the reviewer-facing map.
+ *
+ * Drawn with MapLibre, which renders everything through WebGL: zooming scales
+ * the tiles already on the GPU instead of redrawing a canvas every frame, which
+ * is what made the OpenLayers version of this page feel heavy. The full app
+ * (dev.html) is a separate page and still on OpenLayers.
+ *
+ * MapLibre zoom levels are OpenLayers' minus one; every zoom constant on this
+ * page is in MapLibre's numbering.
+ */
 
-const SATELLITE_URL =
-  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+/**
+ * The published mosaics' extent: 82.8529°N .. 56.0371°S. Just inside ±180° in
+ * longitude, because bounds exactly on the antimeridian leave MapLibre's
+ * constraint with nothing to centre on.
+ */
+const DATA_BOUNDS: [[number, number], [number, number]] = [[-179.999, -56.0371], [179.999, 82.8529]];
+
+/**
+ * `#zoom/lat/lon` as the page was opened. Read once, here: under StrictMode the
+ * first map is built and torn down before the real one, and with `hash: true`
+ * it rewrites the URL to its own view on the way — so by the time the second
+ * map looks, the link it was opened with is gone.
+ */
+const INITIAL_VIEW = (() => {
+  const [z, lat, lon] = location.hash.slice(1).split('/').map(Number);
+  return [z, lat, lon].every(Number.isFinite) ? { zoom: z, center: [lon, lat] as [number, number] } : null;
+})();
+
+/** Share of the Web Mercator square, top to bottom, that DATA_BOUNDS covers. */
+const DATA_HEIGHT_FRACTION = (() => {
+  const y = (lat: number) => (1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2;
+  return y(DATA_BOUNDS[0][1]) - y(DATA_BOUNDS[1][1]);
+})();
+
+/**
+ * Keep the viewport inside the data, not inside the world.
+ *
+ * The mosaic covers 63% of the Web Mercator square, so simply flooring the zoom
+ * would still leave a blank band along the bottom where there is basemap but no
+ * prediction. The floor is instead the furthest zoom-out at which the data
+ * extent fills the pane, in both directions, and maxBounds stops panning past
+ * it.
+ *
+ * It is also what keeps MapLibre working: a world narrower than the pane, with
+ * world copies off, leaves maxBounds no valid centre and the camera goes NaN.
+ */
+function fillZoom(width: number, height: number): number {
+  return Math.max(Math.log2(width / 512), Math.log2(height / (512 * DATA_HEIGHT_FRACTION))) + 0.01;
+}
+
+const BASEMAP_TILES: Record<Exclude<BasemapId, 'none'>, { tiles: string[]; attribution: string }> = {
+  osm: {
+    tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  },
+  satellite: {
+    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+    attribution: 'Imagery © Esri',
+  },
+};
+
+function baseStyle(): StyleSpecification {
+  return {
+    version: 8,
+    // For the tile names on the download grid — the only text drawn on the
+    // canvas. OpenFreeMap's fonts: free, no key, CORS open.
+    glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+    sources: {
+      basemap: { type: 'raster', tileSize: 256, maxzoom: 19, ...BASEMAP_TILES.osm },
+    },
+    layers: [
+      { id: 'blank', type: 'background', paint: { 'background-color': '#ffffff' } },
+      { id: 'basemap', type: 'raster', source: 'basemap' },
+      { id: VSM_TOP, type: 'background', layout: { visibility: 'none' } },
+    ],
+  };
+}
+
+type Row = { rh: number; text: string };
 
 type PointReading = {
   lon: number;
   lat: number;
-  rows: InspectLayerRow[];
+  rows: Row[];
   loading: boolean;
   /** undefined while the lookup is in flight, null when the point has no name. */
   place?: Place | null;
@@ -53,41 +119,25 @@ type PointReading = {
   profileError?: string;
 };
 
-/** The layer entry for one RH — the id built from it is the layer's identity. */
-function vsmEntry(rhIndex: number, year: 2020, qChoice: VsmQChoice): VsmLayerEntry {
-  return { year, rhIndex, qChoice, version: DEFAULT_VSM_VERSION };
-}
-
 /**
- * inspectPointAtLonLat stores TiTiler's whole /cog/point response as `value`
- * — `{ coordinates, values, band_names }` — not a bare number. Reading it as a
- * number yields undefined and renders as "no data" over perfectly good pixels.
- *
- * Values are int16 decimetres with 32767 as nodata.
+ * TiTiler's /cog/point answers `{ coordinates, values, band_names }`, not a
+ * bare number. Values are int16 decimetres with 32767 as nodata.
  */
-function formatHeight(value: unknown, rhIndex: number): string {
-  if (!value || typeof value !== 'object') return 'no data';
-  const values = (value as { values?: unknown }).values;
-  if (!Array.isArray(values) || values.length === 0) return 'no data';
-  const raw = values[0];
+function formatHeight(data: unknown, rh: number): string {
+  const values = (data as { values?: unknown } | null)?.values;
+  const raw = Array.isArray(values) ? values[0] : undefined;
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw >= 32767) return 'no data';
-  return `RH${rhIndex} · ${(raw / 10).toFixed(1)} m`;
+  return `RH${rh} · ${(raw / 10).toFixed(1)} m`;
 }
 
 export default function SimpleApp() {
-  // setLayers aliased: the local layer list owns that name here.
-  const { map, setMap, layerManager, setLayerManager, setLayers: setStoreLayers, addVsmLayer, removeVsmLayerByLayerId } =
-    useMapStore();
-
   // Fixed: only the median quantile is published, so there is nothing to pick.
   const qChoice: VsmQChoice = 'median';
 
   // One layer per selected RH: the sidebar's RH control is a multi-select, so
   // the layer list *is* the selection. Held newest-last, which is the order
-  // LayerManager draws in.
-  const [layers, setLayers] = useState<ExploreLayer[]>([
-    { id: 'l0', rhIndex: 98, visible: true },
-  ]);
+  // they are drawn in.
+  const [layers, setLayers] = useState<ExploreLayer[]>([{ id: 'l0', rhIndex: 98, visible: true }]);
   const nextId = useRef(1);
 
   // Only 2020 is published, so the year is shared by every layer rather than
@@ -102,360 +152,286 @@ export default function SimpleApp() {
    * not disagree about what is on the map.
    */
   const toggleRh = useCallback((rh: number) => {
-    setLayers((prev) => {
-      if (prev.some((l) => l.rhIndex === rh)) return prev.filter((l) => l.rhIndex !== rh);
-      // Appended, so the RH just switched on is the one drawn on top. Layers are
-      // always opaque — blending two height maps produced a colour that is not a
-      // height — so it hides the rest of the stack; LayerControl badges it.
-      return [...prev, { id: `l${nextId.current++}`, rhIndex: rh, visible: true }];
-    });
+    setLayers((prev) =>
+      prev.some((l) => l.rhIndex === rh)
+        ? prev.filter((l) => l.rhIndex !== rh)
+        : // Appended, so the RH just switched on is the one drawn on top. Layers
+          // are always opaque — blending two height maps produced a colour that
+          // is not a height — so it hides the rest of the stack; LayerControl
+          // badges it.
+          [...prev, { id: `l${nextId.current++}`, rhIndex: rh, visible: true }],
+    );
   }, []);
-
-  const [basemap, setBasemap] = useState<BasemapId>('osm');
-  const [reading, setReading] = useState<PointReading | null>(null);
-  const [gridReady, setGridReady] = useState(false);
-  const [gridError, setGridError] = useState(false);
-
-  // Same wiring App.tsx uses — the auto-loader drives everything off the store,
-  // so the simple page gets identical layer behaviour for free.
-  const updateLayersList = useCallback(() => {
-    const { map: m, layerManager: mgr } = useMapStore.getState();
-    if (!m || !mgr) return;
-    mgr.syncAllProperties();
-    setStoreLayers(
-      mgr.getAllLayers().map((l: any) => ({
-        id: l.id, name: l.name, visible: l.visible, opacity: l.opacity,
-        zIndex: l.zIndex, type: l.type, metadata: l.metadata,
-      })),
-    );
-  }, [setStoreLayers]);
-
-  useAutoLoadVSM(updateLayersList);
-
-  const handleMapInit = useCallback(
-    (instance: Map) => {
-      setMap(instance);
-      const mgr = useMapStore.getState().layerManager;
-      if (mgr) mgr.setMap(instance);
-      else setLayerManager(new LayerManager(instance));
-    },
-    [setMap, setLayerManager],
-  );
-
-  // Keep the viewport inside the data, not inside the world.
-  //
-  // The mosaic covers 82.85°N to 56.04°S — 63% of the Web Mercator square — so
-  // simply flooring the zoom still leaves a blank band along the bottom where
-  // there is imagery in the basemap but no prediction. Constraining the view to
-  // the data extent instead means the furthest zoom-out is the one where that
-  // extent covers the pane, and panning cannot leave it.
-  //
-  // Map.tsx builds the view without an extent and is shared with the full app,
-  // so the view is replaced here rather than changed there.
-  useEffect(() => {
-    if (!map) return;
-
-    const view = map.getView();
-    if (view.get('exploreConstrained')) return;
-
-    const previousCenter = view.getCenter();
-    const previousZoom = view.getZoom();
-
-    const constrained = new View({
-      // EPSG:3857 bounds of the published mosaics.
-      extent: DATA_EXTENT_3857,
-      // Default (false) keeps the whole viewport inside the extent rather than
-      // just the centre point — that is what removes the empty band.
-      constrainOnlyCenter: false,
-      // Left at the default (false) deliberately: enabling it would permit the
-      // zoom level where the whole extent is visible, which reintroduces the
-      // letterboxing this is meant to remove whenever the pane's aspect ratio
-      // differs from the data's 1.59:1.
-      center: previousCenter ?? [0, 0],
-      zoom: previousZoom ?? 2,
-    });
-    constrained.set('exploreConstrained', true);
-    map.setView(constrained);
-  }, [map]);
-
-  // The MGRS grid is not decoration here — useAutoLoadVSM reads the visible
-  // tile names out of it (`getFeaturesInExtent` → `Name`) and returns early
-  // when the set is empty. Without it nothing is ever requested above the
-  // mosaic's zoom threshold, and the map just stays empty.
-  //
-  // Kept invisible: 18,181 tile outlines would be noise, and feature lookup
-  // does not care about visibility.
-  useEffect(() => {
-    if (!map || useMapStore.getState().fgbLayer) return;
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const resp = await fetch(`${API_BASE_URL}/fgb/local`);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const buffer = new Uint8Array(await resp.arrayBuffer());
-        if (cancelled) return;
-
-        const source = new VectorSource();
-        const iter = deserialize(buffer, undefined, undefined, false, {}, false, 'EPSG:4326', 'EPSG:3857');
-        for await (const feature of iter) source.addFeature(feature as any);
-        if (cancelled) return;
-
-        const layer = new VectorLayer({ source, visible: false, zIndex: 1 });
-        map.addLayer(layer);
-        useMapStore.getState().setFgbLayer(layer);
-        setGridReady(true);
-      } catch (err) {
-        console.error('[explore] MGRS grid failed to load — no tiles will render', err);
-        setGridError(true);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [map]);
-
-  // Mirror the list into the store, which is what useAutoLoadVSM reads. Diffed
-  // rather than cleared and refilled, so untouched layers keep their tiles
-  // instead of being torn down and refetched on every change.
-  useEffect(() => {
-    // A plain object rather than a Map: `Map` is OpenLayers' here, not the
-    // global one.
-    const wanted: Record<string, VsmLayerEntry> = {};
-    for (const l of layers) {
-      const entry = vsmEntry(l.rhIndex, year, qChoice);
-      wanted[getVsmLayerId(entry)] = entry;
-    }
-    const present = new Set(
-      useMapStore.getState().addedVsmLayers.map((e) => getVsmLayerId(e)),
-    );
-
-    for (const id of present) if (!(id in wanted)) removeVsmLayerByLayerId(id);
-    for (const [id, entry] of Object.entries(wanted)) if (!present.has(id)) addVsmLayer(entry);
-  }, [layers, year, qChoice, addVsmLayer, removeVsmLayerByLayerId]);
-
-  // Visibility, applied per layer. Opacity is left at the OpenLayers default of
-  // 1: the eye toggle is the only way a layer gets out of the way, which keeps
-  // every pixel on the map a true colour-ramp reading of one RH.
-  useEffect(() => {
-    if (!layerManager) return;
-    for (const l of layers) {
-      const managed = layerManager.getLayer(getVsmLayerId(vsmEntry(l.rhIndex, year, qChoice)));
-      if (managed?.layer) managed.layer.setVisible(l.visible);
-    }
-  }, [layers, year, layerManager, qChoice]);
 
   const toggleVisible = useCallback((id: string) => {
     setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, visible: !l.visible } : l)));
   }, []);
 
-  // Which RH each sampled row came from. inspectPointAtLonLat keys rows by the
-  // managed layer id, and with several layers on the map the reading card would
-  // otherwise label every row with the same RH.
-  const ramps = useMemo(() => buildRamps(layers, qChoice), [layers, qChoice]);
+  const [basemap, setBasemap] = useState<BasemapId>('osm');
+  const [reading, setReading] = useState<PointReading | null>(null);
 
-  const rhByLayerId = useMemo(() => {
-    const byId: Record<string, number> = {};
-    for (const l of layers) byId[getVsmLayerId(vsmEntry(l.rhIndex, year, qChoice))] = l.rhIndex;
-    return byId;
-  }, [layers, year, qChoice]);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [map, setMap] = useState<MlMap | null>(null);
+  const [grid, setGrid] = useState<Grid | null>(null);
+  const [templates, setTemplates] = useState<Templates | null>(null);
+  const [setupError, setSetupError] = useState(false);
+  const vsmRef = useRef<VsmLayers | null>(null);
+  const [vsmReady, setVsmReady] = useState(false);
 
-  // Basemap. Map.tsx puts the base tile layer at index 0.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const floor = fillZoom(el.clientWidth, el.clientHeight);
+    const m = new MlMap({
+      container: el,
+      style: baseStyle(),
+      center: INITIAL_VIEW?.center ?? [0, 20],
+      zoom: Math.max(floor, INITIAL_VIEW?.zoom ?? floor),
+      minZoom: floor,
+      maxBounds: DATA_BOUNDS,
+      renderWorldCopies: false,
+      // #zoom/lat/lon in the URL, so a view can be linked to.
+      hash: true,
+      attributionControl: { compact: true },
+      // A height map has no use for rotation or tilt, and a rotated one is
+      // only a way to get lost.
+      dragRotate: false,
+      pitchWithRotate: false,
+      touchPitch: false,
+    });
+    m.touchZoomRotate.disableRotation();
+    m.addControl(new ScaleControl({ unit: 'metric', maxWidth: 120 }), 'bottom-left');
+    m.on('resize', () => m.setMinZoom(fillZoom(el.clientWidth, el.clientHeight)));
+    m.once('load', () => setMap(m));
+    return () => {
+      setMap(null);
+      m.remove();
+    };
+  }, []);
+
+  // The MGRS grid gates every 10 m tile: the prediction layers read which
+  // tiles are in view out of it. And the COG URL templates, which name the
+  // file behind each one — optional: without them each URL is asked of the
+  // backend instead, so a deployment that has none still draws.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      loadGrid(),
+      fetch(apiUrl('/predictions/download-info'))
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null),
+    ])
+      .then(([g, info]) => {
+        if (cancelled) return;
+        setGrid(g);
+        setTemplates({
+          tile: info?.available && info.tile_url_template ? info.tile_url_template : null,
+          mosaic: info?.available && info.mosaic_url_template ? info.mosaic_url_template : null,
+          q: info?.q_index ?? 1,
+        });
+      })
+      .catch((err) => {
+        console.error('[explore] tile index failed to load — no layers will render', err);
+        if (!cancelled) setSetupError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!map || !grid || !templates) return;
+    vsmRef.current = new VsmLayers(map, grid, templates, year, qChoice);
+    setVsmReady(true);
+    return () => {
+      // The map may already be gone when the page unmounts.
+      if (map.style) vsmRef.current?.destroy();
+      vsmRef.current = null;
+      setVsmReady(false);
+    };
+  }, [map, grid, templates, year]);
+
+  // Diffed rather than cleared and refilled, so untouched layers keep their
+  // tiles instead of being torn down and refetched on every change.
+  useEffect(() => {
+    if (vsmReady) vsmRef.current?.sync(layers);
+  }, [layers, vsmReady]);
+
+  // Basemap.
   useEffect(() => {
     if (!map) return;
-    const base = map.getLayers().item(0);
-    if (!base) return;
     if (basemap === 'none') {
-      base.setVisible(false);
+      map.setLayoutProperty('basemap', 'visibility', 'none');
       return;
     }
-    base.setVisible(true);
-    if (base instanceof TileLayer) {
-      base.setSource(basemap === 'osm' ? new OSM() : new XYZ({ url: SATELLITE_URL, crossOrigin: 'anonymous' }));
-    }
+    map.setLayoutProperty('basemap', 'visibility', 'visible');
+    map.getSource<RasterTileSource>('basemap')?.setTiles(BASEMAP_TILES[basemap].tiles);
   }, [basemap, map]);
 
   // Click to read the value under the cursor.
   useEffect(() => {
     if (!map) return;
-    const onClick = async (evt: any) => {
+    const onClick = (e: MapMouseEvent) => {
       // The download flyout borrows the click while it is open, to pick
       // Sentinel-2 tiles. Reading a profile at the same point would open a card
       // over the map the reader is trying to select on.
-      if (map.get('exSelectingTiles')) return;
+      if (isSelectingTiles()) return;
 
-      const [lon, lat] = toLonLat(evt.coordinate);
+      const { lng: lon, lat } = e.lngLat;
+      const same = (p: PointReading | null): p is PointReading => !!p && p.lon === lon && p.lat === lat;
       setReading({ lon, lat, rows: [], loading: true, profileLoading: true });
 
-      // Two requests with very different costs, so they are issued separately
-      // and rendered as they land: the pixel read is one COG open, while the
-      // profile opens 101 of them and takes ~20 s. Waiting on both would make
-      // the fast one feel as slow as the slow one.
-      inspectPointAtLonLat(useMapStore.getState().layerManager, lon, lat).then((rows) =>
-        setReading((prev) => (prev && prev.lon === lon && prev.lat === lat ? { ...prev, rows, loading: false } : prev)),
+      // Three requests with very different costs, so they are issued separately
+      // and rendered as they land: the pixel read is one COG open per RH, the
+      // place name goes to a host rate-limited to one a second, and the
+      // profile opens 101 COGs and takes ~20 s.
+      //
+      // The pixel is read from the mosaic, the same file at every zoom — or,
+      // where there is no mosaic, from the 10 m tile under the point.
+      (vsmRef.current?.readUrls(lon, lat) ?? Promise.resolve([])).then((sources) => Promise.all(
+        sources.map(async ({ rh, url }): Promise<Row> => {
+          if (!url) return { rh, text: 'no data' };
+          try {
+            const r = await fetch(apiUrl(`/cog/point/${lon},${lat}?url=${encodeURIComponent(url)}`));
+            return { rh, text: r.ok ? formatHeight(await r.json(), rh) : `Error: HTTP ${r.status}` };
+          } catch (err) {
+            return { rh, text: `Error: ${err instanceof Error ? err.message : String(err)}` };
+          }
+        }),
+      )).then((rows) =>
+        // Highest RH first, matching the layer list.
+        setReading((p) => (same(p) ? { ...p, rows: rows.sort((a, b) => b.rh - a.rh), loading: false } : p)),
       );
 
-      // Third request, on the same land-as-it-arrives basis: it goes to a
-      // different host and is rate-limited to one a second, so it must not hold
-      // up the pixel read.
-      reverseGeocode(lon, lat).then((place) =>
-        setReading((prev) => (prev && prev.lon === lon && prev.lat === lat ? { ...prev, place } : prev)),
-      );
+      reverseGeocode(lon, lat).then((place) => setReading((p) => (same(p) ? { ...p, place } : p)));
 
       fetchVerticalProfile(lon, lat, year)
         .then((profile) =>
-          setReading((prev) =>
-            prev && prev.lon === lon && prev.lat === lat
+          setReading((p) =>
+            same(p)
               ? {
-                  ...prev,
+                  ...p,
                   profileLoading: false,
                   profile: profile.success ? profile : undefined,
                   profileError: profile.success ? undefined : (profile.error ?? 'Profile unavailable'),
                 }
-              : prev,
+              : p,
           ),
         )
         .catch((err) =>
-          setReading((prev) =>
-            prev && prev.lon === lon && prev.lat === lat
-              ? { ...prev, profileLoading: false, profileError: String(err) }
-              : prev,
-          ),
+          setReading((p) => (same(p) ? { ...p, profileLoading: false, profileError: String(err) } : p)),
         );
     };
-    map.on('singleclick', onClick);
-    return () => map.un('singleclick', onClick);
+    map.on('click', onClick);
+    return () => {
+      map.off('click', onClick);
+    };
   }, [map, year]);
 
+  const ramps = useMemo(() => buildRamps(layers, qChoice), [layers, qChoice]);
+  const shared = useMemo(() => ({ map, grid }), [map, grid]);
+
   return (
-    <div className="ex-root">
-      <SimpleControls
-        rhIndexes={rhIndexes}
-        onToggleRh={toggleRh}
-        year={year}
-        onYear={setYear}
-      />
+    <ExploreMapContext.Provider value={shared}>
+      <div className="ex-root">
+        <SimpleControls rhIndexes={rhIndexes} onToggleRh={toggleRh} year={year} onYear={setYear} />
 
-      <div className="ex-map">
-        {/* Wrapper so the "fill the container" sizing rule applies to the
-            OpenLayers canvas only. Applied to every direct child, it stretched
-            the overlays to full size too. */}
-        <div className="ex-map__canvas">
-          <MapComponent onMapInit={handleMapInit} />
-        </div>
+        <div className="ex-map">
+          <div className="ex-map__canvas" ref={containerRef} />
 
-        <LayerControl
-          layers={layers}
-          year={year}
-          ramps={ramps}
-          onToggleVisible={toggleVisible}
-        />
-        <BasemapControl value={basemap} onChange={setBasemap} />
-        <LocationSearch map={map} />
-        {/* Renders nothing itself — it owns a layer on the map. Mounted here
-            so the mark and the card that explains it come and go together. */}
-        <InspectMarker map={map} lon={reading?.lon} lat={reading?.lat} />
-        <MiniMap map={map} />
-        <RandomSite map={map} />
-
-        {/* The grid gates every tile request, so its state is worth surfacing
-            rather than leaving the user staring at an empty map. */}
-        {!gridReady && !gridError && (
-          <div className="ex-status">Loading tile index…</div>
-        )}
-        {gridError && (
-          <div className="ex-status ex-status--error">
-            Tile index unavailable — layers cannot load
+          <LayerControl layers={layers} year={year} ramps={ramps} onToggleVisible={toggleVisible} />
+          <BasemapControl value={basemap} onChange={setBasemap} />
+          {/* One column, so the search card pushes the locate button down when
+              it expands instead of opening over it. */}
+          <div className="ex-topleft">
+            <LocationSearch />
+            <LocateMe />
           </div>
-        )}
+          {/* Renders nothing itself — it owns a marker on the map. Mounted here
+              so the mark and the card that explains it come and go together. */}
+          <InspectMarker lon={reading?.lon} lat={reading?.lat} />
+          <MiniMap />
+          <RandomSite intro={!INITIAL_VIEW} />
 
-        {reading && (
-          <div className="ex-reading">
-            <button className="ex-reading__close" onClick={() => setReading(null)} aria-label="Close">
-              ×
-            </button>
-            {/* Place above coordinates: "Alto Paraíso, Brazil" answers where
-                this is, and the numbers are what you copy afterwards. */}
-            {reading.place && (
-              <div className="ex-reading__place" title={reading.place.address}>
-                {placeLabel(reading.place)}
+          {/* The grid gates every tile request, so its state is worth surfacing
+              rather than leaving the user staring at an empty map. */}
+          {!grid && !setupError && <div className="ex-status">Loading tile index…</div>}
+          {setupError && (
+            <div className="ex-status ex-status--error">Tile index unavailable — layers cannot load</div>
+          )}
+
+          {reading && (
+            <div className="ex-reading">
+              <button className="ex-reading__close" onClick={() => setReading(null)} aria-label="Close">
+                ×
+              </button>
+              {/* Place above coordinates: "Alto Paraíso, Brazil" answers where
+                  this is, and the numbers are what you copy afterwards. */}
+              {reading.place && (
+                <div className="ex-reading__place" title={reading.place.address}>
+                  {placeLabel(reading.place)}
+                </div>
+              )}
+              <div className="ex-reading__coords">
+                {reading.lat.toFixed(5)}, {reading.lon.toFixed(5)}
               </div>
-            )}
-            <div className="ex-reading__coords">
-              {reading.lat.toFixed(5)}, {reading.lon.toFixed(5)}
-            </div>
-            <div className="ex-reading__value">
-              {reading.loading ? (
-                'Reading…'
-              ) : reading.rows.length === 0 ? (
-                'No layer to sample'
-              ) : (
-                // Sorted by RH: inspectPointAtLonLat resolves its requests in
-                // parallel and pushes as they land, so the rows arrive in
-                // whatever order the network happened to give them.
-                [...reading.rows]
-                  .sort((a, b) => (rhByLayerId[b.id] ?? 0) - (rhByLayerId[a.id] ?? 0))
-                  .map((row) => (
-                    <div key={row.id}>
-                      {row.error
-                        ? `Error: ${row.error}`
-                        : formatHeight(row.value, rhByLayerId[row.id] ?? 0)}
+              <div className="ex-reading__value">
+                {reading.loading
+                  ? 'Reading…'
+                  : reading.rows.length === 0
+                    ? 'No layer to sample'
+                    : reading.rows.map((row) => <div key={row.rh}>{row.text}</div>)}
+              </div>
+
+              <div className="ex-profile">
+                {reading.profileLoading && (
+                  <p className="ex-profile__note">Building profile… reads 101 layers, this may take a while.</p>
+                )}
+                {reading.profileError && <p className="ex-profile__note">{reading.profileError}</p>}
+
+                {reading.profile?.profile && reading.profile.profile.length > 0 && (
+                  <>
+                    <div className="ex-profile__charts">
+                      <figure>
+                        <figcaption>RH profile</figcaption>
+                        <RhProfileChart profile={reading.profile.profile} />
+                      </figure>
+                      {reading.profile.vertical_profile_curve &&
+                        reading.profile.vertical_profile_curve.length > 1 && (
+                          <figure>
+                            <figcaption>Vertical profile</figcaption>
+                            <VerticalProfileChart curve={reading.profile.vertical_profile_curve} />
+                          </figure>
+                        )}
                     </div>
-                  ))
-              )}
-            </div>
 
-            <div className="ex-profile">
-              {reading.profileLoading && (
-                <p className="ex-profile__note">
-                  Building profile… reads 101 layers, this may take a while.
-                </p>
-              )}
-              {reading.profileError && <p className="ex-profile__note">{reading.profileError}</p>}
-
-              {reading.profile?.profile && reading.profile.profile.length > 0 && (
-                <>
-                  <div className="ex-profile__charts">
-                    <figure>
-                      <figcaption>RH profile</figcaption>
-                      <RhProfileChart profile={reading.profile.profile} />
-                    </figure>
-                    {reading.profile.vertical_profile_curve &&
-                      reading.profile.vertical_profile_curve.length > 1 && (
-                        <figure>
-                          <figcaption>Vertical profile</figcaption>
-                          <VerticalProfileChart curve={reading.profile.vertical_profile_curve} />
-                        </figure>
+                    <dl className="ex-profile__metrics">
+                      {reading.profile.fhd != null && (
+                        <div>
+                          <dt title="Foliage height diversity">FHD</dt>
+                          <dd>{reading.profile.fhd.toFixed(2)}</dd>
+                        </div>
                       )}
-                  </div>
-
-                  <dl className="ex-profile__metrics">
-                    {reading.profile.fhd != null && (
-                      <div>
-                        <dt title="Foliage height diversity">FHD</dt>
-                        <dd>{reading.profile.fhd.toFixed(2)}</dd>
-                      </div>
-                    )}
-                    {reading.profile.cr != null && (
-                      <div>
-                        <dt title="Canopy ratio">CR</dt>
-                        <dd>{reading.profile.cr.toFixed(2)}</dd>
-                      </div>
-                    )}
-                    {reading.profile.tile_name && (
-                      <div>
-                        <dt>Tile</dt>
-                        <dd>{reading.profile.tile_name}</dd>
-                      </div>
-                    )}
-                  </dl>
-                </>
-              )}
+                      {reading.profile.cr != null && (
+                        <div>
+                          <dt title="Canopy ratio">CR</dt>
+                          <dd>{reading.profile.cr.toFixed(2)}</dd>
+                        </div>
+                      )}
+                      {reading.profile.tile_name && (
+                        <div>
+                          <dt>Tile</dt>
+                          <dd>{reading.profile.tile_name}</dd>
+                        </div>
+                      )}
+                    </dl>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
-    </div>
+    </ExploreMapContext.Provider>
   );
 }

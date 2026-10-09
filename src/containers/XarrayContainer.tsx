@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Paper, Typography, TextField, Button, FormControlLabel, Switch } from '@mui/material';
-import TileLayer from 'ol/layer/Tile';
-import XYZ from 'ol/source/XYZ';
+import { RasterLayer } from '../map/layers';
 import type { Map } from '../components/Map';
 import { apiService } from '../services/api';
 
@@ -16,12 +15,12 @@ export function XarrayContainer({ map }: XarrayContainerProps) {
   const [lat, setLat] = useState<string>('lat');
   const [rescale, setRescale] = useState<string>('');
   const [colormap, setColormap] = useState<string>('');
-  const [layer, setLayer] = useState<TileLayer<XYZ> | null>(null);
+  const [layer, setLayer] = useState<RasterLayer | null>(null);
   const [visible, setVisible] = useState<boolean>(true);
 
   useEffect(() => {
     return () => {
-      if (map && layer) map.removeLayer(layer);
+      if (map && layer) layer.detach();
     };
   }, [map, layer]);
 
@@ -36,14 +35,10 @@ export function XarrayContainer({ map }: XarrayContainerProps) {
       colormap_name: colormap || undefined,
     });
 
-    if (layer) map.removeLayer(layer);
+    if (layer) layer.detach();
 
-    const newLayer = new TileLayer({
-      source: new XYZ({ url: tile_url, maxZoom: 14 }),
-      visible,
-      opacity: 0.9,
-    });
-    map.addLayer(newLayer);
+    const newLayer = new RasterLayer({ url: tile_url, maxTileZoom: 14, visible, opacity: 0.9 });
+    newLayer.attach(map);
     setLayer(newLayer);
   };
 

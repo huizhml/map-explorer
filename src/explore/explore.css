@@ -557,14 +557,18 @@ body {
    card and locator the bottom-right, the reading card the bottom-left and the
    random-site button the bottom-centre. Top-centre looks free but is where the
    site card opens, which is why this starts collapsed. */
-.ex-search__open,
-.ex-search {
+.ex-topleft {
   position: absolute;
   top: 1rem;
   left: 1rem;
   z-index: 12;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
 }
-.ex-search__open {
+.ex-search__open,
+.ex-locate__btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -578,7 +582,8 @@ body {
   cursor: pointer;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
 }
-.ex-search__open:hover {
+.ex-search__open:hover,
+.ex-locate__btn:hover:not(:disabled) {
   color: #10796a;
   border-color: #10796a;
 }
@@ -643,6 +648,37 @@ body {
   color: #b4453a;
 }
 
+/* -------------------------------------------------------------- locate ---- */
+
+.ex-locate {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ex-locate__btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+/* Waiting on the browser — a GPS fix can take seconds. */
+.ex-locate__btn.is-busy svg {
+  animation: ex-locate-pulse 1s ease-in-out infinite;
+}
+@keyframes ex-locate-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+.ex-locate__error {
+  margin: 0;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  font-size: 0.7rem;
+  color: #b4453a;
+  white-space: nowrap;
+}
+
 /* ------------------------------------------------------------- minimap ---- */
 
 /* Sits directly above the basemap card, matching its radius and shadow so the
@@ -685,13 +721,13 @@ body {
   z-index: 1;
 }
 
-/* OpenLayers paints a white canvas background over the container otherwise. */
-.ex-minimap .ol-viewport {
+/* The map's canvas is square-cornered and would poke out of the card. */
+.ex-minimap .maplibregl-canvas {
   border-radius: 7px;
 }
 
 /* Compact card at bottom-right, mirroring the full app's BaseMapSelector.
-   Clears OpenLayers' scale bar (bottom-left) and the reading card. */
+   Clears the scale bar (bottom-left) and the reading card. */
 .ex-basemap {
   position: absolute;
   right: 20px;

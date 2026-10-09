@@ -1,14 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type Map from 'ol/Map';
-import Feature from 'ol/Feature';
-import LineString from 'ol/geom/LineString';
-import VectorLayer from 'ol/layer/Vector';
-import VectorSource from 'ol/source/Vector';
-import { Stroke, Style } from 'ol/style';
-import { fromLonLat } from 'ol/proj';
+import type { GeoJSONSource } from 'maplibre-gl';
 import { TransectHeatmap, type Transect } from './TransectHeatmap';
 import { placeLabel, reverseGeocode, type Place } from '../utils/reverseGeocode';
-import { takeCamera } from './takeCamera';
+import { setIntroCancel, takeCamera, useExploreMap } from './exploreMap';
 
 /**
  * "Visit a random site" — jumps to one of the curated sites, draws its transect
@@ -37,13 +31,16 @@ type Site = {
 const BUNDLE_URL = './sites/sites.json';
 const IMAGE_BASE = './sites/';
 
-/** Casing over a dark halo, so the line reads over both bright and dark tiles. */
-const LINE_STYLE = [
-  new Style({ stroke: new Stroke({ color: 'rgba(0,0,0,0.55)', width: 7 }) }),
-  new Style({ stroke: new Stroke({ color: '#ff3d7f', width: 3 }) }),
-];
+const LINE_SOURCE = 'site-transect';
+const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 
-export function RandomSite({ map }: { map: Map | null }) {
+/**
+ * `intro` is false when the page was opened on a linked view (`#zoom/lat/lon`):
+ * the link is where the reader asked to be, so flying them somewhere random
+ * would throw it away.
+ */
+export function RandomSite({ intro = true }: { intro?: boolean }) {
+  const { map } = useExploreMap();
   const [sites, setSites] = useState<Site[] | null>(null);
   // The visits made so far, and where in them we are. Random means a site is
   // gone for good once it is replaced, so the trail has to be kept to be able
@@ -51,7 +48,6 @@ export function RandomSite({ map }: { map: Map | null }) {
   const [visited, setVisited] = useState<Site[]>([]);
   const [pos, setPos] = useState(-1);
   const current = pos >= 0 ? visited[pos] ?? null : null;
-  const layerRef = useRef<VectorLayer<VectorSource> | null>(null);
   // undefined while the lookup is in flight, null when the point has no name.
   const [place, setPlace] = useState<Place | null | undefined>(undefined);
 
@@ -70,15 +66,28 @@ export function RandomSite({ map }: { map: Map | null }) {
     };
   }, []);
 
-  // One layer reused across visits; zIndex above the prediction tiles.
+  // One source reused across visits. Added without a `beforeId`, so above the
+  // predictions. Casing over a dark halo, so the line reads over both bright
+  // and dark tiles.
   useEffect(() => {
     if (!map) return;
-    const layer = new VectorLayer({ source: new VectorSource(), style: LINE_STYLE, zIndex: 900 });
-    map.addLayer(layer);
-    layerRef.current = layer;
+    map.addSource(LINE_SOURCE, { type: 'geojson', data: EMPTY });
+    map.addLayer({
+      id: `${LINE_SOURCE}-casing`, type: 'line', source: LINE_SOURCE,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': 'rgba(0,0,0,0.55)', 'line-width': 7 },
+    });
+    map.addLayer({
+      id: LINE_SOURCE, type: 'line', source: LINE_SOURCE,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ff3d7f', 'line-width': 3 },
+    });
     return () => {
-      map.removeLayer(layer);
-      layerRef.current = null;
+      // The map may already be gone when the page unmounts.
+      if (!map.style) return;
+      map.removeLayer(LINE_SOURCE);
+      map.removeLayer(`${LINE_SOURCE}-casing`);
+      map.removeSource(LINE_SOURCE);
     };
   }, [map]);
 
@@ -91,8 +100,7 @@ export function RandomSite({ map }: { map: Map | null }) {
       // animating, would otherwise win the view off us. See takeCamera.
       takeCamera(map);
 
-      const source = layerRef.current?.getSource();
-      source?.clear();
+      const source = map.getSource<GeoJSONSource>(LINE_SOURCE);
 
       const coords =
         site.geometry?.type === 'LineString'
@@ -100,17 +108,19 @@ export function RandomSite({ map }: { map: Map | null }) {
           : site.transect?.line_coordinates ?? null;
 
       if (coords?.length) {
-        const line = new LineString(coords.map((c) => fromLonLat(c)));
-        source?.addFeature(new Feature(line));
+        source?.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } });
         // Fit the line rather than centring on it, so the whole transect is
         // visible whatever its length — these run from under 1 km to several.
-        map.getView().fit(line.getExtent(), {
-          padding: [90, 90, 260, 90],
+        const xs = coords.map((c) => c[0]);
+        const ys = coords.map((c) => c[1]);
+        map.fitBounds([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], {
+          padding: { top: 90, right: 90, bottom: 260, left: 90 },
           duration: 900,
-          maxZoom: 15,
+          maxZoom: 14,
         });
-      } else if (site.center) {
-        map.getView().animate({ center: fromLonLat(site.center), zoom: 13, duration: 900 });
+      } else {
+        source?.setData(EMPTY);
+        if (site.center) map.easeTo({ center: site.center, zoom: 12, duration: 900 });
       }
     },
     [map],
@@ -134,7 +144,7 @@ export function RandomSite({ map }: { map: Map | null }) {
    *
    * A page that lands on the whole world shows only the low-zoom mosaic, and a
    * reviewer who does not know to zoom in never sees the 10 m data at all — the
-   * auto-loader does not fetch tiles below zoom 8. Starting global and *then*
+   * 10 m tiles are not fetched below zoom 7. Starting global and *then*
    * moving teaches the gesture instead of skipping it: you see the coverage,
    * then you see what it becomes up close.
    *
@@ -143,36 +153,36 @@ export function RandomSite({ map }: { map: Map | null }) {
    */
   const flownRef = useRef(false);
   useEffect(() => {
-    if (!map || !sites?.length || flownRef.current) return;
+    if (!intro || !map || !sites?.length || flownRef.current) return;
     const site = sites[Math.floor(Math.random() * sites.length)];
     if (!site.center) return;
     flownRef.current = true;
 
     // Anyone who has already grabbed the map means it: flying the view out from
     // under them would be the page fighting its reader.
-    const viewport = map.getViewport();
+    const viewport = map.getCanvasContainer();
     const cancel = () => {
       clearTimeout(timer);
       viewport.removeEventListener('pointerdown', cancel);
       viewport.removeEventListener('wheel', cancel);
-      map.set('exCancelIntro', null);
+      setIntroCancel(null);
     };
-    // Published on the map so anything else that moves the view can call off
-    // the flight first — the controls that do are overlays outside the
-    // viewport, so they never trip the listeners above.
-    map.set('exCancelIntro', cancel);
+    // Registered so anything else that moves the view can call off the flight
+    // first — the controls that do are overlays outside the canvas, so they
+    // never trip the listeners above.
+    setIntroCancel(cancel);
     const timer = setTimeout(() => {
       cancel();
-      // Zoom 10, two past the auto-loader's threshold, so the high-resolution
-      // tiles are already loading when the flight lands. Slow enough to read as
-      // travel rather than a jump cut.
-      map.getView().animate({ center: fromLonLat(site.center!), zoom: 10, duration: 2800 });
+      // Zoom 9, two past the 10 m tiles' threshold, so they are already
+      // loading when the flight lands. Slow enough to read as travel rather
+      // than a jump cut.
+      map.flyTo({ center: site.center!, zoom: 9, duration: 2800 });
     }, 1400);
     viewport.addEventListener('pointerdown', cancel);
     viewport.addEventListener('wheel', cancel);
 
     return cancel;
-  }, [map, sites]);
+  }, [intro, map, sites]);
 
   const back = useCallback(() => {
     if (pos <= 0) return;
@@ -204,8 +214,8 @@ export function RandomSite({ map }: { map: Map | null }) {
     // behind an empty map would put the back arrow on a site nothing is drawn for.
     setVisited([]);
     setPos(-1);
-    layerRef.current?.getSource()?.clear();
-  }, []);
+    map?.getSource<GeoJSONSource>(LINE_SOURCE)?.setData(EMPTY);
+  }, [map]);
 
   if (!sites || sites.length === 0) return null;
 

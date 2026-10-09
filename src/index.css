@@ -55,11 +55,11 @@ button:focus-visible {
 }
 
 /*
- * Move the OpenLayers scale bar clear of the sidebar (rail ~58px + panel up to
- * 340px on the left edge) so it is no longer hidden behind it.
+ * Move the map's bottom-left controls (the scale bar) clear of the sidebar
+ * (rail ~58px + panel up to 340px on the left edge) so they are no longer
+ * hidden behind it.
  */
-.ol-scale-bar,
-.ol-scale-line {
+.maplibregl-ctrl-bottom-left {
   left: 412px;
   bottom: 8px;
 }

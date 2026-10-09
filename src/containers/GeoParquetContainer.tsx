@@ -1,10 +1,7 @@
 import React, { useState } from 'react';
 import { getApiUrl } from '../config';
-import { Map } from 'ol';
-import VectorLayer from 'ol/layer/Vector';
-import VectorSource from 'ol/source/Vector';
-import GeoJSON from 'ol/format/GeoJSON';
-import { Style, Fill, Stroke, Circle as CircleStyle } from 'ol/style';
+import type { Map } from 'maplibre-gl';
+import { VectorLayer } from '../map/vector';
 import { Button, Box, Typography, Alert, CircularProgress } from '@mui/material';
 import { Upload as UploadIcon } from '@mui/icons-material';
 
@@ -25,7 +22,7 @@ export function GeoParquetContainer({ map }: GeoParquetContainerProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fileInfo, setFileInfo] = useState<GeoParquetInfo | null>(null);
-  const [vectorLayer, setVectorLayer] = useState<VectorLayer<VectorSource> | null>(null);
+  const [vectorLayer, setVectorLayer] = useState<VectorLayer | null>(null);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -73,42 +70,23 @@ export function GeoParquetContainer({ map }: GeoParquetContainerProps) {
       const geojsonData = await geojsonResponse.json();
 
       // Remove existing vector layer
-      if (vectorLayer) {
-        map.removeLayer(vectorLayer);
-      }
-
-      // Create vector source and layer
-      const vectorSource = new VectorSource({
-        features: new GeoJSON().readFeatures(geojsonData, {
-          featureProjection: 'EPSG:3857',
-        }),
-      });
+      vectorLayer?.detach();
 
       const newVectorLayer = new VectorLayer({
-        source: vectorSource,
-        style: new Style({
-          fill: new Fill({
-            color: 'rgba(255, 0, 0, 0.3)',
-          }),
-          stroke: new Stroke({
-            color: '#ff0000',
-            width: 2,
-          }),
-          image: new CircleStyle({
-            radius: 5,
-            fill: new Fill({
-              color: '#ff0000',
-            }),
-          }),
-        }),
+        style: {
+          fill: 'rgba(255, 0, 0, 0.3)',
+          stroke: '#ff0000',
+          strokeWidth: 2,
+          circle: { radius: 5, fill: '#ff0000' },
+        },
       });
-
-      map.addLayer(newVectorLayer);
+      newVectorLayer.setFeatures(geojsonData.features ?? []);
+      newVectorLayer.attach(map);
       setVectorLayer(newVectorLayer);
 
       // Fit map to features
-      const extent = vectorSource.getExtent();
-      map.getView().fit(extent, { padding: [50, 50, 50, 50] });
+      const bounds = newVectorLayer.getBounds();
+      if (bounds) map.fitBounds(bounds, { padding: 50 });
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -119,7 +97,7 @@ export function GeoParquetContainer({ map }: GeoParquetContainerProps) {
 
   const handleRemoveLayer = () => {
     if (vectorLayer && map) {
-      map.removeLayer(vectorLayer);
+      vectorLayer.detach();
       setVectorLayer(null);
       setFileInfo(null);
     }

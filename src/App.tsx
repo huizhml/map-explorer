@@ -117,10 +117,8 @@ function App() {
   useEffect(() => {
     if (!layerManager) return;
     if (cogLayer && map) {
-      const metadata: any = {};
-      const ext = cogLayer.getExtent();
-      if (ext?.length === 4) metadata.extent = ext;
-      layerManager.addLayer('cog', 'GeoTIFF Layer', 'cog', cogLayer, metadata);
+      // No extent recorded: LayerManager asks the layer for its bounds.
+      layerManager.addLayer('cog', 'GeoTIFF Layer', 'cog', cogLayer, {});
       updateLayersList();
     } else if (!cogLayer) { layerManager.removeLayer('cog'); updateLayersList(); }
   }, [cogLayer, map, layerManager, updateLayersList]);
@@ -129,14 +127,8 @@ function App() {
   useEffect(() => {
     if (!layerManager) return;
     if (fgbLayer && map) {
+      // No extent recorded: LayerManager asks the layer for its bounds.
       const metadata: any = {};
-      try {
-        const src = fgbLayer.getSource();
-        if (src && typeof src.getExtent === 'function') {
-          const ext = src.getExtent();
-          if (ext?.length === 4) metadata.extent = ext;
-        }
-      } catch { /* ignore */ }
       const datasetKind = fgbLayer.get('datasetKind');
       const datasetDisplayName = fgbLayer.get('datasetDisplayName');
       const layerId =

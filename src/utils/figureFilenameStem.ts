@@ -1,4 +1,4 @@
-import { transformExtent } from 'ol/proj';
+import { bboxFromMercator } from '../map/proj';
 
 /** Mirrors backend `_sanitize_name` in auxiliary.save_figures. */
 export function sanitizeFigureFilenameStem(name: string): string {
@@ -17,7 +17,7 @@ export function defaultFigureFilenameStem(
   extent3857: [number, number, number, number],
   layerName: string,
 ): string {
-  const wgs = transformExtent(extent3857, 'EPSG:3857', 'EPSG:4326');
+  const wgs = bboxFromMercator(extent3857);
   const centerLon = (wgs[0] + wgs[2]) / 2;
   const centerLat = (wgs[1] + wgs[3]) / 2;
   const locTag = `${centerLat.toFixed(4)}_${centerLon.toFixed(4)}`.replace(/-/g, 'm');

@@ -16,7 +16,6 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import { useMapStore, type SavedGediPoint } from '../stores/mapStore';
-import { transform } from 'ol/proj';
 
 interface SavedGediPointsListProps {
   onLocatePoint?: (coordinate: number[]) => void;
@@ -81,9 +80,8 @@ export function SavedGediPointsList({ onLocatePoint }: SavedGediPointsListProps)
   const handleLocate = (point: SavedGediPoint) => {
     const map = useMapStore.getState().map;
     if (!map) return;
-    const coord3857 = transform([point.lon, point.lat], 'EPSG:4326', 'EPSG:3857');
-    map.getView().animate({ center: coord3857, zoom: 16, duration: 600 });
-    onLocatePoint?.(coord3857);
+    map.easeTo({ center: [point.lon, point.lat], zoom: 15, duration: 600 });
+    onLocatePoint?.([point.lon, point.lat]);
   };
 
   return (

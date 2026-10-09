@@ -1,11 +1,8 @@
-import { Feature } from 'ol';
-import { Point } from 'ol/geom';
-import type { Geometry } from 'ol/geom';
-import OlGeoJSON from 'ol/format/GeoJSON';
-import { deserialize } from 'flatgeobuf/lib/mjs/ol';
+import { deserialize } from 'flatgeobuf/lib/mjs/geojson';
 
+/** Features are GeoJSON in longitude/latitude, as the map takes them. */
 export interface ParseResult {
-  features: Feature<Geometry>[];
+  features: GeoJSON.Feature[];
   name: string;
   error?: string;
 }
@@ -34,7 +31,7 @@ function parseCsv(text: string, fileName: string): ParseResult {
     return { features: [], name: fileName, error: `Could not find lat/lon columns. Headers: ${headers.join(', ')}` };
   }
 
-  const features: Feature<Geometry>[] = [];
+  const features: GeoJSON.Feature[] = [];
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(delim).map((c) => c.trim().replace(/^["']|["']$/g, ''));
     const lat = parseFloat(cols[latIdx]);
@@ -49,9 +46,7 @@ function parseCsv(text: string, fileName: string): ParseResult {
       props[headers[j]] = val !== '' && isFinite(num) ? num : val;
     }
 
-    const feature = new Feature({ geometry: new Point([lon, lat]).transform('EPSG:4326', 'EPSG:3857') });
-    feature.setProperties(props);
-    features.push(feature);
+    features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties: props });
   }
 
   return { features, name: fileName };
@@ -59,12 +54,7 @@ function parseCsv(text: string, fileName: string): ParseResult {
 
 function parseGeoJson(text: string, fileName: string): ParseResult {
   try {
-    const format = new OlGeoJSON();
-    const features = format.readFeatures(text, {
-      dataProjection: 'EPSG:4326',
-      featureProjection: 'EPSG:3857',
-    }) as Feature<Geometry>[];
-    return { features, name: fileName };
+    return { features: geojsonFeatures(JSON.parse(text)), name: fileName };
   } catch (e: any) {
     return { features: [], name: fileName, error: `Invalid GeoJSON: ${e.message}` };
   }
@@ -72,10 +62,9 @@ function parseGeoJson(text: string, fileName: string): ParseResult {
 
 async function parseFgb(buffer: ArrayBuffer, fileName: string): Promise<ParseResult> {
   try {
-    const features: Feature<Geometry>[] = [];
-    const iter = deserialize(new Uint8Array(buffer), undefined, undefined, false, {}, false, 'EPSG:4326', 'EPSG:3857');
-    for await (const feature of iter) {
-      features.push(feature as Feature<Geometry>);
+    const features: GeoJSON.Feature[] = [];
+    for await (const feature of deserialize(new Uint8Array(buffer)) as AsyncGenerator<GeoJSON.Feature>) {
+      features.push(feature);
     }
     return { features, name: fileName };
   } catch (e: any) {
@@ -83,24 +72,24 @@ async function parseFgb(buffer: ArrayBuffer, fileName: string): Promise<ParseRes
   }
 }
 
-function geojsonToOlFeatures(geojson: any): Feature<Geometry>[] {
-  const format = new OlGeoJSON();
-  return format.readFeatures(geojson, {
-    dataProjection: 'EPSG:4326',
-    featureProjection: 'EPSG:3857',
-  }) as Feature<Geometry>[];
+/** A FeatureCollection, a single Feature or a bare geometry, as a list of features. */
+function geojsonFeatures(geojson: any): GeoJSON.Feature[] {
+  if (!geojson || typeof geojson !== 'object') throw new Error('not a GeoJSON object');
+  if (geojson.type === 'FeatureCollection') return (geojson.features ?? []).filter((f: any) => f?.geometry);
+  if (geojson.type === 'Feature') return geojson.geometry ? [geojson] : [];
+  if (typeof geojson.type === 'string' && ('coordinates' in geojson || 'geometries' in geojson)) {
+    return [{ type: 'Feature', geometry: geojson, properties: {} }];
+  }
+  throw new Error(`unexpected type ${String(geojson.type)}`);
 }
 
 async function parseShapefile(buffer: ArrayBuffer, fileName: string): Promise<ParseResult> {
   try {
     const shp = await import('shpjs');
     const geojson = await shp.default(buffer);
-    let features: Feature<Geometry>[];
-    if (Array.isArray(geojson)) {
-      features = geojson.flatMap((fc) => geojsonToOlFeatures(fc as any));
-    } else {
-      features = geojsonToOlFeatures(geojson as any);
-    }
+    const features = Array.isArray(geojson)
+      ? geojson.flatMap((fc) => geojsonFeatures(fc))
+      : geojsonFeatures(geojson);
     return { features, name: fileName };
   } catch (e: any) {
     return { features: [], name: fileName, error: `Invalid Shapefile: ${e.message}` };

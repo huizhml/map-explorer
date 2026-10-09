@@ -1,7 +1,4 @@
-import type VectorLayer from 'ol/layer/Vector';
-import type VectorSource from 'ol/source/Vector';
-import type { FeatureLike } from 'ol/Feature';
-import { Style, Fill, Stroke, Circle as CircleStyle } from 'ol/style';
+import type { AppFeature, FeatureStyle, StyleFn, VectorLayer } from '../map/vector';
 
 export const SELECTIVE_LOGGING_LAYER_ID = 'selective-logging';
 export const SELECTIVE_LOGGING_LAYER_TYPE = 'selective_logging';
@@ -27,36 +24,30 @@ export function selectiveLoggingCategoryColors(categories: string[]): Record<str
  * Style that hides features outside the layer's `dateRange` (epoch ms, set with
  * `applySelectiveLoggingDateRange`) and colours the rest by category.
  */
-export function makeSelectiveLoggingStyle(layer: VectorLayer<VectorSource>, colors: Record<string, string>) {
-  const cache = new Map<string, Style>();
+export function makeSelectiveLoggingStyle(layer: VectorLayer, colors: Record<string, string>): StyleFn {
+  const cache = new Map<string, FeatureStyle>();
   const styleFor = (category: string) => {
     let s = cache.get(category);
     if (!s) {
-      s = new Style({
-        image: new CircleStyle({
-          radius: 5,
-          fill: new Fill({ color: colors[category] ?? '#757575' }),
-          stroke: new Stroke({ color: 'rgba(255, 255, 255, 0.9)', width: 1 }),
-        }),
-      });
+      s = { circle: { radius: 5, fill: colors[category] ?? '#757575', stroke: 'rgba(255, 255, 255, 0.9)', strokeWidth: 1 } };
       cache.set(category, s);
     }
     return s;
   };
-  return (feature: FeatureLike) =>
-    isInDateRange(feature, layer.get('dateRange')) ? styleFor(String(feature.get('category'))) : undefined;
+  return (feature) =>
+    isInDateRange(feature, layer.get<[number, number]>('dateRange')) ? styleFor(String(feature.properties.category)) : null;
 }
 
-export function isInDateRange(feature: FeatureLike, range: [number, number] | undefined): boolean {
+export function isInDateRange(feature: AppFeature, range: [number, number] | undefined): boolean {
   if (!range) return true;
-  const ts = feature.get('reported_ts') as number;
+  const ts = feature.properties.reported_ts as number;
   return ts >= range[0] && ts <= range[1];
 }
 
 /** Applies a date range to the layer and returns how many features it keeps. */
-export function applySelectiveLoggingDateRange(layer: VectorLayer<VectorSource>, range: [number, number]): number {
+export function applySelectiveLoggingDateRange(layer: VectorLayer, range: [number, number]): number {
   layer.set('dateRange', range);
-  layer.changed();
-  const features = layer.getSource()?.getFeatures() ?? [];
-  return features.reduce((n, f) => n + (isInDateRange(f, range) ? 1 : 0), 0);
+  // The style reads the range; setting it again is what re-runs it.
+  layer.setStyle(makeSelectiveLoggingStyle(layer, layer.get<Record<string, string>>('categoryColors') ?? {}));
+  return layer.getFeatures().reduce((n, f) => n + (isInDateRange(f, range) ? 1 : 0), 0);
 }

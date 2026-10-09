@@ -1,26 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import VectorLayer from 'ol/layer/Vector';
-import VectorSource from 'ol/source/Vector';
-import { Feature } from 'ol';
-import { Geometry, Point, Polygon, LineString, MultiPolygon, MultiLineString } from 'ol/geom';
-import { Style, Stroke, Fill, Circle as CircleStyle, Text as TextStyle } from 'ol/style';
-import Draw from 'ol/interaction/Draw';
-import { never } from 'ol/events/condition';
-import { transform } from 'ol/proj';
-import {
-  bindShiftKeyRef,
-  createSquareWhenShift,
-  horizontalLineWhenShift,
-  primaryPointerAllowShift,
-} from '../utils/drawConstraints';
+import { Marker, type MapMouseEvent, type PointLike } from 'maplibre-gl';
 import { useMapStore } from '../stores/mapStore';
 import { inspectPointAtLonLat } from '../utils/inspectPoint';
 import { fetchVerticalProfile, fetchVerticalProfileLine } from '../utils/verticalProfile';
 import type { GediPointData } from '../components/GediPointPopup';
 import type { SavedMapFeatureGeometry } from '../stores/mapStore';
 import { SELECTIVE_LOGGING_LAYER_ID } from '../utils/selectiveLogging';
+import { VectorLayer, type AppFeature, type FeatureStyle, type Hit } from '../map/vector';
+import { startDraw, type DrawHandle } from '../map/draw';
+import { bboxToMercator, featuresBBox, geometryBBox, type BBox, type LonLat } from '../map/proj';
+import type { ManagedLayer } from '../utils/LayerManager';
 
 const MIN_CLUSTER_SIZE = 20;
+
+const BLUE_VERTEX: FeatureStyle = { circle: { radius: 6, fill: '#1976d2', stroke: '#ffffff', strokeWidth: 2 } };
+
+/** The vector layer a managed layer holds, if it holds one. */
+function vectorOf(managed: ManagedLayer | undefined): VectorLayer | null {
+  return managed?.layer instanceof VectorLayer ? managed.layer : null;
+}
+
+/** The first feature hit, in a list of layers tried in order. */
+function firstHit(layers: ManagedLayer[], point: PointLike, tolerance: number): { managed: ManagedLayer; hit: Hit } | null {
+  for (const managed of layers) {
+    const vl = vectorOf(managed);
+    if (!vl) continue;
+    const hit = vl.hitTest(point, tolerance)[0];
+    if (hit) return { managed, hit };
+  }
+  return null;
+}
 
 export function useMapInteractions(updateLayersList: () => void) {
   const {
@@ -47,87 +56,75 @@ export function useMapInteractions(updateLayersList: () => void) {
   const inspectPanel = useMapStore((s) => s.inspectPanel);
 
   const inspectRequestIdRef = useRef(0);
-  const inspectPinLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
-  const inspectPinFeatureRef = useRef<Feature<Point> | null>(null);
-  const drawLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
-  const labelLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
-  const inspectLineLayerRef = useRef<VectorLayer<VectorSource> | null>(null);
-  const inspectLineDrawRef = useRef<Draw | null>(null);
-  const highlightedGediRef = useRef<Feature<Geometry> | null>(null);
+  const inspectPinLayerRef = useRef<VectorLayer | null>(null);
+  const drawLayerRef = useRef<VectorLayer | null>(null);
+  const labelLayerRef = useRef<VectorLayer | null>(null);
+  const inspectLineLayerRef = useRef<VectorLayer | null>(null);
+  const highlightedGediRef = useRef<{ layer: VectorLayer; feature: AppFeature } | null>(null);
   const [gediPointPopup, setGediPointPopup] = useState<GediPointData | null>(null);
-  /** Synced for Draw geometry helpers (Shift + horizontal line / square box). */
-  const shiftKeyHeldRef = useRef(false);
 
-  const getVisibleClickableFgbLayers = (): any[] => {
+  const setCursor = useCallback((cursor: string) => {
+    if (map) map.getCanvasContainer().style.cursor = cursor;
+  }, [map]);
+
+  const getVisibleClickableFgbLayers = (): ManagedLayer[] => {
     const manager = useMapStore.getState().layerManager;
     const managedLayers = manager
-      ? manager
-        .getLayersByType('fgb')
-        .filter((managed: any) => managed?.visible && managed?.layer)
+      ? manager.getLayersByType('fgb').filter((managed) => managed?.visible && managed?.layer)
       : [];
     if (managedLayers.length > 0) return managedLayers;
 
     // Fallback for moments where layer manager hasn't registered yet.
     const fallbackFgb = useMapStore.getState().fgbLayer;
-    return fallbackFgb ? [{ layer: fallbackFgb, visible: fallbackFgb.getVisible?.() !== false }] : [];
-  };
-
-  const isClickableFgbLayer = (layer: any): boolean => {
-    const visibleFgbLayers = getVisibleClickableFgbLayers();
-    return visibleFgbLayers.some((managed: any) => managed.layer === layer);
+    return fallbackFgb && fallbackFgb.getVisible()
+      ? [{ id: 'fgb', name: '', type: 'fgb', layer: fallbackFgb, visible: true, opacity: 1, zIndex: fallbackFgb.getZIndex() }]
+      : [];
   };
 
   const clearInspectPin = useCallback(() => {
-    inspectPinLayerRef.current?.getSource()?.clear();
-    inspectPinFeatureRef.current = null;
+    inspectPinLayerRef.current?.clear();
   }, []);
 
   const clearInspectLine = useCallback(() => {
     useMapStore.getState().setTransectHeatmapSampleIndex(null);
     if (inspectLineLayerRef.current) {
-      inspectLineLayerRef.current.getSource()?.clear();
-      map?.removeLayer(inspectLineLayerRef.current);
+      inspectLineLayerRef.current.detach();
       inspectLineLayerRef.current = null;
     }
-  }, [map]);
+  }, []);
 
-  const setInspectPinAtCoordinate = useCallback((coordinate: number[]) => {
-    const src = inspectPinLayerRef.current?.getSource();
-    if (!src) return;
-    src.clear();
-    const pin = new Feature({ geometry: new Point(coordinate) });
-    src.addFeature(pin);
-    inspectPinFeatureRef.current = pin;
+  const setInspectPinAt = useCallback((lonLat: LonLat) => {
+    inspectPinLayerRef.current?.setFeatures([
+      { type: 'Feature', geometry: { type: 'Point', coordinates: lonLat }, properties: {} },
+    ]);
+  }, []);
+
+  /** Draw a geometry in the highlight layer, replacing what was there. */
+  const highlightGeometry = useCallback((geometry: GeoJSON.Geometry | null) => {
+    const hl = useMapStore.getState().highlightLayer;
+    if (!hl) return;
+    hl.setFeatures(geometry ? [{ type: 'Feature', geometry, properties: {} }] : []);
   }, []);
 
   // Inspect pin layer
   useEffect(() => {
     if (!map) return;
-    const source = new VectorSource();
     const layer = new VectorLayer({
-      source, zIndex: 1200,
-      style: new Style({ image: new CircleStyle({ radius: 6, fill: new Fill({ color: '#d32f2f' }), stroke: new Stroke({ color: '#ffffff', width: 2 }) }) }),
+      zIndex: 1200,
+      style: { circle: { radius: 6, fill: '#d32f2f', stroke: '#ffffff', strokeWidth: 2 } },
     });
-    map.addLayer(layer);
+    layer.attach(map);
     inspectPinLayerRef.current = layer;
-    return () => { map.removeLayer(layer); inspectPinLayerRef.current = null; inspectPinFeatureRef.current = null; };
-  }, [map]);
-
-  useEffect(() => {
-    if (!map) return;
-    const el = map.getTargetElement();
-    return bindShiftKeyRef(el, shiftKeyHeldRef);
+    return () => { layer.detach(); inspectPinLayerRef.current = null; };
   }, [map]);
 
   // Cursor for inspect mode
   useEffect(() => {
     if (!map) return;
-    const el = map.getTargetElement();
-    if (!el) return;
     const { inspectMode, drawingActive: da } = useMapStore.getState();
-    if (inspectMode && !da) el.style.cursor = 'crosshair';
-    else if (!da) el.style.cursor = '';
-  }, [map, useMapStore.getState().inspectMode, drawingActive]);
+    if (inspectMode && !da) setCursor('crosshair');
+    else if (!da) setCursor('');
+  }, [map, setCursor, useMapStore.getState().inspectMode, drawingActive]);
 
   useEffect(() => { if (!useMapStore.getState().inspectMode) clearInspectPin(); }, [useMapStore.getState().inspectMode, clearInspectPin]);
 
@@ -139,7 +136,7 @@ export function useMapInteractions(updateLayersList: () => void) {
     setPopupGeometry(null);
     setPopupCoordinates(null);
     setGediPointPopup(null);
-    highlightLayer?.getSource()?.clear();
+    highlightLayer?.clear();
   }, [
     drawingActive,
     highlightLayer,
@@ -153,41 +150,17 @@ export function useMapInteractions(updateLayersList: () => void) {
   useEffect(() => {
     if (!map) return;
     const hl = new VectorLayer({
-      source: new VectorSource(),
-      style: new Style({
-        stroke: new Stroke({ color: '#ff0000', width: 4 }),
-        fill: new Fill({ color: '#ff000000' }),
-        image: new CircleStyle({ radius: 10, stroke: new Stroke({ color: '#ff0000', width: 4 }), fill: new Fill({ color: 'rgba(255, 0, 0, 0.5)' }) }),
-      }),
       zIndex: 10000,
+      style: {
+        stroke: '#ff0000',
+        strokeWidth: 4,
+        circle: { radius: 10, stroke: '#ff0000', strokeWidth: 4, fill: 'rgba(255, 0, 0, 0.5)' },
+      },
     });
-    hl.setVisible(true);
-    map.addLayer(hl);
+    hl.attach(map);
     setHighlightLayer(hl);
-    return () => { map.removeLayer(hl); };
+    return () => { hl.detach(); };
   }, [map]);
-
-  const createHighlightGeometry = useCallback((geometry: Geometry): Geometry | null => {
-    if (!geometry) return null;
-    try {
-      const geomType = geometry.getType();
-      let coords: any = typeof (geometry as any).getCoordinates === 'function' ? (geometry as any).getCoordinates() : null;
-      if (!coords) {
-        const ext = geometry.getExtent();
-        if (ext?.length === 4) {
-          const [a, b, c, d] = ext;
-          return new Polygon([[[a, b], [c, b], [c, d], [a, d], [a, b]]]);
-        }
-        return null;
-      }
-      if (geomType === 'Polygon') return new Polygon(coords);
-      if (geomType === 'MultiPolygon') return new MultiPolygon(coords);
-      if (geomType === 'LineString') return new LineString(coords);
-      if (geomType === 'MultiLineString') return new MultiLineString(coords);
-      if (geomType === 'Point') return new Point(coords);
-    } catch { /* ignore */ }
-    return null;
-  }, []);
 
   // Clear the persistent rectangle layer when the export extent is reset
   // (e.g. when the user locates a saved feature, or after a successful save).
@@ -195,7 +168,7 @@ export function useMapInteractions(updateLayersList: () => void) {
   // panel would say "Draw a rectangle first" because the state is null.
   useEffect(() => {
     if (figureSelectionExtent === null && drawLayerRef.current && map) {
-      map.removeLayer(drawLayerRef.current);
+      drawLayerRef.current.detach();
       drawLayerRef.current = null;
     }
   }, [figureSelectionExtent, map]);
@@ -203,98 +176,77 @@ export function useMapInteractions(updateLayersList: () => void) {
   // Draw interaction
   useEffect(() => {
     if (!map || !drawingActive) return;
-    if (drawLayerRef.current) { map.removeLayer(drawLayerRef.current); drawLayerRef.current = null; }
-    if (labelLayerRef.current) { map.removeLayer(labelLayerRef.current); labelLayerRef.current = null; }
+    if (drawLayerRef.current) { drawLayerRef.current.detach(); drawLayerRef.current = null; }
+    if (labelLayerRef.current) { labelLayerRef.current.detach(); labelLayerRef.current = null; }
 
-    const drawSource = new VectorSource();
-    // Attach drawSource to a visible VectorLayer so the drawn rectangle stays
-    // on the map after drawend (without it, the OL sketch disappears and the
-    // user has no visual confirmation of their selection extent).
+    // The drawn rectangle stays on the map after the draw ends, so the user
+    // has visual confirmation of their selection extent.
     const drawLayer = new VectorLayer({
-      source: drawSource,
-      style: new Style({
-        stroke: new Stroke({ color: 'rgba(33, 150, 243, 0.95)', width: 2 }),
-        fill: new Fill({ color: 'rgba(33, 150, 243, 0.10)' }),
-      }),
       zIndex: 9500,
+      style: { stroke: 'rgba(33, 150, 243, 0.95)', strokeWidth: 2, fill: 'rgba(33, 150, 243, 0.10)' },
     });
-    map.addLayer(drawLayer);
+    drawLayer.attach(map);
     drawLayerRef.current = drawLayer;
 
-    const drawInteraction = new Draw({
-      source: drawSource,
-      type: 'Circle',
-      condition: primaryPointerAllowShift,
-      // `freehandCondition` defaults to `shiftKeyOnly`, which would put the
-      // interaction into freehand mode the moment the user pressed Shift to
-      // request a square — the geometryFunction wouldn't be honoured and the
-      // drawn shape wouldn't end up in the source. Disable it: Shift is for
-      // the geometry function only (via shiftKeyHeldRef), never for freehand.
-      freehandCondition: never,
-      geometryFunction: createSquareWhenShift(shiftKeyHeldRef),
-    });
-    map.addInteraction(drawInteraction);
-    const mapEl = map.getTargetElement();
-    if (mapEl) mapEl.style.cursor = 'crosshair';
+    // Shift draws a square.
+    const draw: DrawHandle = startDraw(map, {
+      type: 'box',
+      sketch: { line: { stroke: 'rgba(33, 150, 243, 0.95)', strokeWidth: 2, fill: 'rgba(33, 150, 243, 0.10)' }, vertex: BLUE_VERTEX },
+      onEnd: (geom) => {
+        drawLayer.setFeatures([{ type: 'Feature', geometry: geom, properties: {} }]);
+        const drawn = geometryBBox(geom) as BBox;
+        if (drawingMode === 'figures' || drawingMode === 'figures_db') {
+          // The backend takes the export extent in EPSG:3857.
+          setFigureSelectionExtent(bboxToMercator(drawn));
+        } else {
+          const fgb = useMapStore.getState().fgbLayer;
+          if (!fgb) { draw.stop(); setDrawingActive(false); return; }
 
-    drawInteraction.on('drawend', (event: any) => {
-      const geom = event.feature.getGeometry();
-      if (!geom) return;
-      const drawnExtent = geom.getExtent() as [number, number, number, number];
-      if (drawingMode === 'figures' || drawingMode === 'figures_db') {
-        setFigureSelectionExtent(drawnExtent);
-      } else {
-        const fgb = useMapStore.getState().fgbLayer;
-        if (!fgb) { setDrawingActive(false); return; }
-        const fgbSource = fgb.getSource();
-        if (!fgbSource) return;
-
-        const features = fgbSource.getFeaturesInExtent(drawnExtent);
-        const tileNames: string[] = [];
-        const labelFeatures: Feature<Geometry>[] = [];
-
-        for (const f of features) {
-          const name = f.get('Name');
-          if (name && typeof name === 'string') {
-            tileNames.push(name);
-            const g = f.getGeometry();
-            if (g) {
-              const ext = g.getExtent();
-              labelFeatures.push(new Feature({ geometry: new Point([(ext[0] + ext[2]) / 2, (ext[1] + ext[3]) / 2]), tileName: name }));
+          const tileNames: string[] = [];
+          const labelFeatures: GeoJSON.Feature[] = [];
+          for (const f of fgb.getFeaturesInBBox(drawn)) {
+            const name = f.properties.Name;
+            if (name && typeof name === 'string') {
+              tileNames.push(name);
+              const ext = geometryBBox(f.geometry);
+              if (ext) {
+                labelFeatures.push({
+                  type: 'Feature',
+                  geometry: { type: 'Point', coordinates: [(ext[0] + ext[2]) / 2, (ext[1] + ext[3]) / 2] },
+                  properties: { tileName: name },
+                });
+              }
             }
           }
+          tileNames.sort();
+          setSelectedTiles(tileNames);
+
+          if (drawLayerRef.current) { drawLayerRef.current.detach(); drawLayerRef.current = null; }
+          if (labelLayerRef.current) { labelLayerRef.current.detach(); labelLayerRef.current = null; }
+
+          const lblLayer = new VectorLayer({
+            zIndex: 9001,
+            style: (f) => ({ text: { value: f.properties.tileName || '', size: 16, bold: true, color: '#FFD700', halo: '#000000', haloWidth: 1.5 } }),
+          });
+          lblLayer.setFeatures(labelFeatures);
+          lblLayer.attach(map);
+          labelLayerRef.current = lblLayer;
+
+          const mgr = useMapStore.getState().layerManager;
+          const labelLayerId = `vector-tiles-${Date.now()}`;
+          if (mgr) {
+            mgr.addLayer(labelLayerId, `Selected Tiles (${tileNames.length})`, 'vector', lblLayer, { featureNames: tileNames });
+            updateLayersList();
+          }
         }
-        tileNames.sort();
-        setSelectedTiles(tileNames);
 
-        if (drawLayerRef.current) { map.removeLayer(drawLayerRef.current); drawLayerRef.current = null; }
-        if (labelLayerRef.current) { map.removeLayer(labelLayerRef.current); labelLayerRef.current = null; }
-
-        const lblLayer = new VectorLayer({
-          source: new VectorSource({ features: labelFeatures }),
-          style: (f: any) => new Style({ text: new TextStyle({ text: f.get('tileName') || '', font: 'bold 16px sans-serif', fill: new Fill({ color: '#FFD700' }), stroke: new Stroke({ color: '#000000', width: 3 }), overflow: true }) }),
-          zIndex: 9001,
-        });
-        map.addLayer(lblLayer);
-        labelLayerRef.current = lblLayer;
-
-        const mgr = useMapStore.getState().layerManager;
-        const labelLayerId = `vector-tiles-${Date.now()}`;
-        if (mgr) {
-          mgr.addLayer(labelLayerId, `Selected Tiles (${tileNames.length})`, 'vector', lblLayer, { featureNames: tileNames });
-          updateLayersList();
-        }
-      }
-
-      map.removeInteraction(drawInteraction);
-      if (mapEl) mapEl.style.cursor = '';
-      setDrawingActive(false);
+        draw.stop();
+        setDrawingActive(false);
+      },
     });
 
     return () => {
-      map.removeInteraction(drawInteraction);
-      const el = map.getTargetElement();
-      if (el) el.style.cursor = '';
+      draw.stop();
     };
   }, [map, drawingActive, drawingMode, setFigureSelectionExtent]);
 
@@ -303,73 +255,40 @@ export function useMapInteractions(updateLayersList: () => void) {
     if (!map || !inspectMode || drawingActive) return;
     if (featureCaptureType !== 'LineString' && featureCaptureType !== 'Polygon') return;
 
-    const source = new VectorSource();
-    const layer = new VectorLayer({
-      source,
-      zIndex: 1400,
-      style: new Style({
-        stroke: new Stroke({ color: '#8e24aa', width: 3 }),
-        fill: new Fill({ color: 'rgba(142, 36, 170, 0.15)' }),
-        image: new CircleStyle({
-          radius: 5,
-          fill: new Fill({ color: '#8e24aa' }),
-          stroke: new Stroke({ color: '#ffffff', width: 1.5 }),
-        }),
-      }),
-    });
-    map.addLayer(layer);
-
-    const draw = new Draw({
-      source,
+    // Shift makes a line segment horizontal.
+    const draw = startDraw(map, {
       type: featureCaptureType,
-      condition: primaryPointerAllowShift,
-      geometryFunction:
-        featureCaptureType === 'LineString'
-          ? horizontalLineWhenShift(shiftKeyHeldRef)
-          : undefined,
-    });
-    map.addInteraction(draw);
+      sketch: {
+        line: { stroke: '#8e24aa', strokeWidth: 3, fill: 'rgba(142, 36, 170, 0.15)' },
+        vertex: { circle: { radius: 5, fill: '#8e24aa', stroke: '#ffffff', strokeWidth: 1.5 } },
+      },
+      onEnd: (geom) => {
+        let geometryPayload: SavedMapFeatureGeometry | null = null;
 
-    const mapEl = map.getTargetElement();
-    if (mapEl) mapEl.style.cursor = 'crosshair';
-
-    draw.on('drawend', (event: { feature: Feature<Geometry> }) => {
-      const geom = event.feature.getGeometry();
-      if (!geom) {
-        setFeatureCaptureType(null);
-        return;
-      }
-
-      const transformed = geom.clone().transform('EPSG:3857', 'EPSG:4326');
-      let geometryPayload: SavedMapFeatureGeometry | null = null;
-
-      if (featureCaptureType === 'LineString' && transformed instanceof LineString) {
-        geometryPayload = {
-          type: 'LineString',
-          coordinates: transformed.getCoordinates() as [number, number][],
-        };
-      }
-      if (featureCaptureType === 'Polygon' && transformed instanceof Polygon) {
-        const rings = transformed.getCoordinates();
-        if (rings.length > 0) {
+        if (featureCaptureType === 'LineString' && geom.type === 'LineString') {
           geometryPayload = {
-            type: 'Polygon',
-            coordinates: rings as [number, number][][],
+            type: 'LineString',
+            coordinates: geom.coordinates as [number, number][],
           };
         }
-      }
+        if (featureCaptureType === 'Polygon' && geom.type === 'Polygon') {
+          if (geom.coordinates.length > 0) {
+            geometryPayload = {
+              type: 'Polygon',
+              coordinates: geom.coordinates as [number, number][][],
+            };
+          }
+        }
 
-      if (geometryPayload) {
-        setFeatureDraft({ geometry: geometryPayload });
-      }
-      setFeatureCaptureType(null);
+        if (geometryPayload) {
+          setFeatureDraft({ geometry: geometryPayload });
+        }
+        setFeatureCaptureType(null);
+      },
     });
 
     return () => {
-      map.removeInteraction(draw);
-      map.removeLayer(layer);
-      const el = map.getTargetElement();
-      if (el) el.style.cursor = '';
+      draw.stop();
     };
   }, [map, inspectMode, drawingActive, featureCaptureType, setFeatureCaptureType, setFeatureDraft]);
 
@@ -381,99 +300,87 @@ export function useMapInteractions(updateLayersList: () => void) {
     // Create the layer only once; keep it alive across deactivations so the
     // drawn line persists until the panel is explicitly closed.
     if (!inspectLineLayerRef.current) {
-      const newSource = new VectorSource();
       const layer = new VectorLayer({
-        source: newSource,
         zIndex: 1300,
         style: (f) => {
-          if (f.get('transectHeatmapHover')) {
-            return new Style({
-              image: new CircleStyle({
-                radius: 10,
-                fill: new Fill({ color: 'rgba(255, 152, 0, 0.95)' }),
-                stroke: new Stroke({ color: '#ffffff', width: 3 }),
-              }),
-            });
+          if (f.properties.transectHeatmapHover) {
+            return { circle: { radius: 10, fill: 'rgba(255, 152, 0, 0.95)', stroke: '#ffffff', strokeWidth: 3 } };
           }
-          const t = f.getGeometry()?.getType();
-          if (t === 'Point' || t === 'MultiPoint') {
-            return new Style({ image: new CircleStyle({ radius: 6, fill: new Fill({ color: '#1976d2' }), stroke: new Stroke({ color: '#ffffff', width: 2 }) }) });
-          }
-          return new Style({ stroke: new Stroke({ color: '#1976d2', width: 4 }), image: new CircleStyle({ radius: 6, fill: new Fill({ color: '#1976d2' }), stroke: new Stroke({ color: '#ffffff', width: 2 }) }) });
+          const t = f.geometry.type;
+          if (t === 'Point' || t === 'MultiPoint') return BLUE_VERTEX;
+          return { stroke: '#1976d2', strokeWidth: 4 };
         },
       });
-      map.addLayer(layer);
+      layer.attach(map);
       inspectLineLayerRef.current = layer;
     }
 
-    const source = inspectLineLayerRef.current.getSource()!;
+    const source = inspectLineLayerRef.current;
 
-    const draw = new Draw({
-      source,
+    // Shift makes a segment horizontal.
+    const draw = startDraw(map, {
       type: 'LineString',
-      condition: primaryPointerAllowShift,
-      freehand: false,
-      freehandCondition: never,
-      geometryFunction: horizontalLineWhenShift(shiftKeyHeldRef),
-      // Style function ensures the sketch line and vertices are both rendered
-      // regardless of which sub-geometry OL passes during drawing.
-      style: (f) => {
-        const t = f.getGeometry()?.getType();
-        if (t === 'Point' || t === 'MultiPoint') {
-          return new Style({ image: new CircleStyle({ radius: 6, fill: new Fill({ color: '#1976d2' }), stroke: new Stroke({ color: '#ffffff', width: 2 }) }) });
-        }
-        return new Style({ stroke: new Stroke({ color: '#1976d2', width: 4, lineDash: [10, 6] }), image: new CircleStyle({ radius: 6, fill: new Fill({ color: '#1976d2' }), stroke: new Stroke({ color: '#ffffff', width: 2 }) }) });
+      sketch: { line: { stroke: '#1976d2', strokeWidth: 4, dashed: true }, vertex: BLUE_VERTEX },
+      onStart: () => {
+        useMapStore.getState().setTransectHeatmapSampleIndex(null);
+        // Do not clear `source` here: a new draw aborts often (pan, mis-click, Escape).
+        // Clearing only on successful drawend keeps the last transect visible until replaced.
+        clearInspectPin();
+        useMapStore.getState().setInspectPanel((prev) => ({
+          lon: prev?.lon ?? 0,
+          lat: prev?.lat ?? 0,
+          layers: [],
+          loading: true,
+          kind: 'vertical_profile_line',
+          profileMeta: {
+            tileName: '',
+            year: vsmYear,
+            qIndex: 1,
+            version: 'original',
+            maxHeight: undefined,
+            heatmapMaxHeight: undefined,
+            fhdInterval: useMapStore.getState().diversityHeightBinM,
+          },
+          transectProfile: prev?.kind === 'vertical_profile_line' ? prev.transectProfile : undefined,
+          inspectError: null,
+        }));
       },
-    });
-    inspectLineDrawRef.current = draw;
-    map.addInteraction(draw);
+      onEnd: (geom) => {
+        if (geom.type !== 'LineString') return;
+        const lineCoordinates = geom.coordinates as [number, number][];
+        if (lineCoordinates.length < 2) {
+          useMapStore.getState().setInspectPanel(null);
+          return;
+        }
+        // Replace the prior transect with this one.
+        source.setFeatures([{ type: 'Feature', geometry: geom, properties: {} }]);
+        const first = lineCoordinates[0];
+        const req = ++inspectRequestIdRef.current;
 
-    const mapEl = map.getTargetElement();
-    if (mapEl) mapEl.style.cursor = 'crosshair';
-
-    draw.on('drawstart', () => {
-      useMapStore.getState().setTransectHeatmapSampleIndex(null);
-      // Do not clear `source` here: a new draw aborts often (pan, mis-click, Escape).
-      // Clearing only on successful drawend keeps the last transect visible until replaced.
-      clearInspectPin();
-      useMapStore.getState().setInspectPanel((prev) => ({
-        lon: prev?.lon ?? 0,
-        lat: prev?.lat ?? 0,
-        layers: [],
-        loading: true,
-        kind: 'vertical_profile_line',
-        profileMeta: {
-          tileName: '',
-          year: vsmYear,
-          qIndex: 1,
-          version: 'original',
-          maxHeight: undefined,
-          heatmapMaxHeight: undefined,
-          fhdInterval: useMapStore.getState().diversityHeightBinM,
-        },
-        transectProfile: prev?.kind === 'vertical_profile_line' ? prev.transectProfile : undefined,
-        inspectError: null,
-      }));
-    });
-
-    draw.on('drawend', (event: any) => {
-      const geom = event.feature.getGeometry();
-      if (!(geom instanceof LineString)) return;
-      const coords3857 = geom.getCoordinates();
-      if (coords3857.length < 2) {
-        useMapStore.getState().setInspectPanel(null);
-        return;
-      }
-      // Remove prior transect feature(s). OpenLayers adds `event.feature` to `source`
-      // immediately after this listener returns.
-      source.clear();
-      const lineCoordinates = coords3857.map((c) => transform(c, 'EPSG:3857', 'EPSG:4326') as [number, number]);
-      const first = lineCoordinates[0];
-      const req = ++inspectRequestIdRef.current;
-
-      fetchVerticalProfileLine(lineCoordinates, vsmYear, diversityHeightBinM).then((data) => {
-        if (req !== inspectRequestIdRef.current) return;
-        if (!data.success || !data.samples || data.samples.length === 0 || !data.vertical_profile) {
+        fetchVerticalProfileLine(lineCoordinates, vsmYear, diversityHeightBinM).then((data) => {
+          if (req !== inspectRequestIdRef.current) return;
+          if (!data.success || !data.samples || data.samples.length === 0 || !data.vertical_profile) {
+            useMapStore.getState().setInspectPanel({
+              lon: first[0],
+              lat: first[1],
+              layers: [],
+              loading: false,
+              kind: 'vertical_profile_line',
+              profileMeta: {
+                tileName: '',
+                year: data.year ?? vsmYear,
+                qIndex: data.q_index ?? 1,
+                version: data.version,
+                maxHeight: data.max_height,
+                heatmapMaxHeight: data.heatmap_max_height,
+                fhdInterval: data.fhd_interval ?? diversityHeightBinM,
+              },
+              transectProfile: undefined,
+              inspectError: data.error || 'Failed to sample line profile',
+            });
+            return;
+          }
+          const rhMatrix = data.vertical_profile;
           useMapStore.getState().setInspectPanel({
             lon: first[0],
             lat: first[1],
@@ -489,99 +396,73 @@ export function useMapInteractions(updateLayersList: () => void) {
               heatmapMaxHeight: data.heatmap_max_height,
               fhdInterval: data.fhd_interval ?? diversityHeightBinM,
             },
-            transectProfile: undefined,
-            inspectError: data.error || 'Failed to sample line profile',
-          });
-          return;
-        }
-        const rhMatrix = data.vertical_profile;
-        useMapStore.getState().setInspectPanel({
-          lon: first[0],
-          lat: first[1],
-          layers: [],
-          loading: false,
-          kind: 'vertical_profile_line',
-          profileMeta: {
-            tileName: '',
-            year: data.year ?? vsmYear,
-            qIndex: data.q_index ?? 1,
-            version: data.version,
-            maxHeight: data.max_height,
-            heatmapMaxHeight: data.heatmap_max_height,
-            fhdInterval: data.fhd_interval ?? diversityHeightBinM,
-          },
-          transectProfile: {
-            lineCoordinates: data.line_coordinates ?? lineCoordinates,
-            sampleCount: data.sample_count ?? data.samples.length,
-            totalLengthMeters: data.total_length_m ?? 0,
-            samples: data.samples.map((s) => ({
-              index: s.index,
-              distance_m: s.distance_m,
-              lon: s.lon,
-              lat: s.lat,
-              profile: (
-                rhMatrix[s.index]
-                ?? Array.from({ length: Math.max(1, data.max_height ?? rhMatrix[0]?.length ?? 0) }, () => null)
-              ).map((value, rh) => ({
-                rh,
-                value,
-                missing: value == null,
+            transectProfile: {
+              lineCoordinates: data.line_coordinates ?? lineCoordinates,
+              sampleCount: data.sample_count ?? data.samples.length,
+              totalLengthMeters: data.total_length_m ?? 0,
+              samples: data.samples.map((s) => ({
+                index: s.index,
+                distance_m: s.distance_m,
+                lon: s.lon,
+                lat: s.lat,
+                profile: (
+                  rhMatrix[s.index]
+                  ?? Array.from({ length: Math.max(1, data.max_height ?? rhMatrix[0]?.length ?? 0) }, () => null)
+                ).map((value, rh) => ({
+                  rh,
+                  value,
+                  missing: value == null,
+                })),
+                vertical_profile_curve: s.vertical_profile_curve,
+                fhd: s.fhd ?? null,
+                enl1d: s.enl1d ?? null,
+                enl2d: s.enl2d ?? null,
+                cr: s.cr ?? null,
+                tile_name: s.tile_name,
               })),
-              vertical_profile_curve: s.vertical_profile_curve,
-              fhd: s.fhd ?? null,
-              enl1d: s.enl1d ?? null,
-              enl2d: s.enl2d ?? null,
-              cr: s.cr ?? null,
-              tile_name: s.tile_name,
-            })),
-          },
-          inspectError: null,
+            },
+            inspectError: null,
+          });
+        }).catch((err) => {
+          if (req !== inspectRequestIdRef.current) return;
+          console.error('[vertical-profile-line] fetch failed:', err);
+          useMapStore.getState().setInspectPanel({
+            lon: first[0],
+            lat: first[1],
+            layers: [],
+            loading: false,
+            kind: 'vertical_profile_line',
+            profileMeta: {
+              tileName: '',
+              year: vsmYear,
+              qIndex: 1,
+              version: undefined,
+              maxHeight: undefined,
+              heatmapMaxHeight: undefined,
+              fhdInterval: diversityHeightBinM,
+            },
+            transectProfile: undefined,
+            inspectError: `Network error: ${err instanceof Error ? err.message : String(err)}`,
+          });
         });
-      }).catch((err) => {
-        if (req !== inspectRequestIdRef.current) return;
-        console.error('[vertical-profile-line] fetch failed:', err);
-        useMapStore.getState().setInspectPanel({
-          lon: first[0],
-          lat: first[1],
-          layers: [],
-          loading: false,
-          kind: 'vertical_profile_line',
-          profileMeta: {
-            tileName: '',
-            year: vsmYear,
-            qIndex: 1,
-            version: undefined,
-            maxHeight: undefined,
-            heatmapMaxHeight: undefined,
-            fhdInterval: diversityHeightBinM,
-          },
-          transectProfile: undefined,
-          inspectError: `Network error: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      });
+      },
     });
 
     return () => {
-      // Only remove the Draw interaction — keep the layer so the drawn line
-      // stays visible on the map until the user explicitly closes the panel.
-      if (inspectLineDrawRef.current) {
-        map.removeInteraction(inspectLineDrawRef.current);
-        inspectLineDrawRef.current = null;
-      }
-      const el = map.getTargetElement();
-      if (el) el.style.cursor = '';
+      // Only end the drawing — keep the layer so the drawn line stays visible
+      // on the map until the user explicitly closes the panel.
+      draw.stop();
     };
   }, [map, clearInspectPin, inspectMode, inspectKind, drawingActive, featureCaptureType, vsmYear, diversityHeightBinM]);
 
   // Transect heatmap: mirror hovered/locked column as a point on the map line.
   useEffect(() => {
-    const layer = inspectLineLayerRef.current;
-    const source = layer?.getSource();
+    const source = inspectLineLayerRef.current;
     if (!map || !source) return;
 
-    source.getFeatures().forEach((f) => {
-      if (f.get('transectHeatmapHover')) source.removeFeature(f);
-    });
+    for (const f of source.getFeatures()) {
+      if (f.properties.transectHeatmapHover) source.removeFeature(f);
+    }
 
     const idx = transectHeatmapSampleIndex;
     const samples = inspectPanel?.transectProfile?.samples;
@@ -598,93 +479,83 @@ export function useMapInteractions(updateLayersList: () => void) {
     const sample = samples[idx];
     if (!Number.isFinite(sample.lon) || !Number.isFinite(sample.lat)) return;
 
-    const coord3857 = transform([sample.lon, sample.lat], 'EPSG:4326', 'EPSG:3857');
-    const feat = new Feature({ geometry: new Point(coord3857) });
-    feat.set('transectHeatmapHover', true);
-    source.addFeature(feat);
+    source.addFeature({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [sample.lon, sample.lat] },
+      properties: { transectHeatmapHover: true },
+    });
   }, [map, transectHeatmapSampleIndex, inspectPanel?.kind, inspectPanel?.transectProfile?.samples]);
 
-  // Hover + delete overlay on vector label features (skip GEDI)
+  // Hover + delete button on vector label features (skip GEDI)
   useEffect(() => {
     if (!map) return;
     const deleteEl = document.createElement('div');
     deleteEl.innerHTML = '✕';
-    deleteEl.style.cssText = 'background:#ff4444;color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:bold;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:none;user-select:none;';
+    deleteEl.style.cssText = 'background:#ff4444;color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:bold;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.4);user-select:none;';
+    // Up and to the right of the label it deletes.
+    const marker = new Marker({ element: deleteEl, anchor: 'bottom-left', offset: [5, -5] });
 
-    let overlay: any = null;
-    let hoveredFeature: Feature<Geometry> | null = null;
-    let hoveredLayerId: string | null = null;
+    let hovered: { layer: VectorLayer; feature: AppFeature; layerId: string } | null = null;
 
-    const setup = async () => {
-      const { default: OlOverlay } = await import('ol/Overlay');
-      overlay = new OlOverlay({ element: deleteEl, positioning: 'bottom-left', offset: [5, -5], stopEvent: true });
-      map.addOverlay(overlay);
-      deleteEl.style.display = 'none';
-
-      deleteEl.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (!hoveredFeature || !hoveredLayerId) return;
-        const mgr = useMapStore.getState().layerManager;
-        if (!mgr) return;
-        const managed = mgr.getLayer(hoveredLayerId);
-        if (!managed) return;
-        const source = (managed.layer as any).getSource?.();
-        if (!source) return;
-        const tileName = hoveredFeature.get('tileName');
-        source.removeFeature(hoveredFeature);
-        const tiles = useMapStore.getState().selectedTiles;
-        useMapStore.getState().setSelectedTiles(tiles.filter((t: string) => t !== tileName));
-        const remaining = source.getFeatures().length;
-        if (remaining === 0) { mgr.removeLayer(hoveredLayerId); map.removeLayer(managed.layer); }
-        else (managed as any).name = `Selected Tiles (${remaining})`;
-        updateLayersList();
-        deleteEl.style.display = 'none';
-        overlay.setPosition(undefined);
-        hoveredFeature = null; hoveredLayerId = null;
-      });
-
-      const onPointerMove = (evt: any) => {
-        if (evt.dragging) return;
-        const mgr = useMapStore.getState().layerManager;
-        if (!mgr) return;
-        const vectorLayers = mgr.getLayersByType('vector');
-        if (vectorLayers.length === 0) {
-          if (hoveredFeature) { hoveredFeature.setStyle(undefined); hoveredFeature = null; hoveredLayerId = null; deleteEl.style.display = 'none'; overlay.setPosition(undefined); }
-          return;
-        }
-        let found = false;
-        map.forEachFeatureAtPixel(evt.pixel, (feature: any) => {
-          if (found) return;
-          for (const managed of vectorLayers) {
-            if (managed.id.startsWith('gedi-')) continue;
-            const src = (managed.layer as any).getSource?.();
-            if (src && src.getFeatures().includes(feature)) {
-              found = true;
-              if (hoveredFeature !== feature) {
-                if (hoveredFeature) hoveredFeature.setStyle(undefined);
-                feature.setStyle(new Style({ text: new TextStyle({ text: feature.get('tileName') || '', font: 'bold 22px sans-serif', fill: new Fill({ color: '#FFFFFF' }), stroke: new Stroke({ color: '#FF0000', width: 4 }), overflow: true }) }));
-                hoveredFeature = feature; hoveredLayerId = managed.id;
-                const geom = feature.getGeometry();
-                if (geom) { overlay.setPosition((geom as any).getCoordinates()); deleteEl.style.display = 'flex'; }
-              }
-              return;
-            }
-          }
-        }, { hitTolerance: 10 });
-        if (!found && hoveredFeature) {
-          hoveredFeature.setStyle(undefined); hoveredFeature = null; hoveredLayerId = null;
-          deleteEl.style.display = 'none'; overlay.setPosition(undefined);
-        }
-      };
-      map.on('pointermove', onPointerMove);
-      (deleteEl as any).__onPointerMove = onPointerMove;
+    const unhover = () => {
+      if (hovered) hovered.layer.setFeatureStyle(hovered.feature, undefined);
+      hovered = null;
+      marker.remove();
     };
-    setup();
+
+    // The button sits on the map; a press on it is not a press on the map.
+    const swallow = (e: Event) => e.stopPropagation();
+    deleteEl.addEventListener('mousedown', swallow);
+    deleteEl.addEventListener('dblclick', swallow);
+    deleteEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!hovered) return;
+      const mgr = useMapStore.getState().layerManager;
+      if (!mgr) return;
+      const { layer, feature, layerId } = hovered;
+      const managed = mgr.getLayer(layerId);
+      if (!managed) return;
+      const tileName = feature.properties.tileName;
+      layer.removeFeature(feature);
+      const tiles = useMapStore.getState().selectedTiles;
+      useMapStore.getState().setSelectedTiles(tiles.filter((t: string) => t !== tileName));
+      const remaining = layer.getFeatures().length;
+      if (remaining === 0) mgr.removeLayer(layerId);
+      else managed.name = `Selected Tiles (${remaining})`;
+      updateLayersList();
+      hovered = null;
+      marker.remove();
+    });
+
+    const onMouseMove = (e: MapMouseEvent) => {
+      if (map.isMoving()) return;
+      const mgr = useMapStore.getState().layerManager;
+      if (!mgr) return;
+      const vectorLayers = mgr.getLayersByType('vector').filter((m) => !m.id.startsWith('gedi-'));
+      if (vectorLayers.length === 0) {
+        unhover();
+        return;
+      }
+      const found = firstHit(vectorLayers, e.point, 10);
+      if (!found || found.hit.kind !== 'feature') {
+        unhover();
+        return;
+      }
+      const feature = found.hit.feature;
+      const layer = vectorOf(found.managed)!;
+      if (hovered?.feature === feature) return;
+      unhover();
+      layer.setFeatureStyle(feature, {
+        text: { value: feature.properties.tileName || '', size: 22, bold: true, color: '#FFFFFF', halo: '#FF0000', haloWidth: 2 },
+      });
+      hovered = { layer, feature, layerId: found.managed.id };
+      if (feature.geometry.type === 'Point') marker.setLngLat(feature.geometry.coordinates as LonLat).addTo(map);
+    };
+
+    map.on('mousemove', onMouseMove);
     return () => {
-      if (overlay) map.removeOverlay(overlay);
-      const pm = (deleteEl as any).__onPointerMove;
-      if (pm) map.un('pointermove', pm);
-      if (hoveredFeature) hoveredFeature.setStyle(undefined);
+      map.off('mousemove', onMouseMove);
+      unhover();
       deleteEl.remove();
     };
   }, [map, updateLayersList]);
@@ -693,22 +564,31 @@ export function useMapInteractions(updateLayersList: () => void) {
   useEffect(() => {
     if (!map || !highlightLayer) return;
 
-    const handleClick = (evt: any) => {
-      const { inspectMode: im, drawingActive: drawOn, layerManager: mgr } = useMapStore.getState();
+    const showPopup = (feature: AppFeature, e: MapMouseEvent) => {
+      highlightGeometry(feature.geometry);
+      setPopupProperties(feature.properties);
+      setPopupPosition({ x: e.point.x, y: e.point.y });
+      setPopupGeometry(feature.geometry);
+      setPopupCoordinates({ lon: e.lngLat.lng, lat: e.lngLat.lat });
+    };
+
+    const handleClick = (e: MapMouseEvent) => {
+      const { inspectMode: im, drawingActive: drawOn } = useMapStore.getState();
+      const mgr = useMapStore.getState().layerManager;
+      const { lng: lon, lat } = e.lngLat;
       if (drawOn) {
         setPopupProperties(null);
         setPopupPosition(null);
         setPopupGeometry(null);
         setPopupCoordinates(null);
         setGediPointPopup(null);
-        highlightLayer.getSource()?.clear();
+        highlightLayer.clear();
         return;
       }
 
       if (im && !drawOn) {
         if (useMapStore.getState().featureCaptureType === 'Point') {
-          setInspectPinAtCoordinate(evt.coordinate);
-          const [lon, lat] = transform(evt.coordinate, 'EPSG:3857', 'EPSG:4326');
+          setInspectPinAt([lon, lat]);
           useMapStore.getState().setFeatureDraft({
             geometry: {
               type: 'Point',
@@ -722,8 +602,7 @@ export function useMapInteractions(updateLayersList: () => void) {
         const { inspectKind, vsmYear } = useMapStore.getState();
         if (inspectKind === 'vertical_profile_line') return;
 
-        setInspectPinAtCoordinate(evt.coordinate);
-        const [lon, lat] = transform(evt.coordinate, 'EPSG:3857', 'EPSG:4326');
+        setInspectPinAt([lon, lat]);
         const req = ++inspectRequestIdRef.current;
 
         if (inspectKind === 'vertical_profile') {
@@ -793,134 +672,69 @@ export function useMapInteractions(updateLayersList: () => void) {
         return;
       }
 
-      highlightLayer.getSource()?.clear();
+      highlightLayer.clear();
 
       // GEDI click
       if (highlightedGediRef.current) {
-        highlightedGediRef.current.setStyle(undefined);
+        highlightedGediRef.current.layer.setFeatureStyle(highlightedGediRef.current.feature, undefined);
         highlightedGediRef.current = null;
       }
-      const gediMgr = useMapStore.getState().layerManager;
-      if (gediMgr) {
-        const gediLayers = gediMgr.getLayersByType('vector').filter((m: any) => m.id.startsWith('gedi-'));
-        let hit = false;
-        map.forEachFeatureAtPixel(evt.pixel, (feature: any) => {
-          if (hit) return;
-          for (const managed of gediLayers) {
-            const src = (managed.layer as any).getSource?.();
-            if (src && src.getFeatures().includes(feature)) {
-              hit = true;
-              feature.setStyle(new Style({
-                image: new CircleStyle({
-                  radius: 8,
-                  fill: new Fill({ color: 'rgba(255, 235, 59, 0.9)' }),
-                  stroke: new Stroke({ color: '#e65100', width: 2.5 }),
-                }),
-              }));
-              highlightedGediRef.current = feature;
-              const geom = feature.getGeometry();
-              const featureCoord = geom && typeof geom.getCoordinates === 'function'
-                ? geom.getCoordinates() : evt.coordinate;
-              setGediPointPopup({ coordinate: featureCoord, properties: feature.getProperties() });
-              return;
-            }
-          }
-        }, { hitTolerance: 6 });
-        if (hit) return;
+      if (mgr) {
+        const gediLayers = mgr.getLayersByType('vector').filter((m) => m.id.startsWith('gedi-'));
+        const found = firstHit(gediLayers, e.point, 6);
+        if (found && found.hit.kind === 'feature') {
+          const { feature } = found.hit;
+          const layer = vectorOf(found.managed)!;
+          layer.setFeatureStyle(feature, {
+            circle: { radius: 8, fill: 'rgba(255, 235, 59, 0.9)', stroke: '#e65100', strokeWidth: 2.5 },
+          });
+          highlightedGediRef.current = { layer, feature };
+          const featureCoord = feature.geometry.type === 'Point' ? feature.geometry.coordinates : [lon, lat];
+          setGediPointPopup({ coordinate: featureCoord, properties: feature.properties });
+          return;
+        }
       }
       setGediPointPopup(null);
 
       // Uploaded vector layer click
-      const uploadMgr = useMapStore.getState().layerManager;
-      if (uploadMgr) {
-        const uploadLayers = uploadMgr.getLayersByType('vector').filter((m: any) => m.id.startsWith('upload-') || m.id === SELECTIVE_LOGGING_LAYER_ID);
-        if (uploadLayers.length > 0) {
-          let uploadHit = false;
-          map.forEachFeatureAtPixel(evt.pixel, (feature: any) => {
-            if (uploadHit) return;
-            for (const managed of uploadLayers) {
-              const src = (managed.layer as any).getSource?.();
-              if (src && src.getFeatures().includes(feature)) {
-                uploadHit = true;
-                const props = feature.getProperties();
-                const geom = feature.getGeometry();
-                if (geom && highlightLayer) {
-                  const hl = highlightLayer.getSource();
-                  if (hl) {
-                    const ng = createHighlightGeometry(geom);
-                    if (ng) hl.addFeature(new Feature({ geometry: ng }));
-                  }
-                }
-                const px = evt.originalEvent;
-                const [lon, lat] = transform(evt.coordinate, 'EPSG:3857', 'EPSG:4326');
-                setPopupProperties(props);
-                setPopupPosition({ x: px.offsetX, y: px.offsetY });
-                setPopupGeometry(geom || null);
-                setPopupCoordinates({ lon, lat });
-                return;
-              }
-            }
-          }, { hitTolerance: 8 });
-          if (uploadHit) return;
+      if (mgr) {
+        const uploadLayers = mgr.getLayersByType('vector').filter((m) => m.id.startsWith('upload-') || m.id === SELECTIVE_LOGGING_LAYER_ID);
+        const found = firstHit(uploadLayers, e.point, 8);
+        if (found && found.hit.kind === 'feature') {
+          showPopup(found.hit.feature, e);
+          return;
         }
       }
 
       // FGB click
       const visibleFgbLayers = getVisibleClickableFgbLayers();
       if (visibleFgbLayers.length > 0) {
-        let clicked: any = null;
-        map.forEachFeatureAtPixel(
-          evt.pixel,
-          (feature: any) => {
-            const clusterMembers = feature.get?.('features');
-            if (Array.isArray(clusterMembers) && clusterMembers.length >= MIN_CLUSTER_SIZE) {
-              const extent = clusterMembers.reduce(
-                (acc: [number, number, number, number], member: any) => {
-                  const e = member.getGeometry()?.getExtent?.();
-                  if (!e) return acc;
-                  return [
-                    Math.min(acc[0], e[0]),
-                    Math.min(acc[1], e[1]),
-                    Math.max(acc[2], e[2]),
-                    Math.max(acc[3], e[3]),
-                  ];
-                },
-                [Infinity, Infinity, -Infinity, -Infinity],
-              );
-              if (Number.isFinite(extent[0])) {
-                map.getView().fit(extent, {
+        const found = firstHit(visibleFgbLayers, e.point, 6);
+        if (found) {
+          const layer = vectorOf(found.managed)!;
+          const { hit } = found;
+          if (hit.kind === 'feature') {
+            showPopup(hit.feature, e);
+            return;
+          }
+          // A cluster: zoom into a large one, open the first member of a small one.
+          layer.clusterLeaves(hit.clusterId).then((leaves) => {
+            if (hit.count >= MIN_CLUSTER_SIZE) {
+              const extent = featuresBBox(leaves);
+              if (extent) {
+                map.fitBounds(extent, {
                   duration: 250,
-                  padding: [40, 40, 40, 40],
-                  maxZoom: Math.max((map.getView().getZoom() ?? 3) + 2, 10),
+                  padding: 40,
+                  // MapLibre zoom: OpenLayers' 10, less one.
+                  maxZoom: Math.max(map.getZoom() + 2, 9),
                 });
               }
-              return true;
+              return;
             }
-            if (Array.isArray(clusterMembers) && clusterMembers.length >= 1) {
-              clicked = clusterMembers[0] as Feature<Geometry>;
-              return true;
-            }
-            clicked = feature as Feature<Geometry>;
-            return true;
-          },
-          {
-            hitTolerance: 6,
-            layerFilter: (layer) => isClickableFgbLayer(layer),
-          },
-        );
-        if (clicked) {
-          const props = clicked.getProperties();
-          const geom = clicked.getGeometry();
-          if (geom && highlightLayer) {
-            const hl = highlightLayer.getSource();
-            if (hl) { const ng = createHighlightGeometry(geom); if (ng) hl.addFeature(new Feature({ geometry: ng })); }
-          }
-          const px = evt.originalEvent;
-          const [lon, lat] = transform(evt.coordinate, 'EPSG:3857', 'EPSG:4326');
-          setPopupProperties(props);
-          setPopupPosition({ x: px.offsetX, y: px.offsetY });
-          setPopupGeometry(geom || null);
-          setPopupCoordinates({ lon, lat });
+            const fid = leaves[0]?.properties?._fid as number | undefined;
+            const member = fid !== undefined ? layer.getFeatureById(fid) : undefined;
+            if (member) showPopup(member, e);
+          });
           return;
         }
       }
@@ -929,103 +743,81 @@ export function useMapInteractions(updateLayersList: () => void) {
     };
 
     // Throttled pointer move for FGB hover
-    let lastCheck = 0, lastCursor: string | null = null, lastHovered: Feature<Geometry> | null = null, pending: number | null = null;
+    let lastCheck = 0, lastCursor: string | null = null, lastHovered: AppFeature | null = null, pending: number | null = null;
 
-    const detect = (evt: any) => {
+    const detect = (e: MapMouseEvent) => {
       const visibleFgbLayers = getVisibleClickableFgbLayers();
       if (visibleFgbLayers.length === 0 || !highlightLayer) return;
-      const view = map.getView();
-      const viewZoom = view.getZoom() ?? 0;
+      const viewZoom = map.getZoom();
       const estimatedFeatureCount = useMapStore.getState().fgbInfo?.featureCount ?? 0;
-      if (view.getInteracting() || view.getAnimating()) {
-        const el = map.getTargetElement();
-        if (el && el.style.cursor !== '') el.style.cursor = '';
-        highlightLayer.getSource()?.clear();
+      if (map.isMoving()) {
+        if (lastCursor !== '') setCursor('');
+        highlightLayer.clear();
         lastHovered = null;
         lastCursor = '';
         return;
       }
-      if ((estimatedFeatureCount > 100000 && viewZoom < 8) || (estimatedFeatureCount > 50000 && viewZoom < 6)) {
-        const el = map.getTargetElement();
-        if (el && el.style.cursor !== '') el.style.cursor = '';
-        highlightLayer.getSource()?.clear();
+      // MapLibre zooms: OpenLayers' 8 and 6, less one.
+      if ((estimatedFeatureCount > 100000 && viewZoom < 7) || (estimatedFeatureCount > 50000 && viewZoom < 5)) {
+        if (lastCursor !== '') setCursor('');
+        highlightLayer.clear();
         lastHovered = null;
         lastCursor = '';
         return;
       }
       if (useMapStore.getState().inspectMode && !useMapStore.getState().drawingActive) {
-        const el = map.getTargetElement(); if (el) el.style.cursor = 'crosshair'; lastCursor = 'crosshair'; return;
+        setCursor('crosshair'); lastCursor = 'crosshair'; return;
       }
       lastCheck = Date.now(); pending = null;
-      let hovered: any = null;
-      map.forEachFeatureAtPixel(
-        evt.pixel,
-        (feature: any) => {
-          const clusterMembers = feature.get?.('features');
-          if (Array.isArray(clusterMembers) && clusterMembers.length >= MIN_CLUSTER_SIZE) return false;
-          if (Array.isArray(clusterMembers) && clusterMembers.length >= 1) {
-            hovered = clusterMembers[0] as Feature<Geometry>;
-            return true;
-          }
-          hovered = feature as Feature<Geometry>;
-          return true;
-        },
-        {
-          hitTolerance: 4,
-          layerFilter: (layer) => isClickableFgbLayer(layer),
-        },
-      );
-      const cursor = hovered ? 'pointer' : '';
-      if (cursor !== lastCursor) { map.getTargetElement().style.cursor = cursor; lastCursor = cursor; }
-      const hs = highlightLayer.getSource();
-      if (hs && hovered !== lastHovered) {
-        hs.clear(); lastHovered = hovered;
-        if (hovered && estimatedFeatureCount <= 50000) {
-          const g = hovered.getGeometry();
-          if (g) {
-            const ng = createHighlightGeometry(g);
-            if (ng) hs.addFeature(new Feature({ geometry: ng }));
-          }
-        }
+      // Large clusters are for zooming into, not hovering.
+      const found = firstHit(visibleFgbLayers, e.point, 4);
+      const hovered = found?.hit.kind === 'feature' ? found.hit.feature : null;
+      const pointable = hovered !== null || (found?.hit.kind === 'cluster' && found.hit.count < MIN_CLUSTER_SIZE);
+      const cursor = pointable ? 'pointer' : '';
+      if (cursor !== lastCursor) { setCursor(cursor); lastCursor = cursor; }
+      if (hovered !== lastHovered) {
+        lastHovered = hovered;
+        highlightGeometry(hovered && estimatedFeatureCount <= 50000 ? hovered.geometry : null);
       }
     };
 
-    const onPointerMove = (evt: any) => {
+    const onMouseMove = (e: MapMouseEvent) => {
       const state = useMapStore.getState();
       if (getVisibleClickableFgbLayers().length === 0) return;
       const count = state.fgbInfo?.featureCount ?? 0;
       const minInterval = count > 100000 ? 140 : count > 50000 ? 90 : 50;
       if (Date.now() - lastCheck < minInterval) {
         if (pending !== null) cancelAnimationFrame(pending);
-        pending = requestAnimationFrame(() => { if (Date.now() - lastCheck >= minInterval) detect(evt); });
+        pending = requestAnimationFrame(() => { if (Date.now() - lastCheck >= minInterval) detect(e); });
         return;
       }
-      detect(evt);
+      detect(e);
     };
 
     const onLeave = () => {
       const im = useMapStore.getState().inspectMode, dr = useMapStore.getState().drawingActive;
-      if (highlightLayer && !(im && !dr)) { highlightLayer.getSource()?.clear(); lastHovered = null; }
-      const el = map.getTargetElement();
-      if (el) { el.style.cursor = (im && !dr) ? 'crosshair' : ''; lastCursor = el.style.cursor; }
+      if (highlightLayer && !(im && !dr)) { highlightLayer.clear(); lastHovered = null; }
+      const cursor = (im && !dr) ? 'crosshair' : '';
+      setCursor(cursor);
+      lastCursor = cursor;
     };
 
     map.on('click', handleClick);
-    map.on('pointermove', onPointerMove);
-    const vp = map.getViewport();
-    vp?.addEventListener('mouseleave', onLeave);
+    map.on('mousemove', onMouseMove);
+    map.on('mouseout', onLeave);
 
     return () => {
-      map.un('click', handleClick); map.un('pointermove', onPointerMove);
-      vp?.removeEventListener('mouseleave', onLeave);
-      if (map.getTargetElement()) map.getTargetElement().style.cursor = '';
-      highlightLayer?.getSource()?.clear();
+      map.off('click', handleClick); map.off('mousemove', onMouseMove);
+      map.off('mouseout', onLeave);
+      if (pending !== null) cancelAnimationFrame(pending);
+      setCursor('');
+      highlightLayer?.clear();
     };
-  }, [map, fgbLayer, highlightLayer, createHighlightGeometry, setInspectPinAtCoordinate, diversityHeightBinM]);
+  }, [map, fgbLayer, highlightLayer, highlightGeometry, setCursor, setInspectPinAt, diversityHeightBinM]);
 
   const closeGediPopup = useCallback(() => {
     if (highlightedGediRef.current) {
-      highlightedGediRef.current.setStyle(undefined);
+      highlightedGediRef.current.layer.setFeatureStyle(highlightedGediRef.current.feature, undefined);
       highlightedGediRef.current = null;
     }
     setGediPointPopup(null);

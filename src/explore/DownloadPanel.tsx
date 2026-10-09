@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Fill, Stroke, Style, Text } from 'ol/style';
-import { useMapStore } from '../stores/mapStore';
+import type { ExpressionSpecification, Map as MlMap, MapMouseEvent } from 'maplibre-gl';
 import { apiUrl } from '../utils/apiBase';
+import { setSelectingTiles, tilesInView, useExploreMap, type Grid } from './exploreMap';
+import { MIN_ZOOM } from './vsmLayers';
 
 /**
  * Getting the data out, at the two granularities it is actually published in.
@@ -32,11 +33,10 @@ type DownloadInfo = {
 };
 
 /**
- * Below this the auto-loader does not fetch 10 m tiles either, so the map is
- * showing the overview — and the visible-tile list would be thousands long.
- * Kept in step with MIN_ZOOM in useAutoLoadVSM.
+ * Below this the 10 m tiles are not fetched either, so the map is showing the
+ * overview — and the visible-tile list would be thousands long.
  */
-const TILE_ZOOM = 8;
+const TILE_ZOOM = MIN_ZOOM;
 
 /**
  * The grid stays drawn much further out than that, because picking a tile and
@@ -46,7 +46,7 @@ const TILE_ZOOM = 8;
  * pixels across, so the names could not fit anyway, and measuring a thousand
  * strings to discard them all is the expensive way to draw nothing.
  */
-const GRID_ZOOM = 5;
+const GRID_ZOOM = 4;
 
 /**
  * Above this many files, hand over a script instead of buttons. Each file is
@@ -68,16 +68,11 @@ const FLYOUT_WIDTH = 320;
 /**
  * How the Sentinel-2 grid is drawn while tiles are being chosen.
  *
- * Two instances, reused and re-labelled per feature rather than built per
- * feature: the style function runs for every tile on every frame of a pan, and
- * allocating a Style, a Fill, a Stroke and a Text each time is work done sixty
- * times a second for a result that only ever takes two forms.
- *
  * The name is the whole point of showing the grid — an outline says "there is a
  * tile here", and what the reader needs is "this one is 32VNH". White on a dark
  * halo so it survives both the satellite basemap and the prediction colours.
- * `overflow: false` drops a label that will not fit inside its tile, which is
- * what keeps low zooms from turning into a wall of text.
+ * MapLibre drops a label that collides with another, which is what keeps low
+ * zooms from turning into a wall of text.
  *
  * One colour for both states, and the fill is what carries the selection: the
  * grid has to be legible before anything is chosen, and a translucent white
@@ -85,21 +80,67 @@ const FLYOUT_WIDTH = 320;
  * a thicker line of the same green plus a wash — a wash rather than a solid,
  * because the prediction underneath is what the reader is deciding about, and
  * hiding it to show that it is selected would defeat the point.
+ *
+ * Added on first open, not with the page: 18,181 polygons are worth cutting
+ * into tiles only for someone who is going to look at them. Above the
+ * predictions, because it is added after VSM_TOP; restored to hidden on close.
  */
-function gridStyle(selected: boolean) {
-  return new Style({
-    stroke: new Stroke({ color: '#10796a', width: selected ? 2 : 1 }),
-    fill: new Fill({ color: selected ? 'rgba(16,121,106,0.28)' : 'rgba(0,0,0,0)' }),
-    text: new Text({
-      font: '600 11px system-ui, sans-serif',
-      overflow: false,
-      fill: new Fill({ color: '#fff' }),
-      stroke: new Stroke({ color: 'rgba(0,0,0,0.75)', width: 3 }),
-    }),
+const GRID_SOURCE = 'mgrs-grid';
+/**
+ * The labels have a source of their own, one point per tile. Labelling the
+ * polygons directly puts a name on every vector-tile piece a polygon is cut
+ * into, so one tile reads "32VNH" four times over.
+ */
+const LABEL_SOURCE = `${GRID_SOURCE}-labels`;
+const GRID_FILL = `${GRID_SOURCE}-fill`;
+const GRID_LAYERS = [GRID_FILL, `${GRID_SOURCE}-line`, `${GRID_SOURCE}-label`];
+const GREEN = '#10796a';
+
+function ensureGrid(map: MlMap, grid: Grid) {
+  if (map.getSource(GRID_SOURCE)) return;
+  map.addSource(GRID_SOURCE, { type: 'geojson', data: grid.geojson });
+  map.addSource(LABEL_SOURCE, {
+    type: 'geojson',
+    data: {
+      type: 'FeatureCollection',
+      features: grid.tiles.map((t) => ({
+        type: 'Feature',
+        properties: { Name: t.name },
+        geometry: { type: 'Point', coordinates: [(t.bbox[0] + t.bbox[2]) / 2, (t.bbox[1] + t.bbox[3]) / 2] },
+      })),
+    },
+  });
+  // The fill is drawn even where nothing is selected, at zero opacity: it is
+  // what a click is matched against, and an outline alone would only answer a
+  // click landing exactly on the line.
+  map.addLayer({
+    id: GRID_FILL, type: 'fill', source: GRID_SOURCE, minzoom: GRID_ZOOM,
+    layout: { visibility: 'none' },
+    paint: { 'fill-color': GREEN, 'fill-opacity': 0 },
+  });
+  map.addLayer({
+    id: `${GRID_SOURCE}-line`, type: 'line', source: GRID_SOURCE, minzoom: GRID_ZOOM,
+    layout: { visibility: 'none' },
+    paint: { 'line-color': GREEN, 'line-width': 1 },
+  });
+  map.addLayer({
+    id: `${GRID_SOURCE}-label`, type: 'symbol', source: LABEL_SOURCE, minzoom: TILE_ZOOM,
+    layout: {
+      visibility: 'none',
+      'text-field': ['get', 'Name'],
+      'text-font': ['Noto Sans Bold'],
+      'text-size': 11,
+    },
+    paint: { 'text-color': '#fff', 'text-halo-color': 'rgba(0,0,0,0.75)', 'text-halo-width': 1.5 },
   });
 }
-const GRID_ON = gridStyle(true);
-const GRID_OFF = gridStyle(false);
+
+/** Restyle for a selection: thicker line and a wash on the picked tiles. */
+function styleGrid(map: MlMap, picked: Set<string>) {
+  const isPicked: ExpressionSpecification = ['in', ['get', 'Name'], ['literal', [...picked]]];
+  map.setPaintProperty(GRID_FILL, 'fill-opacity', ['case', isPicked, 0.28, 0]);
+  map.setPaintProperty(`${GRID_SOURCE}-line`, 'line-width', ['case', isPicked, 2, 1]);
+}
 
 type Target = { url: string; name: string; label: string };
 
@@ -136,7 +177,7 @@ function fileName(kind: 'mosaic' | 'tile', year: number, rh: number, q: number, 
 }
 
 export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: number }) {
-  const { map, fgbLayer } = useMapStore();
+  const { map, grid } = useExploreMap();
   const [info, setInfo] = useState<DownloadInfo | null>(null);
   const [tiles, setTiles] = useState<string[]>([]);
   const [zoom, setZoom] = useState<number | null>(null);
@@ -285,7 +326,7 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
       // and dragging it looks for the next one. Treating either as a dismissal
       // would close the panel on the very gesture it exists to support — which
       // is what the pin was asked for, and this fixes it whether pinned or not.
-      if (map?.getViewport().contains(t)) return;
+      if (map?.getContainer().contains(t)) return;
       setOpen(false);
     };
     if (!pinned) document.addEventListener('mousedown', onDown);
@@ -297,34 +338,23 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
   }, [open, pinned, map]);
 
   // Which MGRS tiles the view covers — the same question, asked the same way,
-  // as useAutoLoadVSM asks before fetching them. Recomputed on moveend so the
-  // offer always matches what is on screen.
+  // as the prediction layers ask before fetching them. Recomputed on moveend
+  // so the offer always matches what is on screen.
   useEffect(() => {
-    if (!map || !fgbLayer) return;
+    if (!map || !grid) return;
 
     const recompute = () => {
-      const view = map.getView();
-      const z = view.getZoom();
-      setZoom(z ?? null);
-
-      const size = map.getSize();
-      const source = fgbLayer.getSource();
-      if (!size || !source || z === undefined || z < TILE_ZOOM) {
-        setTiles([]);
-        return;
-      }
-      const names = new Set<string>();
-      for (const f of source.getFeaturesInExtent(view.calculateExtent(size))) {
-        const n = f.get('Name');
-        if (n) names.add(n as string);
-      }
-      setTiles([...names].sort());
+      const z = map.getZoom();
+      setZoom(z);
+      setTiles(z < TILE_ZOOM ? [] : tilesInView(map, grid).sort());
     };
 
     recompute();
     map.on('moveend', recompute);
-    return () => map.un('moveend', recompute);
-  }, [map, fgbLayer]);
+    return () => {
+      map.off('moveend', recompute);
+    };
+  }, [map, grid]);
 
   // Highest RH first, matching the layer list on the map.
   const rhs = useMemo(
@@ -351,76 +381,51 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
   /**
    * Show the Sentinel-2 grid while the flyout is open, and mark what is picked.
    *
-   * The layer already exists and is already loaded — useAutoLoadVSM reads the
-   * visible tile names out of it — but it is kept invisible, because 18,181
-   * outlines are noise to someone reading a map. They are exactly the right
-   * thing to draw while someone is choosing tiles, which is the one moment the
-   * grid *is* the subject.
+   * The grid is already in memory — the prediction layers read the visible
+   * tile names out of it — but it is not drawn, because 18,181 outlines are
+   * noise to someone reading a map. They are exactly the right thing to draw
+   * while someone is choosing tiles, which is the one moment the grid *is* the
+   * subject. The layers' own minzooms keep it, and its labels, off at the
+   * zooms where they would be noise even here.
    */
   useEffect(() => {
-    if (!fgbLayer) return;
-    if (!open || zoom === null || zoom < GRID_ZOOM) {
-      fgbLayer.setVisible(false);
-      return;
-    }
-
-    const labels = zoom >= TILE_ZOOM;
-    fgbLayer.setStyle((feature: { get: (key: string) => unknown }) => {
-      const name = String(feature.get('Name') ?? '');
-      const style = activeSet.has(name) ? GRID_ON : GRID_OFF;
-      style.getText()?.setText(labels ? name : '');
-      return style;
-    });
-
-    // Lift it above the predictions for as long as it is being used.
-    //
-    // The layer is created at zIndex 1 — above the basemap, below everything
-    // else — because its usual job is feature lookup, not drawing. The VSM
-    // layers sit at 599/600, so a grid left where it was is painted over by the
-    // very data the reader is choosing to download: invisible everywhere the
-    // prediction has pixels, which is everywhere worth clicking. 800 clears
-    // them and still passes under the transect line (900) and the highlight
-    // overlay (1000). Restored on close, so lookup goes back to a layer that
-    // draws nothing.
-    const previousZ = fgbLayer.getZIndex();
-    fgbLayer.setZIndex(800);
-    fgbLayer.setVisible(true);
-
+    if (!map || !grid || !open) return;
+    ensureGrid(map, grid);
+    for (const id of GRID_LAYERS) map.setLayoutProperty(id, 'visibility', 'visible');
     return () => {
-      fgbLayer.setVisible(false);
-      fgbLayer.setZIndex(previousZ);
+      if (!map.style) return;
+      for (const id of GRID_LAYERS) map.setLayoutProperty(id, 'visibility', 'none');
     };
-  }, [open, zoom, fgbLayer, activeSet]);
+  }, [open, map, grid]);
+
+  useEffect(() => {
+    if (map && open && map.getLayer(GRID_FILL)) styleGrid(map, activeSet);
+  }, [open, map, activeSet]);
 
   /**
    * Click the map to pick a tile, while the flyout is open.
    *
    * SimpleApp's own click handler reads the vertical profile at the point, and
-   * both would fire. The flag on the map object is how it knows to stand aside
+   * both would fire. The selecting-tiles flag is how it knows to stand aside
    * — set here, honoured there, and cleared when the flyout closes.
    */
   useEffect(() => {
-    if (!open || !map || !fgbLayer) return;
-    map.set('exSelectingTiles', true);
+    if (!open || !map || !grid) return;
+    setSelectingTiles(true);
 
-    const onClick = (evt: { coordinate: number[] }) => {
-      const source = fgbLayer.getSource();
-      if (!source) return;
-      for (const f of source.getFeaturesAtCoordinate(evt.coordinate)) {
-        const name = f.get('Name');
-        if (name) {
-          toggleTile(name as string);
-          break;
-        }
-      }
+    const onClick = (e: MapMouseEvent) => {
+      if (!map.getLayer(GRID_FILL)) return;
+      const hit = map.queryRenderedFeatures(e.point, { layers: [GRID_FILL] })[0];
+      const name = hit?.properties?.Name;
+      if (name) toggleTile(String(name));
     };
 
-    map.on('singleclick', onClick as never);
+    map.on('click', onClick);
     return () => {
-      map.un('singleclick', onClick as never);
-      map.set('exSelectingTiles', false);
+      map.off('click', onClick);
+      setSelectingTiles(false);
     };
-  }, [open, map, fgbLayer, toggleTile]);
+  }, [open, map, grid, toggleTile]);
 
   const allRhs = useMemo(() => {
     if (!info) return [];

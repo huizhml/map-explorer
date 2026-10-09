@@ -21,8 +21,7 @@ import AddIcon from '@mui/icons-material/Add';
 import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import type { ReactNode } from 'react';
-import TileLayer from 'ol/layer/Tile';
-import XYZ from 'ol/source/XYZ';
+import { RasterLayer } from '../map/layers';
 import type { EarthEngineLegendSpec } from '../components/EarthEngineLegend';
 import { apiService } from '../services/api';
 import { useMapStore } from '../stores/mapStore';
@@ -420,22 +419,14 @@ export function EarthEngineLayerSection({ ui }: { ui: EarthEngineSidebarUi }) {
         ? `${presetLabel}${labelBand}`
         : `EE ${resolvedAsset.split('/').pop() ?? resolvedAsset}${labelBand}`;
 
-      const olLayer = new TileLayer({
-        source: new XYZ({
-          url: tile_url,
-          maxZoom: 18,
-          crossOrigin: 'anonymous',
-        }),
-        opacity: 0.85,
-        zIndex: 350,
-      });
+      const tileLayer = new RasterLayer({ url: tile_url, maxTileZoom: 18, opacity: 0.85, zIndex: 350 });
 
       const legendSpec: EarthEngineLegendSpec =
         vmin !== undefined && vmax !== undefined
           ? { min: vmin, max: vmax, palette: palette ?? [] }
           : { min: 0, max: 1, palette: palette ?? [] };
 
-      layerManager.addLayer(layerId, name, 'earthengine', olLayer, {
+      layerManager.addLayer(layerId, name, 'earthengine', tileLayer, {
         url: tile_url,
         assetId: resolvedAsset,
         band: band.trim() || undefined,

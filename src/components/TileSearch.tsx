@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Box,
   TextField,
@@ -6,15 +6,21 @@ import {
   Paper,
   CircularProgress,
   Typography,
+  Tooltip,
 } from '@mui/material';
-import { Search as SearchIcon, Close as CloseIcon } from '@mui/icons-material';
-import type { Map } from 'ol';
-import { fromLonLat } from 'ol/proj';
+import { Search as SearchIcon, Close as CloseIcon, NearMe as NearMeIcon } from '@mui/icons-material';
+import type { Map, Marker } from 'maplibre-gl';
 import { apiUrl } from '../utils/apiBase';
+import { searchPlace } from '../utils/reverseGeocode';
+import { createPositionMarker, getPosition, showPosition } from '../utils/geolocate';
 
 interface TileSearchProps {
   map: Map | null;
 }
+
+// MGRS 100 km square: zone 1-60, latitude band (I and O unused), then the square.
+// Anything else that is not coordinates is looked up as a place name.
+const TILE_RE = /^\d{1,2}[C-HJ-NP-X][A-Z]{2}$/i;
 
 // Parse lat/lon from input string
 const parseCoordinates = (input: string): { lat: number; lon: number } | null => {
@@ -102,6 +108,33 @@ export function TileSearch({ map }: TileSearchProps) {
   const [searchValue, setSearchValue] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [locating, setLocating] = useState(false);
+  const markerRef = useRef<Marker | null>(null);
+
+  useEffect(() => {
+    if (!map) return;
+    markerRef.current = createPositionMarker();
+    return () => {
+      markerRef.current?.remove();
+      markerRef.current = null;
+    };
+  }, [map]);
+
+  // Go to the reader's own position, with a blue dot on it.
+  const handleLocate = async () => {
+    if (!map || locating) return;
+    setLocating(true);
+    setError(null);
+    try {
+      const { lon, lat } = await getPosition();
+      // MapLibre zoom 14: as close as the 10 m predictions stay sharp.
+      if (markerRef.current) showPosition(map, markerRef.current, lon, lat, 14);
+    } catch (err: any) {
+      setError(err?.message || 'Could not find your location.');
+    } finally {
+      setLocating(false);
+    }
+  };
 
   const handleSearch = async () => {
     if (!map || !searchValue.trim()) return;
@@ -122,12 +155,29 @@ export function TileSearch({ map }: TileSearchProps) {
           setError('Invalid coordinates. Latitude must be -90 to 90, Longitude must be -180 to 180');
           return;
         }
+      } else if (!TILE_RE.test(input)) {
+        // A place name, via Nominatim — the same lookup the explore page uses.
+        const place = await searchPlace(input);
+        if (!place) {
+          setError(
+            `Nothing found for "${input}".\n\nTry:\n• Place name (e.g., Copenhagen)\n• Tile name (e.g., 32TMS, 33UUP)\n• Coordinates (e.g., 40.7128, -74.0060)`
+          );
+          return;
+        }
+        // Frame the place's box when it has one, so a country is framed whole
+        // and a village is not zoomed past the data's resolution.
+        if (place.bbox) {
+          map.fitBounds(place.bbox, { padding: 60, maxZoom: 14, duration: 1000 });
+        } else {
+          map.easeTo({ center: [place.lon, place.lat], zoom: 10, duration: 1000 });
+        }
+        return;
       } else {
         // Try as tile name
         const result = await getTileCoordinates(input);
         if ('error' in result) {
           setError(
-            `${result.error}\n\nTry:\n• Tile name (e.g., 32TMS, 33UUP)\n• Coordinates (e.g., 40.7128, -74.0060)`
+            `${result.error}\n\nTry:\n• Place name (e.g., Copenhagen)\n• Tile name (e.g., 32TMS, 33UUP)\n• Coordinates (e.g., 40.7128, -74.0060)`
           );
           return;
         }
@@ -136,10 +186,10 @@ export function TileSearch({ map }: TileSearchProps) {
 
       if (coords) {
         // Navigate to location
-        const center = fromLonLat([coords.lon, coords.lat]);
-        map.getView().animate({
-          center: center,
-          zoom: parsedCoords ? 17 : 10,
+        // MapLibre zoom levels: OpenLayers' 17 and 10, less one.
+        map.easeTo({
+          center: [coords.lon, coords.lat],
+          zoom: parsedCoords ? 16 : 9,
           duration: 1000,
         });
         setError(null);
@@ -185,7 +235,7 @@ export function TileSearch({ map }: TileSearchProps) {
         <TextField
           fullWidth
           size="small"
-          placeholder="Search tile (e.g., 32TMS) or coordinates (e.g., 40.7128, -74.0060)"
+          placeholder="Search a place, tile (e.g., 32TMS) or coordinates (lat, lon)"
           value={searchValue}
           onChange={(e) => setSearchValue(e.target.value)}
           onKeyPress={handleKeyPress}
@@ -211,6 +261,18 @@ export function TileSearch({ map }: TileSearchProps) {
           </IconButton>
         )}
         
+        <Tooltip title="Go to my location">
+          <span>
+            <IconButton
+              onClick={handleLocate}
+              disabled={!map || locating}
+              aria-label="Go to my location"
+            >
+              {locating ? <CircularProgress size={22} /> : <NearMeIcon />}
+            </IconButton>
+          </span>
+        </Tooltip>
+
         <IconButton
           color="primary"
           onClick={handleSearch}

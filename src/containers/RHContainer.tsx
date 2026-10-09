@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Typography, Slider, Button, FormControlLabel, Switch, Paper } from '@mui/material';
-import TileLayer from 'ol/layer/Tile';
-import XYZ from 'ol/source/XYZ';
+import { RasterLayer } from '../map/layers';
 import type { Map } from '../components/Map';
 import { apiService } from '../services/api';
 
@@ -12,7 +11,7 @@ interface RHContainerProps {
 export function RHContainer({ map }: RHContainerProps) {
   const [selectedRh, setSelectedRh] = useState<number>(98);
   const [available, setAvailable] = useState<number[]>([]);
-  const [layer, setLayer] = useState<TileLayer<XYZ> | null>(null);
+  const [layer, setLayer] = useState<RasterLayer | null>(null);
   const [visible, setVisible] = useState<boolean>(true);
 
   useEffect(() => {
@@ -28,16 +27,12 @@ export function RHContainer({ map }: RHContainerProps) {
     const { tile_url } = await apiService.getRHTileUrl(rh);
 
     if (layer) {
-      map.removeLayer(layer);
+      layer.detach();
     }
 
-    const newLayer = new TileLayer({
-      source: new XYZ({ url: tile_url, maxZoom: 14 }),
-      visible: visible,
-      opacity: 0.8,
-    });
+    const newLayer = new RasterLayer({ url: tile_url, maxTileZoom: 14, visible, opacity: 0.8 });
 
-    map.addLayer(newLayer);
+    newLayer.attach(map);
     setLayer(newLayer);
   };
 

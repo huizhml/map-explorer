@@ -1,12 +1,8 @@
 import { useCallback } from 'react';
-import VectorLayer from 'ol/layer/Vector';
-import VectorSource from 'ol/source/Vector';
-import { Style, Stroke, Fill, Circle as CircleStyle } from 'ol/style';
-import GeoTIFF from 'ol/source/GeoTIFF';
-import WebGLTile from 'ol/layer/WebGLTile';
-import XYZ from 'ol/source/XYZ';
-import TileLayer from 'ol/layer/Tile';
-import { transformExtent } from 'ol/proj';
+import type { Map as MlMap } from 'maplibre-gl';
+import { RasterLayer } from '../map/layers';
+import { VectorLayer } from '../map/vector';
+import { isFiniteBBox, type BBox } from '../map/proj';
 import { useMapStore } from '../stores/mapStore';
 import { getDefaultRescaleForRh, getDefaultRescaleAndColormap, type IntervalQChoice } from '../constants/predictions';
 import {
@@ -18,7 +14,7 @@ import {
   getDiversityRgbRanges,
   getProfileEntropyRange,
 } from '../constants/layerRanges';
-import { deserialize } from 'flatgeobuf/lib/mjs/ol';
+import { deserialize } from 'flatgeobuf/lib/mjs/geojson';
 import { apiUrl } from '../utils/apiBase';
 
 export interface DiversityBandConfig {
@@ -75,38 +71,31 @@ function extractTileName(imageId: string): string {
   return fallback ? fallback[1] : imageId.substring(0, 20);
 }
 
-async function fetchCogExtent(url: string) {
-  const infoUrl = apiUrl(`/cog/info?url=${encodeURIComponent(url)}`);
-  const resp = await fetch(infoUrl);
+/**
+ * Where a COG is, in longitude/latitude.
+ *
+ * TiTiler's `/cog/info` gives bounds in the file's own CRS — the 10 m tiles are
+ * in their UTM zone — so its GeoJSON form is used, which is already WGS84.
+ */
+async function fetchCogBounds(url: string): Promise<{ bbox: BBox; isAntimeridian: boolean }> {
+  const resp = await fetch(apiUrl(`/cog/info.geojson?url=${encodeURIComponent(url)}`));
   if (!resp.ok) throw new Error(`Failed to get COG info: ${await resp.text()}`);
   const info = await resp.json();
-  if (!info.bounds || info.bounds.length !== 4) throw new Error('Bounds not available');
+  const bbox = info.bbox;
+  if (!isFiniteBBox(bbox)) throw new Error('Bounds not available');
+  // A tile straddling the antimeridian comes back spanning the world; ~9° is
+  // the 1,000 km the OpenLayers version used as its threshold.
+  return { bbox, isAntimeridian: bbox[2] - bbox[0] > 9 };
+}
 
-  const bbox = info.bounds;
-  let sourceCRS = 'EPSG:4326';
-  if (info.crs) {
-    if (typeof info.crs === 'string') sourceCRS = info.crs;
-    else if (info.crs.properties?.name) sourceCRS = info.crs.properties.name;
-    else if (info.crs.code) sourceCRS = `EPSG:${info.crs.code}`;
-  }
-
-  let extent: number[];
-  if (sourceCRS === 'EPSG:3857' || sourceCRS === 'EPSG:900913') {
-    extent = bbox;
-  } else {
-    extent = transformExtent(bbox, sourceCRS, 'EPSG:3857');
-  }
-  if (!extent.every((v: number) => isFinite(v) && !isNaN(v))) {
-    if (sourceCRS !== 'EPSG:4326') {
-      extent = transformExtent(bbox, 'EPSG:4326', 'EPSG:3857');
-    }
-    if (!extent.every((v: number) => isFinite(v) && !isNaN(v))) {
-      throw new Error('Transformed extent invalid');
-    }
-  }
-
-  const isAntimeridian = (extent[2] - extent[0]) > 1_000_000;
-  return { extent, isAntimeridian };
+/** Fit the view to a box and resolve when it has arrived (or after the animation's length). */
+function fitAndWait(map: MlMap, bbox: BBox): Promise<void> {
+  return new Promise<void>((resolve) => {
+    // MapLibre zoom: OpenLayers' 18, less one.
+    map.fitBounds(bbox, { padding: 50, duration: 1000, maxZoom: 17 });
+    map.once('moveend', () => resolve());
+    setTimeout(resolve, 1100);
+  });
 }
 
 export function useLayerLoaders(updateLayersList: () => void) {
@@ -144,10 +133,17 @@ export function useLayerLoaders(updateLayersList: () => void) {
         if (!bbox && data.bbox) bbox = data.bbox;
       }
 
-      const newLayer = new WebGLTile({
-        source: new GeoTIFF({ sources: [{ url: imageUrl }], interpolate: true }),
-        opacity: 1,
-        zIndex: 500,
+      // Rendered by the backend, as every other raster here. OpenLayers read
+      // the COG in the browser; MapLibre draws tiles, and TiTiler already makes
+      // them from the same signed URL.
+      const tileUrl = apiUrl(
+        `/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(imageUrl)}` +
+          (isVisualAsset ? '&bidx=1&bidx=2&bidx=3' : '&bidx=4&bidx=3&bidx=2&rescale=0,3000') +
+          '&return_mask=true',
+      );
+      const newLayer = new RasterLayer({
+        url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 500,
+        bounds: isFiniteBBox(bbox) ? (bbox as BBox) : undefined,
       });
 
       const layerId = `sentinel2-${image.id}-${Date.now()}`;
@@ -155,7 +151,6 @@ export function useLayerLoaders(updateLayersList: () => void) {
       const dateStr = image.datetime ? new Date(image.datetime).toISOString().split('T')[0] : '';
       const layerName = dateStr ? `${finalTile || 'Unknown'} ${dateStr}` : finalTile || 'Sentinel-2';
 
-      map.addLayer(newLayer);
       setSentinel2Layers((prev: any[]) => [...prev, { layer: newLayer, id: layerId, imageId: image.id, tileName: finalTile, datetime: image.datetime, url: imageUrl }]);
 
       const metadata: any = { imageId: image.id, tileName: finalTile, datetime: image.datetime, url: imageUrl };
@@ -167,9 +162,9 @@ export function useLayerLoaders(updateLayersList: () => void) {
       layerManager?.addLayer(layerId, layerName, 'sentinel2', newLayer, metadata);
       updateLayersList();
 
-      if (bbox?.length === 4) {
+      if (isFiniteBBox(bbox)) {
         try {
-          map.getView().fit(transformExtent(bbox, 'EPSG:4326', 'EPSG:3857'), { padding: [50, 50, 50, 50], duration: 1000 });
+          map.fitBounds(bbox, { padding: 50, duration: 1000 });
         } catch { /* ignore */ }
       }
     } catch (error) {
@@ -184,35 +179,26 @@ export function useLayerLoaders(updateLayersList: () => void) {
   ) => {
     if (!map) return;
     try {
-      const { extent, isAntimeridian } = await fetchCogExtent(predictionData.url);
+      const { bbox, isAntimeridian } = await fetchCogBounds(predictionData.url);
       if (isAntimeridian) skipZoom = true;
 
-      if (!skipZoom && extent.every((v: number) => isFinite(v))) {
-        await new Promise<void>((resolve) => {
-          map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 18, callback: () => resolve() });
-          setTimeout(resolve, 1100);
-        });
-      }
+      if (!skipZoom) await fitAndWait(map, bbox);
 
       const defaultRescale = getDefaultRescaleForRh(predictionData.rh_index);
       const tileUrl = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${defaultRescale.min},${defaultRescale.max}&colormap_name=inferno`);
 
-      const layerOpts: any = {
-        source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
-        opacity: 1, zIndex: 600,
-      };
-      if (!isAntimeridian && extent.every((v: number) => isFinite(v))) layerOpts.extent = extent;
-
-      const newLayer = new TileLayer(layerOpts);
+      const newLayer = new RasterLayer({
+        url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 600,
+        bounds: isAntimeridian ? undefined : bbox,
+      });
       const qLabels = ['95%', 'median', '5%'];
       const layerId = `prediction-${predictionData.tile_name}-RH${predictionData.rh_index}-${qLabels[predictionData.q_index]}-${predictionData.year}-${Date.now()}`;
       const layerName = `${predictionData.tile_name} ${predictionData.year} RH${predictionData.rh_index} ${qLabels[predictionData.q_index]}`;
 
-      map.addLayer(newLayer);
       setPredictionLayers((prev: any[]) => [...prev, { layer: newLayer, id: layerId, tileName: predictionData.tile_name, rhIndex: predictionData.rh_index, qIndex: predictionData.q_index, year: predictionData.year, url: predictionData.url, useClientSideTransform: false }]);
 
       const metadata: any = { tileName: predictionData.tile_name, rhIndex: predictionData.rh_index, qIndex: predictionData.q_index, year: predictionData.year, url: predictionData.url, rescaleMin: defaultRescale.min, rescaleMax: defaultRescale.max, colormap: 'inferno', useClientSideTransform: false };
-      if (extent.every((v: number) => isFinite(v))) metadata.extent = extent;
+      metadata.bbox = bbox;
       layerManager?.addLayer(layerId, layerName, 'prediction', newLayer, metadata);
       updateLayersList();
     } catch (error) {
@@ -235,15 +221,10 @@ export function useLayerLoaders(updateLayersList: () => void) {
     if (!map) return;
     try {
       // url_high is the bbox reference — both COGs share the same tile extent.
-      const { extent, isAntimeridian } = await fetchCogExtent(data.url_high);
+      const { bbox, isAntimeridian } = await fetchCogBounds(data.url_high);
       if (isAntimeridian) skipZoom = true;
 
-      if (!skipZoom && extent.every((v: number) => isFinite(v))) {
-        await new Promise<void>((resolve) => {
-          map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 18, callback: () => resolve() });
-          setTimeout(resolve, 1100);
-        });
-      }
+      if (!skipZoom) await fitAndWait(map, bbox);
 
       const defaultRescale = getDefaultRescaleAndColormap(data.rh_index, data.qChoice);
       const colormap = defaultRescale.colormap;
@@ -255,17 +236,13 @@ export function useLayerLoaders(updateLayersList: () => void) {
         `&colormap_name=${encodeURIComponent(colormap)}`,
       );
 
-      const layerOpts: any = {
-        source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
-        opacity: 1, zIndex: 600,
-      };
-      if (!isAntimeridian && extent.every((v: number) => isFinite(v))) layerOpts.extent = extent;
-
-      const newLayer = new TileLayer(layerOpts);
+      const newLayer = new RasterLayer({
+        url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 600,
+        bounds: isAntimeridian ? undefined : bbox,
+      });
       const layerId = `prediction-${data.tile_name}-RH${data.rh_index}-${data.qChoice}-${data.year}-${Date.now()}`;
       const layerName = `${data.tile_name} ${data.year} RH${data.rh_index} ${data.qChoice}`;
 
-      map.addLayer(newLayer);
       setPredictionLayers((prev: any[]) => [...prev, {
         layer: newLayer, id: layerId,
         tileName: data.tile_name, rhIndex: data.rh_index,
@@ -283,7 +260,7 @@ export function useLayerLoaders(updateLayersList: () => void) {
         rescaleMin: defaultRescale.min, rescaleMax: defaultRescale.max,
         colormap, useClientSideTransform: false,
       };
-      if (extent.every((v: number) => isFinite(v))) metadata.extent = extent;
+      metadata.bbox = bbox;
       layerManager?.addLayer(layerId, layerName, 'prediction', newLayer, metadata);
       updateLayersList();
     } catch (error) {
@@ -298,14 +275,9 @@ export function useLayerLoaders(updateLayersList: () => void) {
   }) => {
     if (!map) return;
     try {
-      const { extent, isAntimeridian } = await fetchCogExtent(data.url);
+      const { bbox, isAntimeridian } = await fetchCogBounds(data.url);
 
-      if (!isAntimeridian && extent.every((v: number) => isFinite(v))) {
-        await new Promise<void>((resolve) => {
-          map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 18, callback: () => resolve() });
-          setTimeout(resolve, 1100);
-        });
-      }
+      if (!isAntimeridian) await fitAndWait(map, bbox);
 
       if (data.layer_type === 'diversity_indices') {
         const bandNames = data.bands ?? [...DIVERSITY_INDICES_BAND_NAMES];
@@ -325,17 +297,14 @@ export function useLayerLoaders(updateLayersList: () => void) {
           colormap: defaultColormap,
         });
 
-        const layerOpts: any = {
-          source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
-          opacity: 1, zIndex: 600,
-        };
-        if (!isAntimeridian) layerOpts.extent = extent;
-        const newLayer = new TileLayer(layerOpts);
+        const newLayer = new RasterLayer({
+          url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 600,
+          bounds: isAntimeridian ? undefined : bbox,
+        });
 
         const layerId = `auxiliary-diversity_indices-${data.tile_name}-${Date.now()}`;
         const layerName = `${data.tile_name} Diversity`;
 
-        map.addLayer(newLayer);
         layerManager?.addLayer(layerId, layerName, 'prediction', newLayer, {
           tileName: data.tile_name, url: data.url, layerType: 'diversity_indices',
           bandNames, bandMode: defaultBandMode,
@@ -343,7 +312,7 @@ export function useLayerLoaders(updateLayersList: () => void) {
           rgbBands: defaultRgbBands,
           rescaleMin: defaultRescaleMin, rescaleMax: defaultRescaleMax,
           rgbRescales: defaultRgbRescales,
-          colormap: defaultColormap, gamma: defaultGamma, extent,
+          colormap: defaultColormap, gamma: defaultGamma, bbox,
         });
         updateLayersList();
         return;
@@ -368,12 +337,10 @@ export function useLayerLoaders(updateLayersList: () => void) {
       const nodataParam = nodataValue ? `&nodata=${nodataValue}` : '';
       const tileUrl = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=${rescale}${nodataParam}${colormapParam}`);
 
-      const layerOpts: any = {
-        source: new XYZ({ url: tileUrl, crossOrigin: 'anonymous', maxZoom: 18 }),
-        opacity: 1, zIndex: 600,
-      };
-      if (!isAntimeridian) layerOpts.extent = extent;
-      const newLayer = new TileLayer(layerOpts);
+      const newLayer = new RasterLayer({
+        url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 600,
+        bounds: isAntimeridian ? undefined : bbox,
+      });
 
       const layerId = `auxiliary-${data.layer_type}-${data.tile_name}-${Date.now()}`;
       const entropyLabel = metric === 'enl1d' ? '1D ENL' : metric === 'enl2d' ? '2D ENL' : 'FHD';
@@ -381,10 +348,9 @@ export function useLayerLoaders(updateLayersList: () => void) {
         : data.layer_type === 'profile_entropy' ? `${data.tile_name} ${entropyLabel}`
         : `${data.tile_name} ${data.layer_type.replace('_', ' ')}`;
 
-      map.addLayer(newLayer);
       layerManager?.addLayer(layerId, layerName, 'prediction', newLayer, {
         tileName: data.tile_name, url: data.url, layerType: data.layer_type,
-        metric: data.metric, rescaleMin, rescaleMax, colormap, extent,
+        metric: data.metric, rescaleMin, rescaleMax, colormap, bbox,
       });
       updateLayersList();
     } catch (error) {
@@ -399,33 +365,26 @@ export function useLayerLoaders(updateLayersList: () => void) {
     if (!map) return;
     (async () => {
       try {
-        const source = new VectorSource();
-        const iter = deserialize(data.buffer, undefined, undefined, false, {}, false, 'EPSG:4326', 'EPSG:3857');
-        for await (const feature of iter) source.addFeature(feature as any);
+        const features: GeoJSON.Feature[] = [];
+        for await (const feature of deserialize(data.buffer) as AsyncGenerator<GeoJSON.Feature>) features.push(feature);
 
         const newLayer = new VectorLayer({
-          source, zIndex: 700,
-          style: new Style({
-            image: new CircleStyle({
-              radius: 5,
-              fill: new Fill({ color: 'rgba(0, 150, 136, 0.55)' }),
-              stroke: new Stroke({ color: 'rgba(255, 255, 255, 0.85)', width: 0.75 }),
-            }),
-          }),
+          zIndex: 700,
+          style: { circle: { radius: 5, fill: 'rgba(0, 150, 136, 0.55)', stroke: 'rgba(255, 255, 255, 0.85)', strokeWidth: 0.75 } },
         });
+        newLayer.setFeatures(features);
 
         const layerId = `gedi-${data.tile_name}`;
         const layerName = `GEDI ${data.tile_name} (${data.sampled_count}/${data.total_count})`;
         if (layerManager?.getLayer(layerId)) layerManager.removeLayer(layerId);
 
-        map.addLayer(newLayer);
-        const extent = source.getExtent();
+        const bbox = newLayer.getBounds();
         const metadata: any = {
           tileName: data.tile_name, featureCount: data.sampled_count,
           sampledCount: data.sampled_count, totalCount: data.total_count,
           sampleSize: data.sample_size, skipFeatureList: true,
         };
-        if (extent?.length === 4 && extent.every((v: number) => isFinite(v))) metadata.extent = extent;
+        if (bbox) metadata.bbox = bbox;
         layerManager?.addLayer(layerId, layerName, 'vector', newLayer, metadata);
         updateLayersList();
       } catch (error) {

@@ -1,15 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import Map from 'ol/Map';
-import View from 'ol/View';
-import TileLayer from 'ol/layer/Tile';
-import WebGLTileLayer from 'ol/layer/WebGLTile';
-import { fromLonLat, toLonLat } from 'ol/proj';
-import OSM from 'ol/source/OSM';
-import ScaleLine from 'ol/control/ScaleLine';
-import { defaults as defaultControls } from 'ol/control/defaults';
+import { Map as MlMap, ScaleControl, type Map } from 'maplibre-gl';
+import { BASEMAP_ID, basemapSource } from '../map/basemaps';
 
-const DEFAULT_CENTER = fromLonLat([0, 0]);
-const DEFAULT_ZOOM = 2;
+const DEFAULT_CENTER: [number, number] = [0, 0];
+/** MapLibre zoom — OpenLayers' 2, one level lower on a 512 px world. */
+const DEFAULT_ZOOM = 1;
 
 interface MapComponentProps {
   onMapInit: (map: Map) => void;
@@ -29,35 +24,39 @@ export function MapComponent({ onMapInit }: MapComponentProps) {
   useEffect(() => {
     if (mapInstanceRef.current || !mapRef.current) return;
 
-    const map = new Map({
-      target: mapRef.current,
-      controls: defaultControls({ zoom: false }).extend([
-        new ScaleLine({
-          units: 'metric',
-          bar: true,
-          steps: 4,
-          text: true,
-          minWidth: 120,
-        }),
-      ]),
-      layers: [
-        // Base layer should be a regular TileLayer
-        new TileLayer({
-          source: new OSM(),
-        }),
-      ],
-      view: new View({
-        center: DEFAULT_CENTER,
-        zoom: DEFAULT_ZOOM,
-      }),
+    const map = new MlMap({
+      container: mapRef.current,
+      style: {
+        version: 8,
+        // For labels drawn on the canvas (tile names, cluster counts).
+        // OpenFreeMap's fonts: free, no key, CORS open.
+        glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+        sources: { [BASEMAP_ID]: basemapSource('osm') },
+        layers: [
+          { id: 'blank', type: 'background', paint: { 'background-color': '#ffffff' } },
+          { id: BASEMAP_ID, type: 'raster', source: BASEMAP_ID },
+        ],
+      },
+      center: DEFAULT_CENTER,
+      zoom: DEFAULT_ZOOM,
+      attributionControl: { compact: true },
+      // Rotation and tilt are not something any tool here uses, and a rotated
+      // map breaks the extents the sidebar works with.
+      dragRotate: false,
+      pitchWithRotate: false,
+      touchPitch: false,
     });
+    map.touchZoomRotate.disableRotation();
+    map.addControl(new ScaleControl({ unit: 'metric', maxWidth: 120 }), 'bottom-left');
 
     mapInstanceRef.current = map;
-    onMapInit(map);
+    map.once('load', () => {
+      if (mapInstanceRef.current === map) onMapInit(map);
+    });
 
     return () => {
       if (mapInstanceRef.current) {
-        mapInstanceRef.current.setTarget(undefined);
+        mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
       }
     };
@@ -65,18 +64,17 @@ export function MapComponent({ onMapInit }: MapComponentProps) {
 
   useEffect(() => {
     const container = mapRef.current;
-    const map = mapInstanceRef.current;
-    if (!container || !map) return;
+    if (!container) return;
 
     let hideTimer: ReturnType<typeof setTimeout> | undefined;
 
     const handleContextMenu = async (e: MouseEvent) => {
+      const map = mapInstanceRef.current;
+      if (!map) return;
       e.preventDefault();
       const rect = container.getBoundingClientRect();
       const pixel: [number, number] = [e.clientX - rect.left, e.clientY - rect.top];
-      const coord = map.getCoordinateFromPixel(pixel);
-      if (!coord) return;
-      const [lon, lat] = toLonLat(coord);
+      const { lng: lon, lat } = map.unproject(pixel);
       const text = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
       let label = `Copied ${text}`;
       try {
@@ -98,16 +96,10 @@ export function MapComponent({ onMapInit }: MapComponentProps) {
   }, []);
 
   return (
-    <div
-      ref={mapRef}
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-      }}
-    >
+    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+      {/* The map gets a container of its own: MapLibre manages its children,
+          and React should not be adding the toast among them. */}
+      <div ref={mapRef} style={{ position: 'absolute', inset: 0 }} />
       {copyToast && (
         <div
           style={{
@@ -132,4 +124,4 @@ export function MapComponent({ onMapInit }: MapComponentProps) {
   );
 }
 
-export type { Map, WebGLTileLayer }; 
+export type { Map };

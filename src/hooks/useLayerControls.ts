@@ -1,8 +1,6 @@
 import { useCallback, useMemo, useRef } from 'react';
-import LayerGroup from 'ol/layer/Group';
-import { Feature } from 'ol';
-import { Geometry } from 'ol/geom';
-import { Style, Stroke, Fill, Text as TextStyle } from 'ol/style';
+import { LayerGroup, RasterLayer, type MapLayer } from '../map/layers';
+import { VectorLayer, type AppFeature } from '../map/vector';
 import { useMapStore } from '../stores/mapStore';
 import { buildDiversityTileUrl, type DiversityBandConfig } from './useLayerLoaders';
 import { applySelectiveLoggingDateRange } from '../utils/selectiveLogging';
@@ -19,7 +17,7 @@ export function useLayerControls(
     removeVsmLayerByLayerId,
   } = useMapStore();
 
-  const highlightFeatureRef = useRef<Feature<Geometry> | null>(null);
+  const highlightFeatureRef = useRef<{ layer: VectorLayer; feature: AppFeature } | null>(null);
 
   const handleToggleVisibility = useCallback((layerId: string) => {
     if (layerManager?.getLayer(layerId)) { layerManager.toggleVisibility(layerId); updateLayersList(); }
@@ -33,51 +31,16 @@ export function useLayerControls(
     if (layerManager?.getLayer(layerId)) { layerManager.setZIndex(layerId, zIndex); updateLayersList(); }
   }, [layerManager, updateLayersList]);
 
-  const updateTileSourceQueryParams = (source: any, updates: Record<string, string | undefined>) => {
-    if (!source?.getUrls) return;
-    const urls = source.getUrls();
-    if (!urls?.length) return;
-    try {
-      const [basePath, qs] = urls[0].split('?');
-      const params = new URLSearchParams(qs ?? '');
-      for (const [key, value] of Object.entries(updates)) {
-        if (value === undefined || value === '') {
-          params.delete(key);
-        } else {
-          params.set(key, value);
-        }
-      }
-      source.setUrl(`${basePath}?${params.toString()}`);
-      source.refresh?.();
-    } catch { /* ignore */ }
-  };
+  /** Every XYZ layer in a managed layer — itself, or the tiles of a group. */
+  const rastersOf = (layer: MapLayer): RasterLayer[] =>
+    layer instanceof RasterLayer ? [layer] : layer instanceof LayerGroup ? layer.rasters() : [];
 
-  const updateTileSourceRescale = (source: any, min: number, max: number) => {
-    updateTileSourceQueryParams(source, { rescale: `${min},${max}` });
-  };
-
-  const updateTileSourceColormap = (source: any, colormap: string) => {
-    updateTileSourceQueryParams(source, { colormap_name: colormap || undefined });
-  };
-
-  const applyRescaleToLayer = useCallback((layer: any, min: number, max: number) => {
-    if (!layer) return;
-    if (layer instanceof LayerGroup) {
-      layer.getLayers().forEach((child: any) => applyRescaleToLayer(child, min, max));
-    } else if (layer.getSource) {
-      const src = layer.getSource();
-      if (src?.getUrls) updateTileSourceRescale(src, min, max);
-    }
+  const applyRescaleToLayer = useCallback((layer: MapLayer, min: number, max: number) => {
+    for (const r of rastersOf(layer)) r.setTileParams({ rescale: `${min},${max}` });
   }, []);
 
-  const applyColormapToLayer = useCallback((layer: any, colormap: string) => {
-    if (!layer) return;
-    if (layer instanceof LayerGroup) {
-      layer.getLayers().forEach((child: any) => applyColormapToLayer(child, colormap));
-    } else if (layer.getSource) {
-      const src = layer.getSource();
-      if (src?.getUrls) updateTileSourceColormap(src, colormap);
-    }
+  const applyColormapToLayer = useCallback((layer: MapLayer, colormap: string) => {
+    for (const r of rastersOf(layer)) r.setTileParams({ colormap_name: colormap || undefined });
   }, []);
 
   const handleChangePredictionRescale = useCallback((layerId: string, min: number, max: number) => {
@@ -125,12 +88,7 @@ export function useLayerControls(
       gamma: meta.gamma,
     });
 
-    const layer = managed.layer as any;
-    const source = layer.getSource?.();
-    if (source?.setUrl) {
-      source.setUrl(tileUrl);
-      source.refresh?.();
-    }
+    if (managed.layer instanceof RasterLayer) managed.layer.setUrl(tileUrl);
     updateLayersList();
   }, [layerManager, updateLayersList]);
 
@@ -139,7 +97,8 @@ export function useLayerControls(
     const managed = layerManager.getLayer(layerId);
     if (!managed || managed.type !== 'vector' || !managed.metadata) return;
     managed.metadata.dateRange = range;
-    managed.metadata.featureCount = applySelectiveLoggingDateRange(managed.layer as any, range);
+    if (!(managed.layer instanceof VectorLayer)) return;
+    managed.metadata.featureCount = applySelectiveLoggingDateRange(managed.layer, range);
     updateLayersList();
   }, [layerManager, updateLayersList]);
 
@@ -168,7 +127,8 @@ export function useLayerControls(
     if (!map || !layerManager || typeof layerManager.getLayerExtent !== 'function') return;
     const extent = layerManager.getLayerExtent(layerId);
     if (extent?.length === 4 && extent.every((v: number) => isFinite(v) && !isNaN(v))) {
-      try { map.getView().fit(extent, { padding: [50, 50, 50, 50], duration: 1000, maxZoom: 18 }); }
+      // MapLibre zoom: OpenLayers' 18, less one.
+      try { map.fitBounds(extent, { padding: 50, duration: 1000, maxZoom: 17 }); }
       catch { /* ignore */ }
     }
   }, [map, layerManager]);
@@ -178,15 +138,14 @@ export function useLayerControls(
     if (!layerManager) return result;
     for (const managed of layerManager.getLayersByType('vector')) {
       if (managed.metadata?.skipFeatureList) continue;
-      const source = (managed.layer as any).getSource?.();
-      if (!source) continue;
-      const features = source.getFeatures?.() || [];
+      if (!(managed.layer instanceof VectorLayer)) continue;
+      const features = managed.layer.getFeatures();
       const previewCount = Math.min(features.length, MAX_VECTOR_FEATURE_LIST_PREVIEW);
       const preview = new Array(previewCount);
       for (let i = 0; i < previewCount; i += 1) {
         const feature = features[i];
         preview[i] = {
-          name: feature.get('tileName') || feature.get('name') || `Feature ${i}`,
+          name: feature.properties.tileName || feature.properties.name || `Feature ${i}`,
           index: i,
         };
       }
@@ -197,35 +156,35 @@ export function useLayerControls(
 
   const handleHighlightFeature = useCallback((layerId: string, featureIndex: number | null) => {
     if (!layerManager) return;
-    if (highlightFeatureRef.current) { highlightFeatureRef.current.setStyle(undefined); highlightFeatureRef.current = null; }
+    const prev = highlightFeatureRef.current;
+    if (prev) { prev.layer.setFeatureStyle(prev.feature, undefined); highlightFeatureRef.current = null; }
     if (featureIndex === null) return;
     const managed = layerManager.getLayer(layerId);
-    if (!managed) return;
-    const features = (managed.layer as any).getSource?.()?.getFeatures?.() || [];
-    const feature = features[featureIndex];
+    if (!managed || !(managed.layer instanceof VectorLayer)) return;
+    const feature = managed.layer.getFeatures()[featureIndex];
     if (!feature) return;
-    feature.setStyle(new Style({ text: new TextStyle({ text: feature.get('tileName') || '', font: 'bold 24px sans-serif', fill: new Fill({ color: '#FFFFFF' }), stroke: new Stroke({ color: '#FF0000', width: 4 }), overflow: true }) }));
-    highlightFeatureRef.current = feature;
+    managed.layer.setFeatureStyle(feature, {
+      text: { value: feature.properties.tileName || '', size: 24, bold: true, color: '#FFFFFF', halo: '#FF0000', haloWidth: 2 },
+    });
+    highlightFeatureRef.current = { layer: managed.layer, feature };
   }, [layerManager]);
 
   const handleRemoveFeature = useCallback((layerId: string, featureIndex: number) => {
     if (!layerManager) return;
     const managed = layerManager.getLayer(layerId);
-    if (!managed) return;
-    const source = (managed.layer as any).getSource?.();
-    if (!source) return;
-    const features = source.getFeatures?.() || [];
-    const feature = features[featureIndex];
+    if (!managed || !(managed.layer instanceof VectorLayer)) return;
+    const source = managed.layer;
+    const feature = source.getFeatures()[featureIndex];
     if (!feature) return;
-    const tileName = feature.get('tileName');
+    const tileName = feature.properties.tileName;
     source.removeFeature(feature);
     const tiles = useMapStore.getState().selectedTiles;
     useMapStore.getState().setSelectedTiles(tiles.filter((t: string) => t !== tileName));
     const remaining = source.getFeatures().length;
-    if (remaining === 0) { layerManager.removeLayer(layerId); map?.removeLayer(managed.layer); }
+    if (remaining === 0) layerManager.removeLayer(layerId);
     else (managed as any).name = `Selected Tiles (${remaining})`;
     updateLayersList();
-  }, [layerManager, map, updateLayersList]);
+  }, [layerManager, updateLayersList]);
 
   return {
     handleToggleVisibility, handleChangeOpacity, handleChangeZIndex,

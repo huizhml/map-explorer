@@ -6,13 +6,13 @@ import CloseIcon from '@mui/icons-material/Close';
 import PlaylistAddIcon from '@mui/icons-material/PlaylistAdd';
 import CheckIcon from '@mui/icons-material/Check';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
-import { transform } from 'ol/proj';
 import { fetchVerticalProfile } from '../utils/verticalProfile';
 import { apiUrl } from '../utils/apiBase';
 import { useMapStore } from '../stores/mapStore';
 import type { VerticalProfileCurvePoint } from '../stores/mapStore';
 
 export interface GediPointData {
+  /** [lon, lat]. */
   coordinate: number[];
   properties: Record<string, any>;
 }
@@ -348,7 +348,7 @@ export function GediPointPopup({ data, onClose }: GediPointPopupProps) {
   const savedGediPoints = useMapStore((s) => s.savedGediPoints);
   const { values: rhValues, keys: rhKeys } = extractRhValues(data.properties);
 
-  const [lon, lat] = transform(data.coordinate, 'EPSG:3857', 'EPSG:4326');
+  const [lon, lat] = data.coordinate;
 
   const isAlreadySaved = savedGediPoints.some(
     (p) => Math.abs(p.lon - lon) < 1e-8 && Math.abs(p.lat - lat) < 1e-8,

@@ -1,11 +1,6 @@
 import { useEffect, useRef } from 'react';
-import type Map from 'ol/Map';
-import Feature from 'ol/Feature';
-import Point from 'ol/geom/Point';
-import VectorLayer from 'ol/layer/Vector';
-import VectorSource from 'ol/source/Vector';
-import { Icon, Style } from 'ol/style';
-import { fromLonLat } from 'ol/proj';
+import { Marker } from 'maplibre-gl';
+import { useExploreMap } from './exploreMap';
 
 /**
  * Where the reading card is reading.
@@ -49,40 +44,38 @@ const PIN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="26" height="36" 
  * pin's one cost, worth knowing: the head covers ground north of the reading,
  * so the pixel the card is describing is the one under the tip, not the one
  * behind the disc.
+ *
+ * A DOM marker rather than a symbol layer, so it is drawn over everything on
+ * the canvas — the transect line included: a reading taken *on* a transect
+ * must still be findable. It ignores the pointer, so a click on the pin is a
+ * click on the pixel under it.
  */
-const MARKER_STYLE = new Style({
-  image: new Icon({
-    src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(PIN_SVG)}`,
-    anchor: [0.5, 1],
-    scale: 1,
-  }),
-});
+export function InspectMarker({ lon, lat }: { lon?: number; lat?: number }) {
+  const { map } = useExploreMap();
+  const markerRef = useRef<Marker | null>(null);
 
-export function InspectMarker({ map, lon, lat }: { map: Map | null; lon?: number; lat?: number }) {
-  const layerRef = useRef<VectorLayer<VectorSource> | null>(null);
-
-  // Above the transect line at 900, which is the only other thing drawn over
-  // the predictions: a reading taken *on* a transect must still be findable.
   useEffect(() => {
     if (!map) return;
-    const layer = new VectorLayer({ source: new VectorSource(), style: MARKER_STYLE, zIndex: 1000 });
-    map.addLayer(layer);
-    layerRef.current = layer;
+    const el = document.createElement('div');
+    el.innerHTML = PIN_SVG;
+    el.style.pointerEvents = 'none';
+    markerRef.current = new Marker({ element: el, anchor: 'bottom' });
     return () => {
-      map.removeLayer(layer);
-      layerRef.current = null;
+      markerRef.current?.remove();
+      markerRef.current = null;
     };
   }, [map]);
 
   // `map` is in the deps as well as the coordinates: the effect above builds a
-  // fresh, empty layer whenever the map changes, and this is what puts the mark
-  // back into it.
+  // fresh marker whenever the map changes, and this is what puts it back.
   useEffect(() => {
-    const source = layerRef.current?.getSource();
-    if (!source) return;
-    source.clear();
-    if (lon === undefined || lat === undefined) return;
-    source.addFeature(new Feature(new Point(fromLonLat([lon, lat]))));
+    const marker = markerRef.current;
+    if (!map || !marker) return;
+    if (lon === undefined || lat === undefined) {
+      marker.remove();
+      return;
+    }
+    marker.setLngLat([lon, lat]).addTo(map);
   }, [map, lon, lat]);
 
   return null;

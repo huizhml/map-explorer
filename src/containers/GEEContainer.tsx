@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { Map } from '../components/Map';
-import TileLayer from 'ol/layer/Tile';
-import XYZ from 'ol/source/XYZ';
+import { RasterLayer } from '../map/layers';
 import { Box, Typography, Button, FormControl, Select, MenuItem, type SelectChangeEvent } from '@mui/material';
 import { apiService, type BandCombination as ApiBandCombination } from '../services/api';
 
@@ -20,7 +19,7 @@ const SENTINEL2_BANDS: Record<string, (string | null)[]> = {
 type BandCombination = keyof typeof SENTINEL2_BANDS;
 
 export function GEEContainer({ map }: GEEContainerProps) {
-  const [geeLayer, setGeeLayer] = useState<TileLayer<XYZ> | null>(null);
+  const [geeLayer, setGeeLayer] = useState<RasterLayer | null>(null);
   const [selectedBands, setSelectedBands] = useState<BandCombination>('Natural Color');
   const [isVisible, setIsVisible] = useState(true);
   const [availableBands, setAvailableBands] = useState<Array<{ id: string; name: string; resolution: string }>>([]);
@@ -44,19 +43,17 @@ export function GEEContainer({ map }: GEEContainerProps) {
 
       // Remove existing layer
       if (geeLayer) {
-        map.removeLayer(geeLayer);
+        geeLayer.detach();
       }
 
       // Create new layer with selected bands
-      const layer = new TileLayer({
-        source: new XYZ({
-          url: response.tile_url,
-          maxZoom: 14,
-        }),
+      const layer = new RasterLayer({
+        url: response.tile_url,
+        maxTileZoom: 14,
         visible: isVisible,
       });
 
-      map.addLayer(layer);
+      layer.attach(map);
       setGeeLayer(layer);
     } catch (error) {
       console.error('Error updating layer:', error);

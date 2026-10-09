@@ -24,9 +24,6 @@ import {
   ExpandMore as ExpandMoreIcon,
   ChevronRight as ChevronRightIcon,
 } from '@mui/icons-material';
-import { Geometry } from 'ol/geom';
-import Point from 'ol/geom/Point';
-import { transform } from 'ol/proj';
 import { apiUrl } from '../utils/apiBase';
 import type { SavedFeatureDraft } from '../services/savedFeaturesApi';
 import {
@@ -58,7 +55,8 @@ interface FeaturePopupProps {
   properties: Record<string, any> | null;
   onClose: () => void;
   position: { x: number; y: number } | null;
-  geometry?: Geometry | null;
+  /** The clicked feature's geometry, GeoJSON in longitude/latitude. */
+  geometry?: GeoJSON.Geometry | null;
   coordinates?: { lon: number; lat: number } | null;
   onLoadSentinel2Image?: (image: Sentinel2Image, tileName?: string) => void;
   onLoadPredictionCOG?: (predictionData: {
@@ -91,6 +89,35 @@ interface FeaturePopupProps {
     sample_size: number;
   }) => void;
   onSavePoint?: (draft: SavedFeatureDraft) => void;
+}
+
+/**
+ * How many GEDI shots to load for a tile — a random sample of this size, or the
+ * whole tile when it has fewer.
+ *
+ * 5,000 was the fixed number while the map was OpenLayers, which slowed down
+ * well before that. MapLibre draws far more; the limit now is the download,
+ * since every shot carries all its attribute columns (~1.6 KB each), which is
+ * why the sizes are shown and why there is no "all" — a tile can hold over
+ * 100,000 shots. The backend caps requests at the largest option here
+ * (GEDI_MAX_SAMPLE_SIZE in routes/auxiliary.py).
+ */
+const GEDI_SAMPLE_OPTIONS = [
+  { value: 5000, label: '5,000 (~8 MB)' },
+  { value: 10000, label: '10,000 (~16 MB)' },
+  { value: 20000, label: '20,000 (~31 MB)' },
+  { value: 50000, label: '50,000 (~78 MB)' },
+];
+const GEDI_SAMPLE_STORAGE_KEY = 'map-explorer-gedi-sample-size';
+
+function readStoredGediSampleSize(): number {
+  try {
+    const n = Number(window.localStorage.getItem(GEDI_SAMPLE_STORAGE_KEY));
+    if (GEDI_SAMPLE_OPTIONS.some((o) => o.value === n)) return n;
+  } catch {
+    /* ignore */
+  }
+  return GEDI_SAMPLE_OPTIONS[0].value;
 }
 
 export function FeaturePopup({ properties, onClose, position, geometry, coordinates, onLoadSentinel2Image, onLoadPredictionCOG, onLoadPredictionIntervalCOG, onLoadAuxiliaryLayer, onLoadGEDIPoints, onSavePoint }: FeaturePopupProps) {
@@ -130,6 +157,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
   const [gediLoading, setGediLoading] = useState(false);
   const [gediError, setGediError] = useState<string | null>(null);
   const [gediResult, setGediResult] = useState<any | null>(null);
+  const [gediSampleSize, setGediSampleSize] = useState<number>(readStoredGediSampleSize);
 
   // Per-section expand override (absent key → section default). Keyed by section id.
   const [sectionExpandOverride, setSectionExpandOverride] = useState<Record<string, boolean>>({});
@@ -776,7 +804,7 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
       const response = await fetch(apiUrl('/auxiliary/gedi'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tile_name: properties.Name, year: parseInt(year), sample_size: 5000 }),
+        body: JSON.stringify({ tile_name: properties.Name, year: parseInt(year), sample_size: gediSampleSize }),
       });
       if (!response.ok && response.status !== 204) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -832,28 +860,10 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
 
     try {
       // Extract geometry coordinates if available
+      // Polygon rings in lat/lon, which is what the backend takes.
       let geometryCoords: number[][][] | null = null;
-      if (geometry) {
-        try {
-          // Get coordinates from OpenLayers geometry
-          const geomType = geometry.getType();
-          if (geomType === 'Polygon') {
-            const coords = (geometry as any).getCoordinates();
-            // OpenLayers Polygon coordinates format: [[[x, y], [x, y], ...]] in EPSG:3857
-            // Transform to EPSG:4326 (lat/lon) for backend
-            if (coords && coords.length > 0 && coords[0].length > 0) {
-              geometryCoords = coords.map((ring: number[][]) => 
-                ring.map((coord: number[]) => {
-                  // Transform from EPSG:3857 to EPSG:4326
-                  const [lon, lat] = transform(coord, 'EPSG:3857', 'EPSG:4326');
-                  return [lon, lat];
-                })
-              );
-            }
-          }
-        } catch (e) {
-          console.warn('Could not extract geometry coordinates:', e);
-        }
+      if (geometry?.type === 'Polygon' && geometry.coordinates[0]?.length) {
+        geometryCoords = geometry.coordinates.map((ring) => ring.map(([lon, lat]) => [lon, lat]));
       }
 
       const response = await fetch(apiUrl('/tile/offset'), {
@@ -969,11 +979,8 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
     // to avoid small visual click-offset shifts when re-locating.
     let pointLon = coordinates.lon;
     let pointLat = coordinates.lat;
-    if (geometry instanceof Point) {
-      const pointCoord3857 = geometry.getCoordinates();
-      const [geomLon, geomLat] = transform(pointCoord3857, 'EPSG:3857', 'EPSG:4326');
-      pointLon = geomLon;
-      pointLat = geomLat;
+    if (geometry?.type === 'Point') {
+      [pointLon, pointLat] = geometry.coordinates;
     }
 
     // Keep only visible feature properties and ensure JSON-safe payload.
@@ -1367,6 +1374,31 @@ export function FeaturePopup({ properties, onClose, position, geometry, coordina
                 >
                   {gediLoading ? 'Loading...' : 'Load GEDI'}
                 </Button>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 1, mt: 1 }}>
+                <Typography variant="caption" color="text.secondary">
+                  GEDI points per tile
+                </Typography>
+                <Select
+                  size="small"
+                  value={gediSampleSize}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setGediSampleSize(n);
+                    try {
+                      window.localStorage.setItem(GEDI_SAMPLE_STORAGE_KEY, String(n));
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                  sx={{ fontSize: 13, '& .MuiSelect-select': { py: 0.4 } }}
+                >
+                  {GEDI_SAMPLE_OPTIONS.map((o) => (
+                    <MenuItem key={o.value} value={o.value} sx={{ fontSize: 13 }}>
+                      {o.label}
+                    </MenuItem>
+                  ))}
+                </Select>
               </Box>
 
               {(alsError || lvisError || gediError) && (

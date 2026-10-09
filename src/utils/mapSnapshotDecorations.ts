@@ -1,5 +1,10 @@
-import type Map from 'ol/Map';
-import { getPointResolution } from 'ol/proj';
+import type { Map } from 'maplibre-gl';
+
+/** Ground metres per CSS pixel at the map's centre. */
+function metresPerPixel(map: Map): number {
+  const lat = map.getCenter().lat;
+  return (40075016.686 * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** map.getZoom());
+}
 
 /** OGC default screen DPI used by OpenLayers ScaleLine (same as `ol/control/ScaleLine`). */
 const OL_DEFAULT_DPI = 25.4 / 0.28;
@@ -57,12 +62,8 @@ export function computeMetricScaleBarLayout(
 }
 
 function mapScaleDenominator(map: Map): number | null {
-  const view = map.getView();
-  const projection = view.getProjection();
-  const center = view.getCenter();
-  const resolution = view.getResolution();
-  if (!projection || !center || resolution == null) return null;
-  const mPerPx = getPointResolution(projection, resolution, center, 'm');
+  const mPerPx = metresPerPixel(map);
+  if (!Number.isFinite(mPerPx)) return null;
   const inchesPerMeter = 1000 / 25.4;
   return mPerPx * inchesPerMeter * OL_DEFAULT_DPI;
 }
@@ -115,13 +116,8 @@ export function drawMetricScaleBarOnSnapshot(
     showMapScaleText,
   } = options;
 
-  const view = map.getView();
-  const projection = view.getProjection();
-  const center = view.getCenter();
-  const resolution = view.getResolution();
-  if (!projection || !center || resolution == null) return;
-
-  const pointResolutionM = getPointResolution(projection, resolution, center, 'm');
+  const pointResolutionM = metresPerPixel(map);
+  if (!Number.isFinite(pointResolutionM)) return;
   const layout = computeMetricScaleBarLayout(minWidthCss, pointResolutionM);
   if (!layout) return;
 
@@ -210,7 +206,7 @@ export function drawMetricScaleBarOnSnapshot(
 
 /**
  * Same as `drawMetricScaleBarOnSnapshot` but accepts `metersPerCssPx` directly
- * (no OL map required — use when the image comes from an off-map source).
+ * (no map required — use when the image comes from an off-map source).
  */
 export function drawMetricScaleBarFromResolution(
   ctx: CanvasRenderingContext2D,

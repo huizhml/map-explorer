@@ -1,8 +1,8 @@
-import type { Map as OLMap } from 'ol';
-import type BaseLayer from 'ol/layer/Base';
-import { transformExtent } from 'ol/proj';
+import type { Map as MlMap } from 'maplibre-gl';
+import type { MapLayer } from '../map/layers';
+import { bboxFromMercator, isFiniteBBox, type BBox } from '../map/proj';
 
-// Use global Map to avoid conflict with OpenLayers Map
+// Use global Map to avoid conflict with the map library's Map
 type LayerMap = globalThis.Map<string, ManagedLayer>;
 
 export type LayerType = 'cog' | 'fgb' | 'sentinel2' | 'prediction' | 'vector' | 'earthengine';
@@ -11,7 +11,7 @@ export interface ManagedLayer {
   id: string;
   name: string;
   type: LayerType;
-  layer: BaseLayer;
+  layer: MapLayer;
   visible: boolean;
   opacity: number;
   zIndex: number;
@@ -22,17 +22,17 @@ export interface ManagedLayer {
  * LayerManager class to manage all map layers with unified visibility and opacity control
  */
 export class LayerManager {
-  private map: OLMap | null = null;
+  private map: MlMap | null = null;
   private layers: LayerMap = new globalThis.Map<string, ManagedLayer>();
 
-  constructor(map: OLMap | null) {
+  constructor(map: MlMap | null) {
     this.map = map;
   }
 
   /**
    * Update the map instance
    */
-  setMap(map: OLMap | null) {
+  setMap(map: MlMap | null) {
     this.map = map;
   }
 
@@ -43,7 +43,7 @@ export class LayerManager {
     id: string,
     name: string,
     type: LayerType,
-    layer: BaseLayer,
+    layer: MapLayer,
     metadata?: Record<string, any>
   ): void {
     if (!this.map) {
@@ -51,31 +51,21 @@ export class LayerManager {
       return;
     }
 
-    // Get current visibility and opacity from the layer
-    const visible = layer.getVisible() !== false;
-    const opacity = layer.getOpacity() !== undefined ? layer.getOpacity() : 1;
-    const zIndex = layer.getZIndex() !== undefined ? (layer.getZIndex() as number) : 0;
-
     const managedLayer: ManagedLayer = {
       id,
       name,
       type,
       layer,
-      visible,
-      opacity,
-      zIndex,
+      visible: layer.getVisible(),
+      opacity: layer.getOpacity(),
+      zIndex: layer.getZIndex(),
       metadata,
     };
 
     this.layers.set(id, managedLayer);
-    
-    // Ensure layer is added to map if not already
-    if (!this.map.getLayers().getArray().includes(layer)) {
-      this.map.addLayer(layer);
-    }
 
-    // Sync layer properties
-    this.syncLayerProperties(id);
+    // Ensure layer is added to map if not already
+    if (!layer.isAttached()) layer.attach(this.map);
   }
 
   /**
@@ -87,10 +77,7 @@ export class LayerManager {
       return false;
     }
 
-    if (this.map) {
-      this.map.removeLayer(managedLayer.layer);
-    }
-
+    managedLayer.layer.detach();
     this.layers.delete(id);
     return true;
   }
@@ -107,7 +94,7 @@ export class LayerManager {
     const newVisible = !managedLayer.visible;
     managedLayer.visible = newVisible;
     managedLayer.layer.setVisible(newVisible);
-    
+
     return newVisible;
   }
 
@@ -176,7 +163,7 @@ export class LayerManager {
   }
 
   /**
-   * Sync layer properties from the actual OpenLayers layer
+   * Sync layer properties from the actual map layer
    */
   syncLayerProperties(id: string): void {
     const managedLayer = this.layers.get(id);
@@ -184,11 +171,9 @@ export class LayerManager {
       return;
     }
 
-    managedLayer.visible = managedLayer.layer.getVisible() !== false;
-    const layerOpacity = managedLayer.layer.getOpacity();
-    managedLayer.opacity = layerOpacity !== undefined ? layerOpacity : 1;
-    const layerZIndex = managedLayer.layer.getZIndex();
-    managedLayer.zIndex = layerZIndex !== undefined ? (layerZIndex as number) : 0;
+    managedLayer.visible = managedLayer.layer.getVisible();
+    managedLayer.opacity = managedLayer.layer.getOpacity();
+    managedLayer.zIndex = managedLayer.layer.getZIndex();
   }
 
   /**
@@ -205,7 +190,7 @@ export class LayerManager {
    */
   reorderLayers(fromIndex: number, toIndex: number): boolean {
     const layersArray = Array.from(this.layers.values());
-    
+
     if (fromIndex < 0 || fromIndex >= layersArray.length ||
         toIndex < 0 || toIndex >= layersArray.length) {
       return false;
@@ -228,11 +213,7 @@ export class LayerManager {
    * Clear all layers
    */
   clear(): void {
-    if (this.map) {
-      this.layers.forEach((managedLayer: ManagedLayer) => {
-        this.map!.removeLayer(managedLayer.layer);
-      });
-    }
+    this.layers.forEach((managedLayer: ManagedLayer) => managedLayer.layer.detach());
     this.layers.clear();
   }
 
@@ -244,87 +225,32 @@ export class LayerManager {
   }
 
   /**
-   * Get layer extent for zooming/fitting
-   * Returns extent in EPSG:3857 (Web Mercator) coordinates
+   * Where a layer's data is, for zooming to it — [west, south, east, north] in
+   * degrees.
    */
-  getLayerExtent(id: string): number[] | null {
+  getLayerExtent(id: string): BBox | null {
     const managedLayer = this.layers.get(id);
-    if (!managedLayer || !this.map) {
+    if (!managedLayer) {
       return null;
     }
 
-    const layer = managedLayer.layer;
-    
-    // First, try to get extent from metadata (most reliable)
-    if (managedLayer.metadata) {
-      const metadata = managedLayer.metadata;
-      // Check for extent (already in Web Mercator)
-      if (metadata.extent && Array.isArray(metadata.extent) && metadata.extent.length === 4) {
-        const extent = metadata.extent;
-        if (extent.every((val: number) => isFinite(val) && !isNaN(val))) {
-          return extent;
-        }
+    // First, try metadata (most reliable)
+    const metadata = managedLayer.metadata;
+    if (metadata) {
+      // `extent` is Web Mercator, as the layer loaders record it.
+      if (isFiniteBBox(metadata.extent)) {
+        return bboxFromMercator(metadata.extent);
       }
-      // Check for bbox (may be in EPSG:4326, needs transformation)
-      if (metadata.bbox && Array.isArray(metadata.bbox) && metadata.bbox.length === 4) {
-        const bbox = metadata.bbox;
-        // Check if it's in lat/lon (EPSG:4326) or already in Web Mercator
-        const isLatLon = Math.abs(bbox[0]) <= 180 && Math.abs(bbox[1]) <= 90;
-        if (isLatLon) {
-          // Transform from EPSG:4326 to EPSG:3857
-          try {
-            const transformed = transformExtent(bbox, 'EPSG:4326', 'EPSG:3857');
-            if (transformed && transformed.every((val: number) => isFinite(val) && !isNaN(val))) {
-              return transformed;
-            }
-          } catch (e) {
-            console.warn('Could not transform bbox:', e);
-          }
-        } else {
-          // Assume it's already in Web Mercator
-          if (bbox.every((val: number) => isFinite(val) && !isNaN(val))) {
-            return bbox;
-          }
-        }
+      // `bbox` is lat/lon, unless it is too large to be.
+      if (isFiniteBBox(metadata.bbox)) {
+        const b = metadata.bbox;
+        const isLatLon = Math.abs(b[0]) <= 180 && Math.abs(b[1]) <= 90;
+        return isLatLon ? b : bboxFromMercator(b);
       }
     }
-    
-    // Try to get extent from layer directly
-    try {
-      const layerExtent = layer.getExtent();
-      if (layerExtent && layerExtent.length === 4) {
-        if (layerExtent.every((val: number) => isFinite(val) && !isNaN(val))) {
-          return layerExtent;
-        }
-      }
-    } catch (e) {
-      // Ignore errors
-    }
 
-    // For Vector layers, try to get extent from source
-    try {
-      const source = (layer as any).getSource?.();
-      if (source && typeof source.getExtent === 'function') {
-        const sourceExtent = source.getExtent();
-        if (sourceExtent && sourceExtent.length === 4) {
-          if (sourceExtent.every((val: number) => isFinite(val) && !isNaN(val))) {
-            return sourceExtent;
-          }
-        }
-      }
-    } catch (e) {
-      // Ignore errors
-    }
-
-    return null;
-  }
-
-  /**
-   * Get the actual OpenLayers layer instance
-   */
-  getOpenLayersLayer(id: string): BaseLayer | null {
-    const managedLayer = this.layers.get(id);
-    return managedLayer ? managedLayer.layer : null;
+    // Otherwise the layer's own idea of where its data is.
+    const own = managedLayer.layer.getBounds();
+    return isFiniteBBox(own) ? own : null;
   }
 }
-
