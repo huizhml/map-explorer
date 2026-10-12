@@ -5,9 +5,13 @@
 # ============================================================================
 #
 #  Architecture:
-#    - SLURM jobs hold compute node allocations (sbatch sleep infinity)
-#    - srun --overlap runs servers in foreground (kept alive as bg processes)
-#    - Local SSH forwards go directly through hendrix1 to compute nodes
+#    - One SLURM job holds the compute node allocation (sbatch sleep infinity)
+#    - Backend and frontend each run as a named job step (srun -J backend /
+#      -J frontend --exact) with its own CPUs and memory, so one service
+#      running out of memory cannot take the other down. The cluster enforces
+#      this with cgroups (ConstrainRAMSpace/ConstrainCores, no swap).
+#    - Each srun runs in the foreground of a backgrounded local SSH session
+#    - Local SSH forwards go directly through hendrix1 to the compute node
 #    - No gate tunnels needed — hendrix1 can reach compute nodes by hostname
 #
 #  One-time setup:
@@ -38,10 +42,37 @@ set -uo pipefail
 
 PROJECT_DIR="map-explorer"
 BACKEND_PORT=8006
+
+# Backend processes. Unset (the default): one process with --reload, so a .py
+# uploaded over SFTP takes effect by itself. Set to N > 1 for N processes,
+# which render N tiles' worth of CPU work at once instead of one — at the cost
+# of --reload, which uvicorn cannot combine with workers, so code changes then
+# need `launch.sh restart backend`. Each process has its own tile cache.
+#   BACKEND_WORKERS=4 ./scripts/launch.sh          (or: ... launch.sh backend)
+BACKEND_WORKERS="${BACKEND_WORKERS:-}"
+
+# The uvicorn flags BACKEND_WORKERS asks for.
+backend_uvicorn_flags() {
+  if [[ -n "$BACKEND_WORKERS" && "$BACKEND_WORKERS" -gt 1 ]]; then
+    echo "--workers $BACKEND_WORKERS"
+  else
+    echo "--reload"
+  fi
+}
 FRONTEND_PORT=9036
 PARTITION="ml4good"
 SSH_HOST="hendrix3"
 LITESTREAM="${LITESTREAM:-0}"
+
+# One SLURM job for both services, split into two steps. The job asks for the
+# sum; each step gets its own share and cannot use the other's. Without swap a
+# step that goes over its memory is killed at once, so leave headroom: the
+# backend peaked at ~9.6G (sstat MaxRSS), more with BACKEND_WORKERS.
+JOB_NAME="dex"
+BACKEND_CPUS="${BACKEND_CPUS:-16}"
+BACKEND_MEM_GB="${BACKEND_MEM_GB:-32}"
+FRONTEND_CPUS="${FRONTEND_CPUS:-8}"
+FRONTEND_MEM_GB="${FRONTEND_MEM_GB:-16}"
 
 STATE_DIR="$HOME/.map-explorer-cluster"
 LOG_DIR="$STATE_DIR/logs"
@@ -175,18 +206,33 @@ submit_slurm_job() {
   ok "Allocated ${BOLD}$node${RESET} (job $jobid)"
 }
 
+# The one job both services run in: reuse it if it is running, else submit it.
+ensure_job() {
+  # State from the old two-job layout would leave forwards pointing at the old
+  # nodes and keep those allocations alive alongside the new one.
+  if [[ -f "$STATE_DIR/dex-backend_jobid" || -f "$STATE_DIR/dex-frontend_jobid" ]]; then
+    die "Jobs from the old two-job setup are still recorded — run '$0 stop' first"
+  fi
+  submit_slurm_job "$JOB_NAME" \
+    "$((BACKEND_MEM_GB + FRONTEND_MEM_GB))G" \
+    "$((BACKEND_CPUS + FRONTEND_CPUS))"
+}
+
 # ======================== PROCESS MANAGEMENT ========================
 #
 # Key insight: processes CANNOT be backgrounded inside srun — they die
 # when the srun step exits. Instead, we keep srun itself running as a
 # foreground process in a backgrounded SSH session on the local machine.
 #
-# A named pipe (fifo) is used for stdin to keep the SSH session alive.
-# Using /dev/null causes immediate EOF which can kill the session.
+# Each service is a job step named after it, with its own CPUs and memory
+# (--exact). A step only gets its share once the previous holder of it has
+# fully ended, so a restart cancels the old step through SLURM (stop_step)
+# rather than relying on the local ssh dying, and --immediate makes srun fail
+# instead of waiting forever if the share still is not free.
 
 start_persistent_srun() {
-  local label=$1 jobid=$2
-  shift 2
+  local label=$1 jobid=$2 cpus=$3 mem_gb=$4
+  shift 4
   local pid_file="$STATE_DIR/proc_${label}_pid"
 
   # Kill existing
@@ -200,14 +246,18 @@ start_persistent_srun() {
 
   # Run srun in foreground inside a backgrounded SSH session
   # -T disables pseudo-terminal to avoid issues with background execution
-  ssh -T "$SSH_HOST" "srun --jobid=$jobid --overlap $*" \
+  ssh -T "$SSH_HOST" "srun --jobid=$jobid -J $label -n1 -c$cpus --mem=${mem_gb}G --exact --immediate=60 $*" \
     </dev/null >>"$LOG_DIR/${label}.log" 2>&1 &
   echo $! > "$pid_file"
 
   sleep 3
 
   if kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-    ok "$label running (local PID $(cat "$pid_file"))"
+    if grep -q "Step creation temporarily disabled" "$LOG_DIR/${label}.log" 2>/dev/null; then
+      warn "$label is waiting for its CPUs/memory to be freed (gives up after 60s)"
+    else
+      ok "$label running (local PID $(cat "$pid_file"), ${cpus} CPUs, ${mem_gb}G)"
+    fi
     return 0
   else
     fail "$label failed to start — check $LOG_DIR/${label}.log"
@@ -216,6 +266,44 @@ start_persistent_srun() {
     done
     return 1
   fi
+}
+
+# Cancel the job steps named $name and wait until SLURM has removed them, so
+# their CPUs and memory are free for a new step. scancel ends every process in
+# the step, not just the one holding the port.
+stop_step() {
+  local jobid=$1 name=$2
+  local steps
+  steps=$(ssh "$SSH_HOST" "squeue -s -j $jobid -h -o '%i %j'" 2>/dev/null \
+    | awk -v n="$name" '$2 == n { print $1 }')
+  [[ -z "$steps" ]] && return 0
+
+  log "Cancelling step(s) $(echo $steps)..."
+  ssh "$SSH_HOST" "scancel $(echo $steps)" 2>/dev/null || true
+  local i
+  for ((i = 0; i < 60; i++)); do
+    if ! ssh "$SSH_HOST" "squeue -s -j $jobid -h -o '%j'" 2>/dev/null | grep -qx "$name"; then
+      ok "Old $name step ended"
+      return 0
+    fi
+    sleep 1
+  done
+  warn "Old $name step still listed after 60s — the new one may not get its resources"
+  return 1
+}
+
+start_backend_step() {
+  local jobid=$1
+  start_persistent_srun "backend" "$jobid" "$BACKEND_CPUS" "$BACKEND_MEM_GB" \
+    bash -c "'source ~/.bashrc && conda activate gis_app && cd ~/$PROJECT_DIR && source scripts/env.sh && cd backend && uvicorn app:app $(backend_uvicorn_flags) --host 0.0.0.0 --port $BACKEND_PORT'"
+}
+
+# vite with --host so it listens on all interfaces; hendrix1 reaches it by the
+# compute node's hostname.
+start_frontend_step() {
+  local jobid=$1
+  start_persistent_srun "frontend" "$jobid" "$FRONTEND_CPUS" "$FRONTEND_MEM_GB" \
+    bash -c "'cd ~/$PROJECT_DIR && npx vite --host --port $FRONTEND_PORT'"
 }
 
 setup_local_forward() {
@@ -322,23 +410,19 @@ launch_backend() {
   # empty DB and litestream would lose track of the old generation.
   ensure_db_present
 
-  if ! submit_slurm_job "dex-backend" "32G" "16"; then
-    fail "Backend allocation failed"
+  if ! ensure_job; then
+    fail "Allocation failed"
     return 1
   fi
 
-  local jobid=$(cat "$STATE_DIR/dex-backend_jobid")
-  local node=$(cat "$STATE_DIR/dex-backend_node")
+  local jobid=$(cat "$STATE_DIR/${JOB_NAME}_jobid")
+  local node=$(cat "$STATE_DIR/${JOB_NAME}_node")
 
-  # Clean up stale processes on the compute node holding the port
-  log "Cleaning up port $BACKEND_PORT on $node..."
-  ssh "$SSH_HOST" "srun --jobid=$jobid --overlap bash -c '/usr/sbin/fuser -k $BACKEND_PORT/tcp 2>/dev/null; true'" 2>/dev/null || true
-  sleep 1
+  # A backend left over in this job (e.g. a launch after the local ssh died)
+  stop_step "$jobid" "backend"
 
-  # Start backend via persistent srun
   log "Starting backend on $node..."
-  start_persistent_srun "backend" "$jobid" \
-    bash -c "'source ~/.bashrc && conda activate gis_app && cd ~/$PROJECT_DIR && source scripts/env.sh && cd backend && uvicorn app:app --reload --host 0.0.0.0 --port $BACKEND_PORT'"
+  start_backend_step "$jobid"
 
   # Direct local forward: localhost → hendrix1 → compute node
   setup_local_forward "backend" "$node" "$BACKEND_PORT"
@@ -362,24 +446,18 @@ launch_backend() {
 launch_frontend() {
   step "Frontend"
 
-  if ! submit_slurm_job "dex-frontend" "16G" "8"; then
-    fail "Frontend allocation failed"
+  if ! ensure_job; then
+    fail "Allocation failed"
     return 1
   fi
 
-  local jobid=$(cat "$STATE_DIR/dex-frontend_jobid")
-  local node=$(cat "$STATE_DIR/dex-frontend_node")
+  local jobid=$(cat "$STATE_DIR/${JOB_NAME}_jobid")
+  local node=$(cat "$STATE_DIR/${JOB_NAME}_node")
 
-  # Clean up stale processes on the compute node holding the port
-  log "Cleaning up port $FRONTEND_PORT on $node..."
-  ssh "$SSH_HOST" "srun --jobid=$jobid --overlap bash -c '/usr/sbin/fuser -k $FRONTEND_PORT/tcp 2>/dev/null; true'" 2>/dev/null || true
-  sleep 1
+  stop_step "$jobid" "frontend"
 
-  # Start vite with --host so it listens on all interfaces
-  # This lets hendrix1 reach it directly by compute node hostname
   log "Starting dev server on $node..."
-  start_persistent_srun "frontend" "$jobid" \
-    bash -c "'cd ~/$PROJECT_DIR && npx vite --host --port $FRONTEND_PORT'"
+  start_frontend_step "$jobid"
 
   # Direct local forward: localhost → hendrix1 → compute node
   setup_local_forward "frontend" "$node" "$FRONTEND_PORT"
@@ -418,15 +496,14 @@ stop_all() {
     for port in $BACKEND_PORT $FRONTEND_PORT; do
       ssh -O cancel -L "$port:localhost:$port" "$SSH_HOST" 2>/dev/null || true
     done
-    # Also cancel with node hostnames
-    for service in backend frontend; do
-      local node_file="$STATE_DIR/dex-${service}_node"
-      if [[ -f "$node_file" ]]; then
-        local node=$(cat "$node_file")
-        local port=$BACKEND_PORT
-        [[ "$service" == "frontend" ]] && port=$FRONTEND_PORT
+    # Also cancel with node hostnames — every recorded node, which also covers
+    # the dex-backend/dex-frontend files of the old two-job setup
+    for node_file in "$STATE_DIR"/*_node; do
+      [[ -f "$node_file" ]] || continue
+      local node=$(cat "$node_file")
+      for port in $BACKEND_PORT $FRONTEND_PORT; do
         ssh -O cancel -L "$port:$node:$port" "$SSH_HOST" 2>/dev/null || true
-      fi
+      done
     done
     ok "Cancelled port forwards"
   fi
@@ -481,17 +558,24 @@ show_status() {
   fi
 
   echo ""
-  echo -e "  ${BOLD}SLURM Jobs${RESET}"
-  for service in backend frontend; do
-    local jobfile="$STATE_DIR/dex-${service}_jobid"
-    if [[ -f "$jobfile" ]] && check_master "$SSH_HOST" 2>/dev/null; then
-      local jobid=$(cat "$jobfile")
-      local info=$(ssh "$SSH_HOST" "squeue -j $jobid -h -o '%T  %N  %M / %l'" 2>/dev/null || echo "NOT FOUND")
-      echo -e "    ${GREEN}●${RESET} $service — job $jobid — $info"
-    else
-      echo -e "    ${DIM}●${RESET} ${DIM}$service — not running${RESET}"
-    fi
-  done
+  echo -e "  ${BOLD}SLURM Job${RESET}"
+  local jobfile="$STATE_DIR/${JOB_NAME}_jobid"
+  if [[ -f "$jobfile" ]] && check_master "$SSH_HOST" 2>/dev/null; then
+    local jobid=$(cat "$jobfile")
+    local info=$(ssh "$SSH_HOST" "squeue -j $jobid -h -o '%T  %N  %M / %l'" 2>/dev/null)
+    echo -e "    ${GREEN}●${RESET} $JOB_NAME — job $jobid — ${info:-NOT FOUND}"
+    for service in backend frontend; do
+      local step_info=$(ssh "$SSH_HOST" "squeue -s -j $jobid -h -o '%i %j %M'" 2>/dev/null \
+        | awk -v n="$service" '$2 == n { print $1 "  " $3 }')
+      if [[ -n "$step_info" ]]; then
+        echo -e "      ${GREEN}●${RESET} $service step — $step_info"
+      else
+        echo -e "      ${RED}●${RESET} $service step — not running"
+      fi
+    done
+  else
+    echo -e "    ${DIM}●${RESET} ${DIM}$JOB_NAME — not running${RESET}"
+  fi
 
   echo ""
   echo -e "  ${BOLD}Server Processes (local srun sessions)${RESET}"
@@ -575,11 +659,11 @@ restart_service() {
     open_master "$SSH_HOST"
   fi
 
-  local jobid_file="$STATE_DIR/dex-${service}_jobid"
-  local node_file="$STATE_DIR/dex-${service}_node"
+  local jobid_file="$STATE_DIR/${JOB_NAME}_jobid"
+  local node_file="$STATE_DIR/${JOB_NAME}_node"
 
   if [[ ! -f "$jobid_file" ]] || [[ ! -f "$node_file" ]]; then
-    die "No running $service found — use '$0' to launch first"
+    die "No running $JOB_NAME job found — use '$0' to launch first"
   fi
 
   local jobid=$(cat "$jobid_file")
@@ -601,22 +685,18 @@ restart_service() {
     ok "Stopped old $service process"
   fi
 
-  # Clean up stale port on compute node
+  # Killing the local ssh does not reliably end the remote step; cancel it in
+  # SLURM so its CPUs and memory are free for the new one.
+  stop_step "$jobid" "$service"
+
   local port=$BACKEND_PORT
   [[ "$service" == "frontend" ]] && port=$FRONTEND_PORT
-  log "Cleaning up port $port on $node..."
-  ssh "$SSH_HOST" "srun --jobid=$jobid --overlap bash -c '/usr/sbin/fuser -k $port/tcp 2>/dev/null; true'" 2>/dev/null || true
-  sleep 1
 
-  # Restart the process
+  log "Starting $service..."
   if [[ "$service" == "backend" ]]; then
-    log "Starting backend..."
-    start_persistent_srun "backend" "$jobid" \
-    bash -c "'source ~/.bashrc && conda activate gis_app && cd ~/$PROJECT_DIR && source scripts/env.sh && cd backend && uvicorn app:app --reload --host 0.0.0.0 --port $BACKEND_PORT'"
+    start_backend_step "$jobid"
   else
-    log "Starting frontend..."
-    start_persistent_srun "frontend" "$jobid" \
-      bash -c "'cd ~/$PROJECT_DIR && npx vite --host --port $FRONTEND_PORT'"
+    start_frontend_step "$jobid"
   fi
 
   # Verify
