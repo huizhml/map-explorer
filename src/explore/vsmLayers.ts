@@ -2,6 +2,7 @@ import type { Map as MlMap } from 'maplibre-gl';
 import { DEFAULT_VSM_VERSION, getDefaultRescaleAndColormap, type VsmQChoice } from '../constants/predictions';
 import { apiUrl } from '../utils/apiBase';
 import { tilesInView, type Grid, type GridTile } from './exploreMap';
+import { TILE_SIZE, TILE_SIZE_PARAM } from '../map/tiles';
 
 /**
  * The RH layers, drawn by MapLibre instead of OpenLayers.
@@ -23,8 +24,8 @@ import { tilesInView, type Grid, type GridTile } from './exploreMap';
  * image, and that is why the debounce can drop from 1.5 s to a fraction of it.
  *
  * MapLibre zoom is OpenLayers zoom minus one (512 px world vs 256 px), so the
- * old MIN_ZOOM of 8 is 7 here. Source min/max zooms are in *tile* zoom, which
- * for 256 px tiles is map zoom plus one — hence the 8s below.
+ * old MIN_ZOOM of 8 is 7 here. Tiles are 512 px (see map/tiles.ts), for which
+ * tile zoom and map zoom are the same.
  */
 
 export const MIN_ZOOM = 7;
@@ -36,8 +37,10 @@ export const MIN_ZOOM = 7;
  * after them.
  */
 export const VSM_TOP = 'vsm-top';
-/** Tile zoom the mosaic overview is fetched to; overzoomed above it. */
-const MOSAIC_MAX_TILE_ZOOM = 8;
+/** Zoom the mosaic overview is fetched to; overzoomed above it. */
+const MOSAIC_MAX_TILE_ZOOM = MIN_ZOOM;
+/** The 10 m COGs have nothing finer to give past this. */
+const MAX_TILE_ZOOM = 17;
 const DEBOUNCE_MS = 250;
 
 /** COG URL templates from /predictions/download-info; null where it has none. */
@@ -64,7 +67,7 @@ function cogTileUrl(cog: string, rh: number, qChoice: VsmQChoice): string {
   return apiUrl(
     `/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(cog)}` +
       `&expression=b1*(b1<32767)&nodata=-9999&return_mask=true` +
-      `&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}`,
+      `&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}&${TILE_SIZE_PARAM}`,
   );
 }
 
@@ -236,7 +239,7 @@ export class VsmLayers {
       this.map.addSource(src, {
         type: 'raster',
         tiles: [cogTileUrl(mosaicUrl, rh, this.qChoice)],
-        tileSize: 256,
+        tileSize: TILE_SIZE,
         maxzoom: MOSAIC_MAX_TILE_ZOOM,
       });
       // No layer maxzoom: above the overview's zoom it is overzoomed rather
@@ -302,10 +305,10 @@ export class VsmLayers {
     this.map.addSource(id, {
       type: 'raster',
       tiles: [cogTileUrl(cog, st.rh, this.qChoice)],
-      tileSize: 256,
+      tileSize: TILE_SIZE,
       bounds: t.bbox,
-      minzoom: MIN_ZOOM + 1,
-      maxzoom: 18,
+      minzoom: MIN_ZOOM,
+      maxzoom: MAX_TILE_ZOOM,
     });
     this.map.addLayer(
       {

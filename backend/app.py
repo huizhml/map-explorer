@@ -18,6 +18,7 @@ from PIL import Image
 
 import colormaps_extra  # noqa: F401  side-effect: register 'mako' globally
 from deploy_guard import install_public_guard, readonly_enabled
+from tile_cache import install_tile_caching
 from routes.sentinel2 import router as sentinel2_router
 from routes.predictions import router as predictions_router
 from routes.auxiliary import router as auxiliary_router
@@ -93,7 +94,10 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(title="Canopy Height – TiTiler with Mosaic + Viewer")
 app.add_middleware(CustomCORSMiddleware)
+# Server tile cache, browser Cache-Control and gzip — on every deployment.
+install_tile_caching(app)
 # No-op unless PUBLIC_READONLY is set, so the internal deployment is unaffected.
+# Installed last, so it is the outermost layer.
 install_public_guard(app)
 init_saved_features_db()
 

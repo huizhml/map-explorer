@@ -11,6 +11,7 @@ import {
   type VsmLayerEntry,
 } from '../constants/predictions';
 import { apiUrl } from '../utils/apiBase';
+import { TILE_SIZE, TILE_SIZE_PARAM } from '../map/tiles';
 
 const DEBOUNCE_MS = 500;
 const MAX_CONCURRENT = 3;
@@ -150,12 +151,12 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
           if (!mosaicUrlHigh) return;
           const rc = getDefaultRescaleAndColormap(entry.rhIndex, entry.qChoice);
           const mosaicTileUrl = isInterval && mosaicUrlLow
-            ? apiUrl(`/predictions/interval-tile/WebMercatorQuad/{z}/{x}/{y}?url_high=${encodeURIComponent(mosaicUrlHigh)}&url_low=${encodeURIComponent(mosaicUrlLow)}&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}`)
-            : apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicUrlHigh)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}`);
-          // Fetched to tile zoom 8 and overzoomed past it: left under the 10 m
+            ? apiUrl(`/predictions/interval-tile/WebMercatorQuad/{z}/{x}/{y}?url_high=${encodeURIComponent(mosaicUrlHigh)}&url_low=${encodeURIComponent(mosaicUrlLow)}&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}&${TILE_SIZE_PARAM}`)
+            : apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(mosaicUrlHigh)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rc.min},${rc.max}&colormap_name=${encodeURIComponent(rc.colormap)}&${TILE_SIZE_PARAM}`);
+          // Fetched to MIN_ZOOM and overzoomed past it: left under the 10 m
           // tiles, it fills the moment between a pan and their arrival rather
           // than showing bare basemap.
-          const mosaicLayer = new RasterLayer({ url: mosaicTileUrl, maxTileZoom: MIN_ZOOM + 1 });
+          const mosaicLayer = new RasterLayer({ url: mosaicTileUrl, tileSize: TILE_SIZE, maxTileZoom: MIN_ZOOM });
           const st = globalLayersRef.current.get(layerId);
           if (st && !st.cancelled && st.outerGroup.isAttached()) st.outerGroup.add(mosaicLayer, { bottom: true });
         } catch (err) {
@@ -229,10 +230,10 @@ export function useAutoLoadVSM(updateLayersList: () => void) {
             const rMax = globalManaged?.metadata?.rescaleMax ?? rc.max;
             const cm = globalManaged?.metadata?.colormap ?? rc.colormap;
             const url = isInterval
-              ? apiUrl(`/predictions/interval-tile/WebMercatorQuad/{z}/{x}/{y}?url_high=${encodeURIComponent(loaded.urls[0])}&url_low=${encodeURIComponent(loaded.urls[1])}&rescale=${rMin},${rMax}&colormap_name=${encodeURIComponent(cm)}`)
-              : apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(loaded.urls[0])}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rMin},${rMax}&colormap_name=${encodeURIComponent(cm)}`);
+              ? apiUrl(`/predictions/interval-tile/WebMercatorQuad/{z}/{x}/{y}?url_high=${encodeURIComponent(loaded.urls[0])}&url_low=${encodeURIComponent(loaded.urls[1])}&rescale=${rMin},${rMax}&colormap_name=${encodeURIComponent(cm)}&${TILE_SIZE_PARAM}`)
+              : apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(loaded.urls[0])}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${rMin},${rMax}&colormap_name=${encodeURIComponent(cm)}&${TILE_SIZE_PARAM}`);
             const layer = new RasterLayer({
-              url, maxTileZoom: 18, minTileZoom: MIN_ZOOM + 1, minZoom: MIN_ZOOM,
+              url, tileSize: TILE_SIZE, maxTileZoom: 17, minTileZoom: MIN_ZOOM, minZoom: MIN_ZOOM,
               bounds: tileBounds.get(tileName),
             });
             if (!state.cancelled) state.group.add(layer);

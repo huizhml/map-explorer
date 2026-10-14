@@ -553,7 +553,6 @@ from fastapi import Response  # noqa: E402  (kept local to avoid top-level reshu
 from rio_tiler.io import Reader  # noqa: E402
 from rio_tiler.models import ImageData  # noqa: E402
 from rio_tiler.colormap import cmap as _colormap_registry  # noqa: E402
-from rio_tiler.errors import TileOutsideBounds  # noqa: E402
 
 # Sentinel value baked into the source COGs marking "no valid prediction".
 _INTERVAL_SENTINEL = 32767.0
@@ -567,24 +566,38 @@ async def get_interval_tile(
     rescale: str = "0,500",
     colormap_name: str = "inferno",
     nodata: float = -9999.0,
+    tilesize: int = 256,
 ):
     """Return a PNG tile of (url_high - url_low), rescaled and colormapped.
 
     Mirrors the parameter style of `/cog/tiles` so the frontend can swap it in
-    for interval qChoices without other changes.
+    for interval qChoices without other changes — `tilesize` included.
+
+    The reads and the encode run on a worker thread. Done on the event loop, as
+    this used to be, every other request — the other tiles of the same view
+    among them — waited for each interval tile to finish.
     """
     try:
         rmin, rmax = (float(v) for v in rescale.split(","))
     except Exception:
         rmin, rmax = 0.0, 500.0
 
-    try:
-        with Reader(url_high) as src:
-            img_high = src.tile(x, y, z, nodata=nodata)
-        with Reader(url_low) as src:
-            img_low = src.tile(x, y, z, nodata=nodata)
-    except TileOutsideBounds:
-        raise
+    content = await asyncio.to_thread(
+        _render_interval_tile, x, y, z, url_high, url_low, rmin, rmax, colormap_name, nodata, tilesize,
+    )
+    return Response(content=content, media_type="image/png")
+
+
+def _render_interval_tile(
+    x: int, y: int, z: int,
+    url_high: str, url_low: str,
+    rmin: float, rmax: float,
+    colormap_name: str, nodata: float, tilesize: int,
+) -> bytes:
+    with Reader(url_high) as src:
+        img_high = src.tile(x, y, z, tilesize=tilesize, nodata=nodata)
+    with Reader(url_low) as src:
+        img_low = src.tile(x, y, z, tilesize=tilesize, nodata=nodata)
 
     high = np.asarray(img_high.data, dtype="float32")
     low = np.asarray(img_low.data, dtype="float32")
@@ -607,10 +620,7 @@ async def get_interval_tile(
     except Exception:
         cm = _colormap_registry.get("inferno")
 
-    return Response(
-        content=out.render(img_format="PNG", colormap=cm),
-        media_type="image/png",
-    )
+    return out.render(img_format="PNG", colormap=cm)
 
 
 @router.post("/predictions/vertical-profile")

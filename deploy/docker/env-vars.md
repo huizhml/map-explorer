@@ -18,6 +18,10 @@ The same set on every host; only how you set them differs:
 | `VERTICAL_PROFILE_WORKERS` | `48` | A point profile opens **101 COGs** — one per RH level — so this is the batch width. The work is HTTP latency, not CPU, so raising it from 12 to 48 (the backend's cap) cut a point read from 21 s to 14 s. The remaining time is source.coop's ~2-4 s per request × 3 batches; only a data-layout change (one 101-band COG per tile instead of 101 files) would go materially below it. |
 | `PREDICTIONS_REPOSITORY_URL` | *(optional)* | Where "see the repository" in the explore page's Download panel points. Defaults to `https://source.coop/geoai-ucph/gvsm`. The panel's actual download links are built from the two templates above, served to the frontend by `GET /predictions/download-info` — so the layout is configured here, in one place, and the bundle never hardcodes it. |
 | `PREDICTIONS_LOCAL_YEARS` | *(leave unset)* | Years served from local disk. Unset → every year comes from `PREDICTIONS_BASE_URL`, which is what a public deployment wants. |
+| `TILE_SERVER_CACHE_MB` | *(optional, default `256`)* | Memory for the in-process tile cache (`backend/tile_cache.py`). Per instance, and gone when the service scales to zero; on Cloud Run there is no disk to spill to — `/tmp` is memory too — so this comes out of the instance's 2 GiB. `0` turns it off. Responses carry `x-tile-cache: HIT` / `MISS`. |
+| `TILE_SERVER_CACHE_TTL` | *(optional, default `86400`)* | Seconds before a cached tile is re-rendered, so a replaced COG shows up within a day. |
+| `TILE_CACHE_MAX_AGE` | *(optional, default `86400`)* | Browser `Cache-Control` max-age on rendered imagery. Now set on every deployment, not just this one. |
+| `GZIP_MIN_BYTES` | *(optional, default `500000`)* | Responses smaller than this are not gzipped — keeps PNG tiles out of gzip; the 5.1 MB MGRS grid goes to 1.1 MB. |
 
 > ### ⚠️ This one also affects the internal deployment
 >

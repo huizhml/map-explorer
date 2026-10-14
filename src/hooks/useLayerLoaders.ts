@@ -16,6 +16,7 @@ import {
 } from '../constants/layerRanges';
 import { deserialize } from 'flatgeobuf/lib/mjs/geojson';
 import { apiUrl } from '../utils/apiBase';
+import { TILE_SIZE, TILE_SIZE_PARAM } from '../map/tiles';
 
 export interface DiversityBandConfig {
   bandMode: 'grayscale' | 'rgb';
@@ -37,6 +38,7 @@ export function buildDiversityTileUrl(cogUrl: string, config: DiversityBandConfi
   // backend/utils.py NODATA_OUT), but gdal_translate -of COG doesn't always
   // preserve the nodata tag; pass it explicitly so titiler masks those pixels.
   params.set('nodata', '-9999');
+  params.set('tilesize', String(TILE_SIZE));
 
   if (config.bandMode === 'grayscale') {
     const band = config.selectedBand ?? 1;
@@ -139,10 +141,10 @@ export function useLayerLoaders(updateLayersList: () => void) {
       const tileUrl = apiUrl(
         `/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(imageUrl)}` +
           (isVisualAsset ? '&bidx=1&bidx=2&bidx=3' : '&bidx=4&bidx=3&bidx=2&rescale=0,3000') +
-          '&return_mask=true',
+          `&return_mask=true&${TILE_SIZE_PARAM}`,
       );
       const newLayer = new RasterLayer({
-        url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 500,
+        url: tileUrl, tileSize: TILE_SIZE, maxTileZoom: 17, opacity: 1, zIndex: 500,
         bounds: isFiniteBBox(bbox) ? (bbox as BBox) : undefined,
       });
 
@@ -185,10 +187,10 @@ export function useLayerLoaders(updateLayersList: () => void) {
       if (!skipZoom) await fitAndWait(map, bbox);
 
       const defaultRescale = getDefaultRescaleForRh(predictionData.rh_index);
-      const tileUrl = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${defaultRescale.min},${defaultRescale.max}&colormap_name=inferno`);
+      const tileUrl = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(predictionData.url)}&expression=b1*(b1<32767)&nodata=-9999&return_mask=true&rescale=${defaultRescale.min},${defaultRescale.max}&colormap_name=inferno&${TILE_SIZE_PARAM}`);
 
       const newLayer = new RasterLayer({
-        url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 600,
+        url: tileUrl, tileSize: TILE_SIZE, maxTileZoom: 17, opacity: 1, zIndex: 600,
         bounds: isAntimeridian ? undefined : bbox,
       });
       const qLabels = ['95%', 'median', '5%'];
@@ -233,11 +235,12 @@ export function useLayerLoaders(updateLayersList: () => void) {
         `?url_high=${encodeURIComponent(data.url_high)}` +
         `&url_low=${encodeURIComponent(data.url_low)}` +
         `&rescale=${defaultRescale.min},${defaultRescale.max}` +
-        `&colormap_name=${encodeURIComponent(colormap)}`,
+        `&colormap_name=${encodeURIComponent(colormap)}` +
+        `&${TILE_SIZE_PARAM}`,
       );
 
       const newLayer = new RasterLayer({
-        url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 600,
+        url: tileUrl, tileSize: TILE_SIZE, maxTileZoom: 17, opacity: 1, zIndex: 600,
         bounds: isAntimeridian ? undefined : bbox,
       });
       const layerId = `prediction-${data.tile_name}-RH${data.rh_index}-${data.qChoice}-${data.year}-${Date.now()}`;
@@ -298,7 +301,7 @@ export function useLayerLoaders(updateLayersList: () => void) {
         });
 
         const newLayer = new RasterLayer({
-          url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 600,
+          url: tileUrl, tileSize: TILE_SIZE, maxTileZoom: 17, opacity: 1, zIndex: 600,
           bounds: isAntimeridian ? undefined : bbox,
         });
 
@@ -335,10 +338,10 @@ export function useLayerLoaders(updateLayersList: () => void) {
       const nodataValueByType: Record<string, string> = { als: '255', lvis: '255', cr: '-9999', profile_entropy: '-9999' };
       const nodataValue = nodataValueByType[data.layer_type];
       const nodataParam = nodataValue ? `&nodata=${nodataValue}` : '';
-      const tileUrl = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=${rescale}${nodataParam}${colormapParam}`);
+      const tileUrl = apiUrl(`/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(data.url)}&return_mask=true&rescale=${rescale}${nodataParam}${colormapParam}&${TILE_SIZE_PARAM}`);
 
       const newLayer = new RasterLayer({
-        url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 600,
+        url: tileUrl, tileSize: TILE_SIZE, maxTileZoom: 17, opacity: 1, zIndex: 600,
         bounds: isAntimeridian ? undefined : bbox,
       });
 

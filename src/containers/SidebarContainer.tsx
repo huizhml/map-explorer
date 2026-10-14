@@ -3,6 +3,7 @@ import { Sidebar } from '../components/Sidebar';
 import { PALETTES, type PaletteName } from '../constants/palettes';
 import type { MapMouseEvent } from 'maplibre-gl';
 import { RasterLayer } from '../map/layers';
+import { TILE_SIZE, TILE_SIZE_PARAM } from '../map/tiles';
 import { VectorLayer, type AppFeature, type FeatureStyle } from '../map/vector';
 import { bboxFromMercator, fromMercator, geometryBBox, isFiniteBBox, pointInGeometry, toMercator } from '../map/proj';
 import { deserialize } from 'flatgeobuf/lib/mjs/geojson';
@@ -1239,11 +1240,11 @@ export function SidebarContainer() {
       // colour via a discrete TiTiler colormap (kept in sync with the legend).
       const tileUrl = apiUrl(
         `/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(cogPath)}`
-        + `&return_mask=true&colormap=${encodeURIComponent(buildNaturalnessColormapParam())}`,
+        + `&return_mask=true&colormap=${encodeURIComponent(buildNaturalnessColormapParam())}&${TILE_SIZE_PARAM}`,
       );
 
       const newLayer = new RasterLayer({
-        url: tileUrl, maxTileZoom: 18, opacity: 1, zIndex: 600,
+        url: tileUrl, tileSize: TILE_SIZE, maxTileZoom: 17, opacity: 1, zIndex: 600,
         bounds: isGlobal ? undefined : bbox,
       });
 

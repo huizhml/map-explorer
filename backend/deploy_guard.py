@@ -21,7 +21,6 @@ import re
 from typing import Optional
 
 from starlette.datastructures import QueryParams
-from starlette.middleware.gzip import GZipMiddleware
 from starlette.responses import JSONResponse
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -120,46 +119,6 @@ class PublicReadOnlyMiddleware:
         await self.app(scope, receive, send)
 
 
-# Rendered imagery is a pure function of (source COG, render params), so it can
-# be cached by the browser and by any CDN placed in front. TiTiler sets no
-# Cache-Control at all, which means a reviewer panning back over ground they
-# already looked at re-renders every tile — and each one costs a round trip to
-# source.coop, which measures 2-4 s.
-_CACHEABLE_PREFIXES = (
-    "/cog/tiles",
-    "/cog/preview",
-    "/cog/crop",
-    "/predictions/interval-tile",
-    "/saved-features/image",
-)
-
-
-class TileCacheMiddleware:
-    """Stamp Cache-Control on rendered imagery. Pure ASGI for the same reason as
-    PublicReadOnlyMiddleware — it must not sit in the streaming path."""
-
-    def __init__(self, app, max_age: int):
-        self.app = app
-        self.header_value = f"public, max-age={max_age}".encode("latin-1")
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("method", "GET").upper() != "GET":
-            await self.app(scope, receive, send)
-            return
-        if not scope.get("path", "").startswith(_CACHEABLE_PREFIXES):
-            await self.app(scope, receive, send)
-            return
-
-        async def send_wrapper(message):
-            if message["type"] == "http.response.start" and message["status"] == 200:
-                headers = message.setdefault("headers", [])
-                if not any(k.lower() == b"cache-control" for k, _ in headers):
-                    headers.append((b"cache-control", self.header_value))
-            await send(message)
-
-        await self.app(scope, receive, send_wrapper)
-
-
 def install_public_guard(app) -> bool:
     """Attach the guard when PUBLIC_READONLY is set. Returns whether it was."""
     if not readonly_enabled():
@@ -168,24 +127,11 @@ def install_public_guard(app) -> bool:
     prefixes = _allowed_prefixes()
     app.add_middleware(PublicReadOnlyMiddleware, allowed_prefixes=prefixes)
 
-    # A day, not a month: the source COGs are still being uploaded, so pinning
-    # renders for weeks would serve stale imagery long after a tile is replaced.
-    max_age = int(os.environ.get("TILE_CACHE_MAX_AGE", "86400"))
-    app.add_middleware(TileCacheMiddleware, max_age=max_age)
-
-    # The MGRS grid is 5.1 MB of FlatGeobuf and gzips to 1.1 MB (22%) — and the
-    # frontend fetches the whole thing before it can request a single prediction
-    # tile, so this sits squarely on the critical path.
-    #
-    # minimum_size is set well above tile size on purpose: rendered PNGs are
-    # already compressed, and running them through gzip would burn CPU for
-    # nothing. Only the big vector payloads qualify.
-    gzip_min = int(os.environ.get("GZIP_MIN_BYTES", "500000"))
-    app.add_middleware(GZipMiddleware, minimum_size=gzip_min)
+    # Caching (Cache-Control, the server tile cache, gzip) is no longer part
+    # of the guard: it is on for every deployment — see tile_cache.py.
 
     print("=== PUBLIC_READONLY enabled ===")
     print(f"  blocked paths     : {sorted(_BLOCKED_PATHS)}")
     print(f"  allowed url prefix: {list(prefixes) or 'NONE SET — url= is unrestricted!'}")
-    print(f"  tile Cache-Control: public, max-age={max_age}")
     print("===============================")
     return True
