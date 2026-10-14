@@ -2,11 +2,11 @@ import { Hero } from '../story/Hero';
 import '../story/story.css';
 
 /**
- * The review site's front door: the story's title slide and nothing else.
+ * The review site's about page: the story's title slide and nothing else.
  *
- * A reviewer arriving cold needs to know what the dataset is before the map
- * means anything, but not to read six chapters to find out — so this is the
- * hero alone, with one way on. The chapters, their figures and the deck's
+ * The map is the front door; this is where its footer points anyone who wants
+ * to know what the dataset is, without reading six chapters to find out — so
+ * it is the hero alone, with one way back. The chapters, their figures and the deck's
  * swipe machinery are all absent from this bundle.
  *
  * The wrappers are the deck's own: `.story-slide` is a flex child sized to the
@@ -19,7 +19,7 @@ export default function Landing() {
   return (
     <div className="story story-deck">
       <div className="story-deck__track">
-        <Hero actions={<a className="story-cta" href="./explore.html">Explore the map →</a>} />
+        <Hero actions={<a className="story-cta" href="./">Explore the map →</a>} />
       </div>
     </div>
   );

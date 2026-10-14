@@ -13,8 +13,9 @@ What is published, all from the same `src/`:
 
 | URL | Page | Weight (gzip) |
 |---|---|---|
-| `/` (`index.html`) | Title page — the dataset in two sentences | ~61 KB |
-| `/explore.html` | The map, reached from the title page | ~180 KB |
+| `/` (`index.html`) | The map — what a bare URL opens | ~180 KB |
+| `/about.html` | Title page — the dataset in two sentences, linked from the map | ~61 KB |
+| `/explore.html` | Redirect to `/`, for links handed out before the map moved there | — |
 | `/dev.html` | Full app — the working tool | ~746 KB |
 
 > ⚠️ **The story is not published.** Its chapters are still drafts and reviewers
@@ -26,7 +27,8 @@ What is published, all from the same `src/`:
 > `npm run dev` is unaffected: the dev server serves `index.html` whatever the
 > build inputs are, so writing the story locally works exactly as before.
 
-Both the title page and `/explore.html` come from `vite.config.review.ts`. The
+The map, the title page and the `/explore.html` redirect all come from
+`vite.config.review.ts`. The
 title page is the hero slide alone, with none of the deck: no chapters, no
 figures, no swipe machinery — 1 kB of code over React, loading none of the
 map's bundle.
@@ -41,7 +43,7 @@ because `npm run dev` serves it; only the build input was removed.
 
 ```bash
 npm run build:web                        # dist/ — dev.html (and the story, if published)
-npm run build:review                     # adds index.html + explore.html — second
+npm run build:review                     # adds index.html, about.html, explore.html — second
 ```
 
 The order matters: `build:web` empties `dist/`, and `build:review` writes into
@@ -49,27 +51,37 @@ it rather than clearing it. CI runs both in
 [.github/workflows/pages.yml](.github/workflows/pages.yml) and ships one
 artifact.
 
-Because the title page occupies `index.html`, `PUBLISH_STORY=1` and the review
+Because the map occupies `index.html`, `PUBLISH_STORY=1` and the review
 build cannot both run — the story wants the same filename. `build:review`
 refuses with an explicit error rather than letting one overwrite the other.
 
 ### Giving the review site its own URL
 
-Pages takes the path from the repository name. To publish it as
-`huizhml.github.io/map-explorer-review/` instead, set both of these under
-Settings → Secrets and variables → Actions:
+Pages takes the path from the repository name, so a URL like
+`huizhml.github.io/vsm/` needs the build published to another repository. Set
+these under Settings → Secrets and variables → Actions:
 
 | | |
 |---|---|
-| variable `REVIEW_SITE_REPO` | `huizhml/map-explorer-review` |
+| variable `REVIEW_SITE_REPO` | the target repo, e.g. `huizhml/huizhml.github.io` |
+| variable `REVIEW_SITE_PATH` | folder inside it, e.g. `vsm` — required when the target is a user site |
 | secret `REVIEW_SITE_DEPLOY_KEY` | private half of a write-enabled deploy key on that repo |
 
-The `review-site` job then builds with the new base and force-pushes to that
-repo's `gh-pages` branch, and the subpath build stops running — so the two never
-publish at once. Clear the variable to go back. A deploy key rather than a PAT
-because it grants exactly one repository; the workflow's own `GITHUB_TOKEN`
-cannot write outside this one, which is also why this pushes a branch instead of
-using `actions/deploy-pages`.
+With `REVIEW_SITE_PATH` set, the `review-site` job rewrites only that folder of
+the target's default branch, as an ordinary commit, and leaves the rest of the
+repo — the homepage — alone. Without it, it force-pushes the build over the
+target's `gh-pages` branch, which is only right for a repo that holds nothing
+else; [scripts/review-site-target.sh](scripts/review-site-target.sh) refuses
+that combination for a user site. The same script derives the build's `--base`
+from the two variables.
+
+Either way the subpath build here stops running, and `index.html`,
+`explore.html` and `about.html` on this site become redirects to the new URL,
+so links already handed out keep working. Clear `REVIEW_SITE_REPO` to go back.
+
+A deploy key rather than a PAT because it grants exactly one repository; the
+workflow's own `GITHUB_TOKEN` cannot write outside this one, which is also why
+this pushes a branch instead of using `actions/deploy-pages`.
 
 ---
 

@@ -3,22 +3,23 @@ import react from '@vitejs/plugin-react'
 import { cpSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-// The review build: a title page and the map, nothing between them.
+// The review build: the map, and a title page beside it.
 //
 // Same `src/` as the main build — this is a different set of entry points, not
-// a fork. Two pages, mirroring how the main site already splits story from map:
+// a fork:
 //
-//   review/index.html    the story's hero slide alone — what the dataset is
-//   review/explore.html  the explore map
+//   review/index.html    the explore map — what a bare URL opens
+//   review/about.html    the story's hero slide alone — what the dataset is
+//   review/explore.html  a redirect to ./, where the map used to live
 //
 // What is absent is the deck: no chapters, no ForestPair/GediShot figures, no
-// swipe machinery, no dev.html. So the landing page stays cheap, and its only
+// swipe machinery, no dev.html. So the title page stays cheap, and its only
 // story asset is the hero background.
 //
-// These land at the *root* of the site, so the title page is what a bare URL
-// gives you. That is only possible while the story is unpublished, since the
-// story wants the same index.html — the guard below makes the clash loud rather
-// than letting one silently overwrite the other.
+// These land at the *root* of the site, so the map is what a bare URL gives
+// you. That is only possible while the story is unpublished, since the story
+// wants the same index.html — the guard below makes the clash loud rather than
+// letting one silently overwrite the other.
 //
 // Writing into the main build's directory means this must run second, and must
 // not empty what it finds (`emptyOutDir: false`). The main build clears dist/
@@ -32,7 +33,7 @@ const heroImage = resolve(storyArt, 'hero.webp')
 if (process.env.PUBLISH_STORY === '1') {
   throw new Error(
     'PUBLISH_STORY=1 and the review build both want dist/index.html.\n' +
-      'The review landing page occupies the site root while the story is\n' +
+      'The review map occupies the site root while the story is\n' +
       'unpublished. To publish the story, give one of them a different\n' +
       'filename first — this build refuses to guess which.',
   )
@@ -43,7 +44,7 @@ if (process.env.PUBLISH_STORY === '1') {
 //
 // Two things must survive the cut. `public/sites/`, because RandomSite fetches
 // './sites/sites.json' relative to whatever page it is on; and the hero
-// background, the one file under public/story/ the landing page needs. The 40
+// background, the one file under public/story/ the title page needs. The 40
 // chapter frames beside it are dead weight here.
 function publicAssetsMinusChapterArt(): Plugin {
   // Read back from the resolved config rather than the `outDir` constant
@@ -73,7 +74,7 @@ export default defineConfig(({ command }) => ({
   root,
   // Hiding the chapter frames is a build-time concern — there is nobody to hide
   // them from on a laptop — and `false` would take hero.webp and sites.json down
-  // with them, leaving the dev server a landing page with no background. So the
+  // with them, leaving the dev server a title page with no background. So the
   // filtered copy below applies to the artifact, and dev serves public/ whole.
   publicDir: command === 'serve' ? resolve(__dirname, 'public') : false,
   plugins: [react(), publicAssetsMinusChapterArt()],
@@ -100,7 +101,8 @@ export default defineConfig(({ command }) => ({
     emptyOutDir: false,
     rollupOptions: {
       input: {
-        landing: resolve(root, 'index.html'),
+        map: resolve(root, 'index.html'),
+        about: resolve(root, 'about.html'),
         explore: resolve(root, 'explore.html'),
       },
     },
