@@ -2,6 +2,12 @@
 # Deploy the read-only backend to Google Cloud Run.
 #
 #   PROJECT=my-gcp-project bash deploy/docker/deploy-cloudrun.sh
+#   PROJECT=my-gcp-project STAGING=1 bash deploy/docker/deploy-cloudrun.sh
+#
+# STAGING=1 deploys the new revision with no traffic, reachable only at its own
+# tagged URL (https://staging---<service>…run.app). The live URL — the one the
+# review site uses — keeps serving the old revision until you promote it with
+# the command printed at the end, so a bad build never reaches a reviewer.
 #
 # Run from the repo root — the Dockerfile's COPY paths are repo-root-relative.
 # Idempotent: re-running deploys a new revision.
@@ -13,6 +19,7 @@ SERVICE="${SERVICE:-map-explorer-api}"
 # europe-north1 is among the cheapest and is near Copenhagen.
 REGION="${REGION:-europe-north1}"
 DATA_URL_PREFIX="${DATA_URL_PREFIX:-https://data.source.coop/geoai-ucph/gvsm/}"
+STAGING="${STAGING:-}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
@@ -48,7 +55,14 @@ gcloud builds submit \
   --region "$REGION" \
   .
 
-echo "==> deploying"
+# What is live now, so the rollback command below can name it.
+PREVIOUS="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
+  --format='value(status.traffic[0].revisionName)' 2>/dev/null || true)"
+
+TRAFFIC_ARGS=()
+[ -n "$STAGING" ] && TRAFFIC_ARGS+=(--no-traffic --tag staging)
+
+echo "==> deploying${STAGING:+ (staging, no traffic)}"
 gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --project "$PROJECT" \
@@ -61,7 +75,7 @@ gcloud run deploy "$SERVICE" \
   --min-instances 0 \
   --max-instances 4 \
   --set-env-vars "^|^PUBLIC_READONLY=1|ALLOWED_DATA_URL_PREFIXES=${DATA_URL_PREFIX}|PREDICTIONS_BASE_URL=https://data.source.coop/geoai-ucph/gvsm|PREDICTIONS_REMOTE_PATH_TEMPLATE={year}/{tile}/RH{rh}_Q{q}.tif|PREDICTIONS_MOSAIC_REMOTE_URL=https://data.source.coop/geoai-ucph/gvsm/mosaics/{year}/RH{rh}_Q{q}.tif|VERTICAL_PROFILE_WORKERS=48" \
-  "${SECRET_ARGS[@]}"
+  ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} ${TRAFFIC_ARGS[@]+"${TRAFFIC_ARGS[@]}"}
 
 # ^ One flag, not five: repeated --set-env-vars replace rather than accumulate.
 #   The leading ^|^ switches the pair delimiter from ',' to '|' so a value
@@ -74,7 +88,22 @@ gcloud run deploy "$SERVICE" \
 
 URL="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(status.url)')"
 echo
-echo "Deployed: $URL"
-echo "Next:"
-echo "  1. bash deploy/docker/smoke-test.sh $URL"
-echo "  2. set the GitHub Actions variable VITE_API_BASE_URL to $URL"
+if [ -n "$STAGING" ]; then
+  TAG_URL="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
+    --format='value(status.traffic.filter(tag:staging).url)' 2>/dev/null || true)"
+  # The tagged URL is always https://<tag>---<service url host>.
+  [ -n "$TAG_URL" ] || TAG_URL="${URL/https:\/\//https://staging---}"
+  echo "Staged: $TAG_URL  (live traffic still on ${PREVIOUS:-the previous revision})"
+  echo "Next:"
+  echo "  1. bash deploy/docker/smoke-test.sh $TAG_URL"
+  echo "  2. build the frontend with VITE_API_BASE_URL=$TAG_URL and try it"
+  echo "  3. promote:  gcloud run services update-traffic $SERVICE --to-latest --region $REGION --project $PROJECT"
+else
+  echo "Deployed: $URL"
+  echo "Next:"
+  echo "  1. bash deploy/docker/smoke-test.sh $URL"
+  echo "  2. set the GitHub Actions variable VITE_API_BASE_URL to $URL"
+fi
+if [ -n "$PREVIOUS" ]; then
+  echo "Roll back: gcloud run services update-traffic $SERVICE --to-revisions $PREVIOUS=100 --region $REGION --project $PROJECT"
+fi

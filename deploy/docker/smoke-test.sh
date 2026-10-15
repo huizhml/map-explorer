@@ -73,6 +73,28 @@ else
   fail=$((fail + 1))
 fi
 
+report() {  # report <ok?> <name> <detail>
+  if [ "$1" = 1 ]; then
+    printf '  \033[32mok\033[0m   %-46s %s\n' "$2" "$3"; pass=$((pass + 1))
+  else
+    printf '  \033[31mFAIL\033[0m %-46s %s\n' "$2" "$3"; fail=$((fail + 1))
+  fi
+}
+
+# The frontend asks for 512 px tiles (src/map/tiles.ts). A PNG's width is the
+# 4 bytes at offset 16, in the IHDR chunk.
+TILE512="$BASE/cog/tiles/WebMercatorQuad/11/687/1110.png?url=https://data.source.coop/geoai-ucph/gvsm/2020/21LTD/RH98_Q1.tif&rescale=0,500&colormap_name=inferno&tilesize=512"
+width=$(curl -s --max-time 120 "$TILE512" | head -c 24 | tail -c 4 | od -An -tu1 | awk 'NF{print $1*16777216+$2*65536+$3*256+$4}')
+[ "$width" = 512 ] && ok=1 || ok=0
+report $ok "tilesize=512 tile width" "${width:-none}"
+
+# Same URL again: the server cache (tile_cache.py) should answer it. A MISS can
+# also mean the request landed on a second instance — rerun before worrying.
+hit=$(curl -s --max-time 120 -D - -o /dev/null "$TILE512" \
+  | tr -d '\r' | awk 'tolower($1)=="x-tile-cache:"{print $2}')
+[ "$hit" = HIT ] && ok=1 || ok=0
+report $ok "server tile cache, repeat request" "${hit:-header absent}"
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ] || exit 1
