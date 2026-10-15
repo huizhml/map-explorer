@@ -16,6 +16,8 @@ S2_GRID_LOCAL_PATH = os.environ.get("S2_GRID_LOCAL_PATH", "")
 NATURALNESS_REF_DATA_PATH = os.environ.get("NATURALNESS_REF_DATA_PATH", "")
 NATURALNESS_REF_DATA_VAL_PATH = os.environ.get("NATURALNESS_REF_DATA_VAL_PATH", "")
 NATURALNESS_MAP_PATH = os.environ.get("NATURALNESS_MAP_PATH", "")
+# Directory holding the flooded-forest COGs (Flood_duration_2020/).
+FLOODED_FOREST_DIR = os.environ.get("FLOODED_FOREST_DIR", "")
 SELECTIVE_LOGGING_REF_DATA_PATH = os.environ.get("SELECTIVE_LOGGING_REF_DATA_PATH", "")
 
 # 8 KB chunks meant one ASGI send() per 8 KB. Through the middleware stack that
@@ -273,6 +275,29 @@ async def get_naturalness_map_path():
     if not os.path.exists(NATURALNESS_MAP_PATH):
         return {"error": f"Naturalness map file not found at path: {NATURALNESS_MAP_PATH}"}
     return {"path": NATURALNESS_MAP_PATH}
+
+
+# Layer key -> file name inside FLOODED_FOREST_DIR.
+_FLOODED_FOREST_FILES = {
+    "flood-duration": "flood_duration_2020_box.tif",
+    "water-occurrence": "JRC_water_occurrence_box.tif",
+    "dtm": "DTM_50m_box.tif",
+}
+
+
+@router.get("/flooded-forest/{layer}/path")
+async def get_flooded_forest_path(layer: str):
+    """Return one flooded-forest COG path so the frontend can load it through
+    the TiTiler /cog endpoints."""
+    name = _FLOODED_FOREST_FILES.get(layer)
+    if name is None:
+        return {"error": f"Unknown flooded-forest layer: {layer}"}
+    if not FLOODED_FOREST_DIR:
+        return {"error": "FLOODED_FOREST_DIR not set"}
+    path = os.path.join(FLOODED_FOREST_DIR, name)
+    if not os.path.exists(path):
+        return {"error": f"Flooded-forest file not found at path: {path}"}
+    return {"path": path}
 
 
 # ---------------------------------------------------------------------------

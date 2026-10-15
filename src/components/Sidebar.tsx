@@ -51,6 +51,9 @@ import {
   SpaOutlined as SpaOutlinedIcon,
   ParkOutlined as ParkOutlinedIcon,
   CarpenterOutlined as CarpenterOutlinedIcon,
+  FloodOutlined as FloodOutlinedIcon,
+  WaterOutlined as WaterOutlinedIcon,
+  TerrainOutlined as TerrainOutlinedIcon,
 } from '@mui/icons-material';
 import type { VsmQChoice, VsmVersion } from '../constants/predictions';
 import { VSM_VERSION_OPTIONS } from '../constants/predictions';
@@ -62,6 +65,7 @@ import { SavedFeaturePlots } from './SavedFeaturePlots';
 import { useMapStore } from '../stores/mapStore';
 import { DIVERSITY_HEIGHT_BIN_OPTIONS } from '../constants/diversityMetrics';
 import { COLORMAPS } from '../constants/colormaps';
+import { FLOODED_FOREST_LAYERS, type FloodedForestLayerKey } from '../constants/floodedForest';
 import { EarthEngineLayerSection } from '../containers/EarthEngineLayerSection';
 
 export interface VsmLayerEntryDisplay {
@@ -215,6 +219,7 @@ interface SidebarProps {
   onLoadForestNaturalnessData: () => void;
   onLoadForestNaturalnessDataVal: () => void;
   onLoadSelectiveLogging: () => void;
+  onLoadFloodedForestLayer: (key: FloodedForestLayerKey) => void;
   fgbPathInput: string;
   onFgbPathInputChange: (value: string) => void;
   onLoadFgbPath: () => void;
@@ -593,6 +598,12 @@ function CollapsibleSection({
   );
 }
 
+const FLOODED_FOREST_ICONS: Record<FloodedForestLayerKey, ReactNode> = {
+  'flood-duration': <FloodOutlinedIcon fontSize="inherit" />,
+  'water-occurrence': <WaterOutlinedIcon fontSize="inherit" />,
+  dtm: <TerrainOutlinedIcon fontSize="inherit" />,
+};
+
 function DataLayerRow({
   icon,
   label,
@@ -724,6 +735,7 @@ export function Sidebar({
   onLoadForestNaturalnessData,
   onLoadForestNaturalnessDataVal,
   onLoadSelectiveLogging,
+  onLoadFloodedForestLayer,
   fgbPathInput,
   onFgbPathInputChange,
   onLoadFgbPath,
@@ -1275,6 +1287,15 @@ export function Sidebar({
                       onClick={onLoadSelectiveLogging}
                       ui={ui}
                     />
+                    {FLOODED_FOREST_LAYERS.map((l) => (
+                      <DataLayerRow
+                        key={l.key}
+                        icon={FLOODED_FOREST_ICONS[l.key]}
+                        label={l.label}
+                        onClick={() => onLoadFloodedForestLayer(l.key)}
+                        ui={ui}
+                      />
+                    ))}
 
                     <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center', mt: 0.25 }}>
                       <TextField

@@ -5,6 +5,9 @@ exception handler, and router includes for all API endpoints.
 """
 
 from fastapi import FastAPI
+# Must precede the titiler imports: titiler freezes the allowed `colormap_name`
+# values when titiler.core.dependencies is first imported.
+import colormaps_extra  # noqa: F401  side-effect: register extra colormaps globally
 from titiler.core.factory import TilerFactory
 from titiler.mosaic.factory import MosaicTilerFactory
 from titiler.extensions import cogViewerExtension
@@ -16,7 +19,6 @@ import io
 import os
 from PIL import Image
 
-import colormaps_extra  # noqa: F401  side-effect: register 'mako' globally
 from deploy_guard import install_public_guard, readonly_enabled
 from tile_cache import install_tile_caching
 from routes.sentinel2 import router as sentinel2_router
@@ -42,6 +44,7 @@ _ENV_KEYS = [
     "NATURALNESS_REF_DATA_PATH",
     "NATURALNESS_REF_DATA_VAL_PATH",
     "NATURALNESS_MAP_PATH",
+    "FLOODED_FOREST_DIR",
     "GOOGLE_APPLICATION_CREDENTIALS",
     "EE_CREDENTIALS_PATH",
 ]

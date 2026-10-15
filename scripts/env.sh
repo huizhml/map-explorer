@@ -38,6 +38,7 @@ export SAVED_FEATURE_IMAGES_ROOT="/projects/dereeco/data/gvs/results/app_saved_i
 export NATURALNESS_REF_DATA_PATH="/projects/dereeco/data/gvs/evaluation/downstream_tasks/naturalness/reference_data_set_updated.fgb"
 export NATURALNESS_REF_DATA_VAL_PATH="/projects/dereeco/data/gvs/evaluation/downstream_tasks/naturalness/results_from_vsm_2017/naturalness_classification_ps15/logistic_regression_predictions.fgb"
 export NATURALNESS_MAP_PATH='/projects/dereeco/data/gvs/evaluation/downstream_tasks/naturalness/FML_v3.2.cog.tif'
+export FLOODED_FOREST_DIR='/projects/dereeco/data/gvs/evaluation/downstream_tasks/flooded_forest/Flood_duration_2020'
 export SELECTIVE_LOGGING_REF_DATA_PATH='/projects/dereeco/data/gvs/evaluation/downstream_tasks/selective_logging/_ground_reference/PL_data_2016-2026_stump_plus_area.xlsx'
 # Optional: enable Google Satellite static snapshots for saved points (75m buffer)
 export GOOGLE_STATIC_MAPS_API_KEY="AIzaSyAavNP19BB1UjqX1OYaXRRxcbdfaMZC9UE"

@@ -19,6 +19,7 @@ import {
 import { API_BASE_URL, apiUrl } from '../utils/apiBase';
 import { getDiversityBandRange, getDiversityBandColormap } from '../constants/layerRanges';
 import { NATURALNESS_MAP_CLASSES, buildNaturalnessColormapParam } from '../constants/naturalnessMap';
+import { FLOODED_FOREST_LAYERS, type FloodedForestLayerKey } from '../constants/floodedForest';
 import type { FigureExportFormat } from '../constants/figureExport';
 import {
   listSavedFeatures,
@@ -1267,6 +1268,53 @@ export function SidebarContainer() {
     }
   }, [map, layerManager, updateLayersList]);
 
+  const handleLoadFloodedForestLayer = React.useCallback(async (key: FloodedForestLayerKey) => {
+    if (!map || !layerManager) return;
+    const config = FLOODED_FOREST_LAYERS.find((l) => l.key === key);
+    if (!config) return;
+    const layerId = `flooded-forest-${key}`;
+    // Toggle off if already loaded, like the naturalness map.
+    if (layerManager.getLayer(layerId)) {
+      layerManager.removeLayer(layerId);
+      updateLayersList();
+      return;
+    }
+    try {
+      const pathResp = await fetch(apiUrl(`/flooded-forest/${key}/path`));
+      if (!pathResp.ok) throw new Error(`HTTP ${pathResp.status}`);
+      const pathData = await pathResp.json();
+      if (pathData.error || !pathData.path) throw new Error(pathData.error || 'Layer path not available');
+      const cogPath: string = pathData.path;
+
+      const infoResp = await fetch(apiUrl(`/cog/info.geojson?url=${encodeURIComponent(cogPath)}`));
+      if (!infoResp.ok) throw new Error(`Failed to get COG info: ${await infoResp.text()}`);
+      const bbox = (await infoResp.json()).bbox;
+      if (!isFiniteBBox(bbox)) throw new Error('Bounds not available');
+
+      const [min, max] = config.rescale;
+      const tileUrl = apiUrl(
+        `/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(cogPath)}`
+        + `&return_mask=true&rescale=${min},${max}&colormap_name=${config.colormap}&${TILE_SIZE_PARAM}`,
+      );
+      const newLayer = new RasterLayer({
+        url: tileUrl, tileSize: TILE_SIZE, maxTileZoom: 17, opacity: 1, zIndex: 600, bounds: bbox,
+      });
+
+      // rescale/colormap metadata drives the on-map colorbar and the style controls.
+      layerManager.addLayer(layerId, config.label, 'prediction', newLayer, {
+        url: cogPath, layerType: 'flooded_forest', bbox,
+        rescaleMin: min, rescaleMax: max, colormap: config.colormap, unit: config.unit,
+      });
+      updateLayersList();
+      try {
+        map.fitBounds(bbox, { padding: 50, duration: 1000, maxZoom: 17 });
+      } catch { /* ignore */ }
+    } catch (error) {
+      console.error(`Error loading ${config.label}:`, error);
+      alert(`Failed to load ${config.label}: ${error instanceof Error ? error.message : error}`);
+    }
+  }, [map, layerManager, updateLayersList]);
+
   const handleLoadEoxS2CloudlessMosaic = React.useCallback((year: number) => {
     if (!map || !layerManager) return;
     const layerId = `eox-s2cloudless-${year}`;
@@ -2333,6 +2381,7 @@ export function SidebarContainer() {
       onLoadForestNaturalnessData={handleLoadForestNaturalnessData}
       onLoadForestNaturalnessDataVal={handleLoadForestNaturalnessDataVal}
       onLoadSelectiveLogging={handleLoadSelectiveLogging}
+      onLoadFloodedForestLayer={handleLoadFloodedForestLayer}
       fgbPathInput={fgbPathInput}
       onFgbPathInputChange={setFgbPathInput}
       onLoadFgbPath={handleLoadFgbPath}

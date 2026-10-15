@@ -12,6 +12,8 @@ export const COLORMAPS = [
   'ylgn', 'ylgnbu', 'gnbu', 'bugn', 'pubu', 'rdylgn',
   'spectral', 'rdbu', 'rdgy', 'greys', 'blues', 'reds', 'oranges',
   'ylgn_r', 'spectral_r', 'rdbu_r',
+  // Flooded-forest ramps, registered in backend/colormaps_extra.py.
+  'ff_flood_duration', 'ff_water_occurrence', 'ff_dtm',
 ] as const;
 
 export type ColormapName = (typeof COLORMAPS)[number];
@@ -29,4 +31,8 @@ export const COLORMAP_GRADIENTS: Record<string, string[]> = {
   ylgn_r: ['#004529', '#238443', '#78c679', '#c2e699', '#ffffcc'],
   rdbu: ['#67001f', '#d6604d', '#f7f7f7', '#4393c3', '#053061'],
   rdgy: ['#67001f', '#d6604d', '#f7f7f7', '#878787', '#1a1a1a'],
+  // Same stops as backend/colormaps_extra.py FLOODED_FOREST_RAMPS.
+  ff_flood_duration: ['#f2ead3', '#d6dca0', '#9bc16b', '#4f9a4a', '#1e5b34', '#0b0b0b'],
+  ff_water_occurrence: ['rgba(222,235,247,0)', '#9ecae1', '#4292c6', '#2171b5', '#08306b'],
+  ff_dtm: ['#2c5aa0', '#4a9fc1', '#7cc7a4', '#b4dd9a', '#e4eb9f', '#f3d58a', '#d9a05b', '#a8693a', '#6b4226'],
 };
