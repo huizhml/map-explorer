@@ -86,7 +86,10 @@ async def _compute_cr(tile_id: str, year: int, version: str = "original") -> Pat
     calc_cmd = [
         "gdal_calc.py", "-A", str(path_a), "-B", str(path_b),
         "--outfile", str(path_cr),
-        "--calc=numpy.where((A==32767)|(B==32767)|(A==0), -9999, (A-B)/A.astype(float))",
+        # Same rule as utils.pixel_diversity_indices (values in dm): clip to
+        # 150 m, RH25 floored at 0, RH98 must be > 0.
+        "--calc=numpy.where((A==32767)|(B==32767)|(A<=0), -9999, "
+        "(numpy.minimum(A,1500)-numpy.clip(B,0,1500))/numpy.minimum(A,1500).astype(float))",
         "--NoDataValue=-9999", "--type", "Float32", "--overwrite",
     ]
     translate_cmd = [
@@ -135,6 +138,10 @@ async def _compute_entropy(tile_id: str, year: int, version: str = "original"):
         # COG directory (e.g. .../{version}/tiles/cog/{tile}/RH*_Q1.tif) if it
         # doesn't already exist. Without this, the `masked` version — which
         # ships COGs but no pre-built VRT — fails with "No such file".
+        # Old VRTs hold RH0..RH99 (shifting CR's RH25/RH98) — rebuild those too.
+        if vrt_path and Path(vrt_path).expanduser().exists():
+            if not utils.vrt_is_current(vrt_path):
+                Path(vrt_path).expanduser().unlink()
         if vrt_path and not Path(vrt_path).expanduser().exists():
             if not PREDICTIONS_LOCAL_PATH:
                 raise HTTPException(
@@ -159,7 +166,7 @@ async def _compute_entropy(tile_id: str, year: int, version: str = "original"):
                     lambda: utils.create_vrt(str(tile_dir), vrt_path, q_idx="1"),
                 )
             except AssertionError as e:
-                # create_vrt asserts on file count (expects 100 RH bands).
+                # create_vrt asserts on the RH files (expects RH1..RH100).
                 raise HTTPException(
                     status_code=500,
                     detail=f"Cannot build VRT for {tile_id} ({version}): {e}",

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import io
 import math
-from typing import List, Optional, Tuple
+import threading
+from collections import OrderedDict
+from typing import Any, Callable, List, Optional, Tuple
 
 import numpy as np
 import requests
@@ -30,6 +32,56 @@ _JRC_TMF_ANNUALCHANGES_PALETTE = [
 ]
 _JRC_TMF_ANNUALCHANGES_VIS_MIN = 1
 _JRC_TMF_ANNUALCHANGES_VIS_MAX = 6
+
+
+# In-process LRU cache for the slow inputs of the map panels (tile stitching,
+# Earth Engine thumbs, line-aligned resampling). Layout-only changes — figure
+# width, panel heights, fonts, labels, metric toggles — then re-render from
+# memory instead of re-downloading. Bounded by total bytes; failed fetches
+# (None results) are not cached so they're retried next time.
+_FETCH_CACHE_MAX_BYTES = 512 * 1024 * 1024
+_fetch_cache: "OrderedDict[tuple, Tuple[Any, int]]" = OrderedDict()
+_fetch_cache_bytes = 0
+_fetch_cache_lock = threading.Lock()
+
+
+def _cached(key: tuple, compute: Callable[[], Any]) -> Any:
+    """Return `compute()` memoised under `key`. The value is a tuple whose
+    first item is the payload (bytes / ndarray / None); cached arrays are
+    made read-only since callers share them."""
+    global _fetch_cache_bytes
+    with _fetch_cache_lock:
+        hit = _fetch_cache.get(key)
+        if hit is not None:
+            _fetch_cache.move_to_end(key)
+            return hit[0]
+    value = compute()
+    payload = value[0]
+    if payload is None:
+        return value
+    if isinstance(payload, np.ndarray):
+        payload.setflags(write=False)
+        size = payload.nbytes
+    else:
+        size = len(payload)
+    with _fetch_cache_lock:
+        if key not in _fetch_cache:
+            _fetch_cache[key] = (value, size)
+            _fetch_cache_bytes += size
+            while _fetch_cache_bytes > _FETCH_CACHE_MAX_BYTES and len(_fetch_cache) > 1:
+                _, (_, old_size) = _fetch_cache.popitem(last=False)
+                _fetch_cache_bytes -= old_size
+    return value
+
+
+def _frame_key(frame: Optional[dict]) -> Optional[tuple]:
+    if frame is None:
+        return None
+    return (
+        frame["lon_c"], frame["lat_c"], frame["e0"], frame["n0"],
+        float(frame["u"][0]), float(frame["u"][1]),
+        frame["length"], frame["buffer_m"],
+    )
 
 
 def _fetch_ee_annualchanges_array(
@@ -101,6 +153,153 @@ def _fetch_ee_annualchanges_array(
     }
 
 
+def _css_color(c: str) -> Tuple[float, float, float, float]:
+    """CSS colour → matplotlib RGBA. Accepts what the frontend's colormaps use:
+    hex / named colours plus `rgb(r,g,b)` / `rgba(r,g,b,a)` (0–255, alpha 0–1),
+    which matplotlib itself rejects."""
+    import re
+
+    from matplotlib.colors import to_rgba
+
+    m = re.fullmatch(r"\s*rgba?\(([^)]*)\)\s*", c)
+    if m:
+        parts = [float(p) for p in re.split(r"[,\s/]+", m.group(1).strip()) if p]
+        r, g, b = (v / 255.0 for v in parts[:3])
+        return (r, g, b, parts[3] if len(parts) > 3 else 1.0)
+    return to_rgba(c)
+
+
+def _fetch_map_layer(
+    layer, bbox: tuple, buffer_m: float, max_width_px: int,
+) -> Tuple[Optional[np.ndarray], Optional[dict]]:
+    """Stitch a map layer's XYZ tiles into one north-up RGBA array. Grouped
+    layers (several sources) are alpha-composited bottom-first at the finest
+    source's resolution (coarse ones, e.g. an overzoomed mosaic, upsampled)."""
+    from PIL import Image
+
+    from .satellite import _stitch_bbox_xyz
+
+    imgs: List[Image.Image] = []
+    meta: Optional[dict] = None
+    for src in layer.sources:
+        png, m = _cached(
+            ("xyz", src.url, bbox, buffer_m, max_width_px, src.tile_size, src.max_zoom),
+            lambda src=src: _stitch_bbox_xyz(
+                src.url, *bbox, buffer_m=buffer_m, max_width_px=max_width_px,
+                max_zoom=src.max_zoom, tile_px=src.tile_size,
+            ),
+        )
+        if png is None:
+            continue
+        imgs.append(Image.open(io.BytesIO(png)).convert("RGBA"))
+        meta = m  # same bbox for every source
+    if not imgs:
+        return None, None
+    size = max((im.size for im in imgs), key=lambda wh: wh[0] * wh[1])
+    out = Image.new("RGBA", size, (0, 0, 0, 0))
+    for im in imgs:
+        out.alpha_composite(im if im.size == size else im.resize(size, Image.NEAREST))
+    return np.asarray(out), meta
+
+
+def _transect_frame(
+    lons: np.ndarray,
+    lats: np.ndarray,
+    x_vals: np.ndarray,
+    x_axis: str,
+    buffer_m: float,
+) -> Optional[dict]:
+    """Line-aligned frame for rotating the map panels so the transect runs
+    horizontally: `t` = metres along the line (from the min-x sample towards
+    the max-x sample), `s` = metres perpendicular to it (left of travel).
+
+    Returns None when rotation doesn't apply: a bent polyline (the shared
+    x-axis is only affine in `t` for a straight line), or a line already
+    within half a degree of the x-axis direction (north-up is identical).
+    Uses a local equirectangular approximation (fine for transect scales).
+    """
+    lat_c = float(np.mean(lats))
+    lon_c = float(np.mean(lons))
+    k_lon = 111320.0 * max(1e-6, math.cos(math.radians(lat_c)))
+    east = (lons - lon_c) * k_lon
+    north = (lats - lat_c) * 111320.0
+    i0, i1 = int(np.argmin(x_vals)), int(np.argmax(x_vals))
+    x0, x1 = float(x_vals[i0]), float(x_vals[i1])
+    d = np.array([east[i1] - east[i0], north[i1] - north[i0]])
+    length = float(np.hypot(d[0], d[1]))
+    if length <= 0 or x1 <= x0:
+        return None
+    u = d / length
+    v = np.array([-u[1], u[0]])  # u rotated +90°: keeps the map unmirrored
+    rel_e = east - east[i0]
+    rel_n = north - north[i0]
+    perp = rel_e * v[0] + rel_n * v[1]
+    if float(np.max(np.abs(perp))) > max(1.0, 0.02 * length):
+        return None
+    axis_dir = np.array([1.0, 0.0]) if x_axis == "lon" else np.array([0.0, 1.0])
+    if math.degrees(math.acos(float(np.clip(u @ axis_dir, -1.0, 1.0)))) < 0.5:
+        return None
+
+    # Bbox of the rotated rectangle t ∈ [0, L], s ∈ [-B, B] — what has to be
+    # fetched north-up before resampling into the line frame.
+    corners_e, corners_n = [], []
+    for t in (0.0, length):
+        for s in (-buffer_m, buffer_m):
+            corners_e.append(east[i0] + t * u[0] + s * v[0])
+            corners_n.append(north[i0] + t * u[1] + s * v[1])
+    return {
+        "lon_c": lon_c, "lat_c": lat_c, "k_lon": k_lon,
+        "e0": float(east[i0]), "n0": float(north[i0]),
+        "u": u, "v": v, "length": length, "buffer_m": float(buffer_m),
+        "x0": x0, "x1": x1, "perp": perp,
+        "min_lon": lon_c + min(corners_e) / k_lon,
+        "max_lon": lon_c + max(corners_e) / k_lon,
+        "min_lat": lat_c + min(corners_n) / 111320.0,
+        "max_lat": lat_c + max(corners_n) / 111320.0,
+    }
+
+
+def _resample_to_frame(
+    arr: np.ndarray, meta: dict, frame: dict, order: int, max_width_px: int,
+) -> np.ndarray:
+    """Resample a north-up Web-Mercator image (bbox in `meta`) into the
+    line-aligned frame: columns run along the transect, rows span ±buffer
+    perpendicular to it (row 0 = +buffer). Keeps the source's metres/pixel."""
+    from scipy.ndimage import map_coordinates
+
+    H, W = arr.shape[:2]
+    length, buf = frame["length"], frame["buffer_m"]
+    m_per_px = max(1e-6, (meta["max_lon"] - meta["min_lon"]) * frame["k_lon"] / W)
+    m_per_px = max(m_per_px, length / max(1, max_width_px))
+    out_w = max(2, int(round(length / m_per_px)))
+    out_h = max(2, int(round(2.0 * buf / m_per_px)))
+
+    t = (np.arange(out_w) + 0.5) * (length / out_w)
+    s = buf - (np.arange(out_h) + 0.5) * (2.0 * buf / out_h)
+    tt, ss = np.meshgrid(t, s)
+    u, v = frame["u"], frame["v"]
+    lon = frame["lon_c"] + (frame["e0"] + tt * u[0] + ss * v[0]) / frame["k_lon"]
+    lat = frame["lat_c"] + (frame["n0"] + tt * u[1] + ss * v[1]) / 111320.0
+    del tt, ss
+
+    def _merc(lat_deg):
+        return np.log(np.tan(np.pi / 4.0 + np.radians(lat_deg) / 2.0))
+
+    col = (lon - meta["min_lon"]) / (meta["max_lon"] - meta["min_lon"]) * W - 0.5
+    m_top, m_bot = _merc(meta["max_lat"]), _merc(meta["min_lat"])
+    row = (m_top - _merc(lat)) / (m_top - m_bot) * H - 0.5
+    del lon, lat
+
+    out = np.empty((out_h, out_w, arr.shape[2]), dtype=arr.dtype)
+    for c in range(arr.shape[2]):
+        band = map_coordinates(
+            arr[..., c].astype(np.float32), [row, col],
+            order=order, mode="nearest", output=np.float32,
+        )
+        out[..., c] = np.clip(np.round(band), 0, 255).astype(arr.dtype)
+    return out
+
+
 def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     """Render the multi-panel transect figure with matplotlib (shared x-axis).
 
@@ -163,6 +362,10 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     if req.include_map:
         panels.append("map")
         height_ratios.append(req.map_height_px)
+    # Map layers (as shown on the map) right under the satellite snapshot.
+    for _i in range(len(req.map_layers)):
+        panels.append(f"layer{_i}")
+        height_ratios.append(req.map_layer_height_px)
     if req.include_ee_annualchanges:
         # JRC TMF AnnualChanges sits at the very top of the figure (forest-class
         # context first, then the natural-colour satellite snapshot below).
@@ -187,6 +390,22 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         height_ratios.append(req.enl_fhd_height_px)
     if not panels:
         raise HTTPException(status_code=400, detail="Select at least one panel to render")
+
+    if req.panel_order:
+        _order_key = {
+            p: (f"layer:{req.map_layers[int(p[5:])].id}" if p.startswith("layer") else p)
+            for p in panels if p != "ee_strip"
+        }
+        _rank = {k: i for i, k in enumerate(req.panel_order)}
+        _height = dict(zip(panels, height_ratios))
+        _ordered = sorted(
+            (p for p in panels if p != "ee_strip"),
+            key=lambda p: (_rank.get(_order_key[p], len(_rank)), panels.index(p)),
+        )
+        if "ee_strip" in panels:  # stays the heatmap's header band
+            _ordered.insert(_ordered.index("heatmap"), "ee_strip")
+        panels = _ordered
+        height_ratios = [_height[p] for p in panels]
 
     # ---- Layout DPI ------------------------------------------------------
     # Figure inch dimensions are computed from a FIXED layout DPI matching the
@@ -249,6 +468,50 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             auto_h = target_panel_px * _correction
         return max(60, int(round(auto_h)))
 
+    # Line-aligned frame for the 2D map panels (None → classic north-up bbox).
+    frame: Optional[dict] = None
+    if req.align_map_to_transect and (
+        "map" in panels or "ee_annualchanges" in panels or req.map_layers
+    ):
+        frame = _transect_frame(lons, lats, x_vals, req.x_axis, req.satellite_buffer_m)
+    # North-up bbox each map fetch covers: the transect bbox grown by the
+    # buffer, or (rotated) exactly the rotated rectangle's bbox.
+    if frame is not None:
+        fetch_bbox = (frame["min_lon"], frame["max_lon"], frame["min_lat"], frame["max_lat"])
+        fetch_buffer_m = 0.0
+    else:
+        fetch_bbox = (
+            float(np.min(lons)), float(np.max(lons)),
+            float(np.min(lats)), float(np.max(lats)),
+        )
+        fetch_buffer_m = req.satellite_buffer_m
+
+    def _process_sat_image(sat_bytes: bytes, meta: dict) -> np.ndarray:
+        """Decode the stitched tiles, apply the EOX brightness curve and (when
+        rotating) resample into the line-aligned frame."""
+        from PIL import Image
+        arr = np.asarray(Image.open(io.BytesIO(sat_bytes)).convert("RGB"))
+        # EOX s2cloudless JPEGs read dark over forest canopy; brighten via a
+        # gamma curve so midtones lift without clipping the (rare) highlights
+        # like clouds/snow. Skip when factor is ~1.0 to avoid pointless work.
+        if (
+            req.basemap_source == "eox_s2cloudless"
+            and req.eox_brightness > 0
+            and abs(req.eox_brightness - 1.0) > 1e-3
+        ):
+            inv_g = 1.0 / float(req.eox_brightness)
+            # uint8 → float [0,1] → gamma → uint8.
+            arr = (
+                np.clip(np.power(arr.astype(np.float32) / 255.0, inv_g), 0.0, 1.0)
+                * 255.0
+            ).astype(np.uint8)
+        if frame is not None:
+            arr = _resample_to_frame(
+                arr, meta, frame, order=1,
+                max_width_px=req.satellite_max_width_px,
+            )
+        return arr
+
     # Fetch satellite image before creating the figure so we can auto-size the
     # map panel to preserve the image's geographic aspect ratio.
     sat_arr = None
@@ -256,44 +519,35 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     # Tracks which basemap was actually used, for the panel's footer annotation.
     sat_source_label: Optional[str] = None
     if "map" in panels:
+        _sat_key = (
+            "sat", req.basemap_source,
+            int(req.eox_year) if req.basemap_source == "eox_s2cloudless" else None,
+            fetch_bbox, fetch_buffer_m, int(req.satellite_max_width_px),
+        )
         if req.basemap_source == "eox_s2cloudless":
-            _sat_bytes, sat_meta = _stitch_bbox_eox_s2cloudless(
-                float(np.min(lons)),
-                float(np.max(lons)),
-                float(np.min(lats)),
-                float(np.max(lats)),
-                buffer_m=req.satellite_buffer_m,
+            _sat_bytes, sat_meta = _cached(_sat_key, lambda: _stitch_bbox_eox_s2cloudless(
+                *fetch_bbox,
+                buffer_m=fetch_buffer_m,
                 max_width_px=req.satellite_max_width_px,
                 year=int(req.eox_year),
-            )
+            ))
             sat_source_label = f"Sentinel-2 cloudless {int(req.eox_year)} · EOX"
         else:
-            _sat_bytes, sat_meta = _stitch_bbox_satellite(
-                float(np.min(lons)),
-                float(np.max(lons)),
-                float(np.min(lats)),
-                float(np.max(lats)),
-                buffer_m=req.satellite_buffer_m,
+            _sat_bytes, sat_meta = _cached(_sat_key, lambda: _stitch_bbox_satellite(
+                *fetch_bbox,
+                buffer_m=fetch_buffer_m,
                 max_width_px=req.satellite_max_width_px,
-            )
+            ))
             sat_source_label = "Google Satellite (HD)"
         if _sat_bytes is not None:
-            from PIL import Image
-            sat_arr = np.asarray(Image.open(io.BytesIO(_sat_bytes)).convert("RGB"))
-            # EOX s2cloudless JPEGs read dark over forest canopy; brighten via a
-            # gamma curve so midtones lift without clipping the (rare) highlights
-            # like clouds/snow. Skip when factor is ~1.0 to avoid pointless work.
-            if (
-                req.basemap_source == "eox_s2cloudless"
-                and req.eox_brightness > 0
-                and abs(req.eox_brightness - 1.0) > 1e-3
-            ):
-                inv_g = 1.0 / float(req.eox_brightness)
-                # uint8 → float [0,1] → gamma → uint8.
-                sat_arr = (
-                    np.clip(np.power(sat_arr.astype(np.float32) / 255.0, inv_g), 0.0, 1.0)
-                    * 255.0
-                ).astype(np.uint8)
+            sat_arr = _cached(
+                (
+                    _sat_key, "processed",
+                    float(req.eox_brightness) if req.basemap_source == "eox_s2cloudless" else None,
+                    _frame_key(frame),
+                ),
+                lambda: (_process_sat_image(_sat_bytes, sat_meta),),
+            )[0]
             sat_aspect = sat_arr.shape[0] / sat_arr.shape[1]
             height_ratios[panels.index("map")] = _auto_panel_height_px(sat_aspect, "map")
 
@@ -303,19 +557,59 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     # rather than two halves the Earth Engine round-trip when both are on.
     ee_arr = None
     ee_meta: Optional[dict] = None
+    # The 2D panel's (possibly line-aligned) copy; the strip keeps sampling the
+    # north-up `ee_arr` by lon/lat.
+    ee_panel_arr = None
     if "ee_annualchanges" in panels or "ee_strip" in panels:
         # Use the satellite buffer when the 2D panel is on (it needs the buffered
         # context around the line); a tiny buffer is enough when only the strip
         # is on (we sample at the line, the bbox just needs to be non-degenerate).
-        _ee_buffer_m = req.satellite_buffer_m if "ee_annualchanges" in panels else 10.0
-        ee_arr, ee_meta = _fetch_ee_annualchanges_array(
-            float(np.min(lons)),
-            float(np.max(lons)),
-            float(np.min(lats)),
-            float(np.max(lats)),
+        if "ee_annualchanges" in panels:
+            _ee_bbox, _ee_buffer_m = fetch_bbox, fetch_buffer_m
+        else:
+            _ee_bbox = (
+                float(np.min(lons)), float(np.max(lons)),
+                float(np.min(lats)), float(np.max(lats)),
+            )
+            _ee_buffer_m = 10.0
+        _ee_key = ("ee", _ee_bbox, _ee_buffer_m, 2048)
+        ee_arr, ee_meta = _cached(_ee_key, lambda: _fetch_ee_annualchanges_array(
+            *_ee_bbox,
             buffer_m=_ee_buffer_m,
             max_dimension=2048,
+        ))
+        if ee_arr is not None and "ee_annualchanges" in panels:
+            ee_panel_arr = (
+                _cached(
+                    (_ee_key, "rotated", _frame_key(frame)),
+                    lambda: (_resample_to_frame(ee_arr, ee_meta, frame, order=0, max_width_px=2048),),
+                )[0]
+                if frame is not None else ee_arr
+            )
+
+    # Map-layer panels: stitch each layer's XYZ tiles (composited bottom-first
+    # for grouped layers) over the same bbox as the satellite, then rotate into
+    # the line frame like it. None → the panel says "unavailable".
+    layer_arrs: List[Optional[np.ndarray]] = []
+    layer_metas: List[Optional[dict]] = []
+    for _i, _layer in enumerate(req.map_layers):
+        _arr, _meta = _fetch_map_layer(
+            _layer, fetch_bbox, fetch_buffer_m, int(req.satellite_max_width_px),
         )
+        if _arr is not None and frame is not None:
+            _arr = _cached(
+                (("xyz", tuple(s_.url for s_ in _layer.sources)), fetch_bbox, fetch_buffer_m,
+                 int(req.satellite_max_width_px), "rotated", _frame_key(frame)),
+                lambda: (_resample_to_frame(
+                    _arr, _meta, frame, order=0, max_width_px=req.satellite_max_width_px,
+                ),),
+            )[0]
+        layer_arrs.append(_arr)
+        layer_metas.append(_meta)
+        if _arr is not None:
+            height_ratios[panels.index(f"layer{_i}")] = _auto_panel_height_px(
+                _arr.shape[0] / _arr.shape[1], f"layer{_i}",
+            )
 
     # Drop the strip from the layout if EE is unavailable — the heatmap stays;
     # we just don't insert an empty header row above it.
@@ -324,8 +618,8 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         panels.pop(_idx)
         height_ratios.pop(_idx)
 
-    if "ee_annualchanges" in panels and ee_arr is not None:
-        ee_aspect = ee_arr.shape[0] / ee_arr.shape[1]
+    if "ee_annualchanges" in panels and ee_panel_arr is not None:
+        ee_aspect = ee_panel_arr.shape[0] / ee_panel_arr.shape[1]
         height_ratios[panels.index("ee_annualchanges")] = _auto_panel_height_px(
             ee_aspect, "ee_annualchanges",
         )
@@ -384,9 +678,30 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     else:
         shared_x_edges[:] = x_vals[0]
 
+    # The north arrow goes on the first line-aligned panel only.
+    north_arrow_drawn = [False]
+
     def _draw_imshow_panel(ax, arr: np.ndarray, meta: dict, interpolation: str) -> None:
         """Draw an (H, W, 3+) array as a geographic imshow + the transect line
         on top, configured for the current `req.x_axis` orientation."""
+        if frame is not None:
+            # Line-aligned: columns map affinely onto the shared x-axis, rows
+            # are metres across the line, so the transect is horizontal.
+            buf = frame["buffer_m"]
+            ax.imshow(
+                arr,
+                extent=(frame["x0"], frame["x1"], -buf, buf),
+                aspect="auto",
+                origin="upper",
+                interpolation=interpolation,
+            )
+            ax.plot(x_vals, frame["perp"], color="#ff5252", linewidth=1.0)
+            ax.set_ylim(-buf, buf)
+            ax.set_yticks([])
+            if not north_arrow_drawn[0]:
+                _draw_north_arrow(ax)
+                north_arrow_drawn[0] = True
+            return
         extent_lon = (meta["min_lon"], meta["max_lon"])
         extent_lat = (meta["min_lat"], meta["max_lat"])
         if req.x_axis == "lon":
@@ -419,6 +734,40 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             ax.yaxis.set_major_formatter(FuncFormatter(_fmt_lon))
             ax.yaxis.set_major_locator(MaxNLocator(nbins=2, prune="both"))
 
+    def _draw_north_arrow(ax) -> None:
+        """North arrow (bottom-right) for a line-aligned panel. Drawn in data
+        coordinates, so it stays geographically true even if the panel's
+        aspect got clamped."""
+        from matplotlib.patheffects import withStroke
+
+        buf = frame["buffer_m"]
+        # North in (t, s) metres, converted to (x-units, metres).
+        n_t, n_s = frame["u"][1], frame["v"][1]
+        x_per_m = (frame["x1"] - frame["x0"]) / frame["length"]
+        # Bottom-right: free of the legend cards (top-left), source badges
+        # (top-right) and the scale bar (bottom-left).
+        cx = x_max - 0.05 * (x_max - x_min)
+        cy = -0.45 * buf
+        half = 0.22 * buf
+        halo = [withStroke(linewidth=2.5, foreground="white")]
+        ax.annotate(
+            "",
+            xy=(cx + half * n_t * x_per_m, cy + half * n_s),
+            xytext=(cx - half * n_t * x_per_m, cy - half * n_s),
+            arrowprops=dict(
+                arrowstyle="-|>", color="black", lw=1.0,
+                mutation_scale=8, path_effects=halo,
+            ),
+            zorder=6,
+        )
+        lab = half + 0.2 * buf
+        ax.text(
+            cx + lab * n_t * x_per_m, cy + lab * n_s, "N",
+            ha="center", va="center",
+            fontsize=max(5, req.font_size - 4), fontweight="bold",
+            color="black", path_effects=halo, zorder=6,
+        )
+
     # ---- map panel ------------------------------------------------------
     if "map" in panels:
         ax = axes[panels.index("map")]
@@ -432,10 +781,13 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
 
             mean_lat_rad = math.radians((float(np.min(lats)) + float(np.max(lats))) / 2.0)
             # Convert one unit of the panel's x-axis (lon or lat degrees) to meters.
-            m_per_xunit = (
-                111320.0 * max(1e-6, math.cos(mean_lat_rad))
-                if req.x_axis == "lon" else 111320.0
-            )
+            if frame is not None:
+                m_per_xunit = frame["length"] / (frame["x1"] - frame["x0"])
+            else:
+                m_per_xunit = (
+                    111320.0 * max(1e-6, math.cos(mean_lat_rad))
+                    if req.x_axis == "lon" else 111320.0
+                )
             visible_x_span = x_max - x_min
             visible_x_span_m = visible_x_span * m_per_xunit
             # Aim for a bar that's ~10% of the visible width.
@@ -488,11 +840,36 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             ax.text(0.5, 0.5, unavailable_label, ha="center", va="center", transform=ax.transAxes)
             ax.set_yticks([])
 
+    # ---- map-layer panels -----------------------------------------------
+    # Legend cards need the final layout, so they're queued and drawn with
+    # the heatmap's colorbar card near the end.
+    layer_legend_cards: list = []
+    for _i, _layer in enumerate(req.map_layers):
+        ax = axes[panels.index(f"layer{_i}")]
+        ax.set_facecolor("white")  # masked (transparent) pixels read as white
+        if layer_arrs[_i] is not None:
+            _draw_imshow_panel(ax, layer_arrs[_i], layer_metas[_i], "nearest")
+            _lg = _layer.legend
+            if _lg is not None and (
+                (_lg.kind == "classes" and _lg.items)
+                or (_lg.kind == "continuous" and len(_lg.colors) >= 2)
+            ):
+                layer_legend_cards.append((ax, _layer))
+            elif req.show_panel_labels:
+                _source_badge(ax, _layer.name)
+        else:
+            ax.text(
+                0.5, 0.5, f"{_layer.name} unavailable",
+                ha="center", va="center", transform=ax.transAxes,
+                fontsize=max(7, req.font_size - 2), color="#666",
+            )
+            ax.set_yticks([])
+
     # ---- JRC TMF AnnualChanges panel ------------------------------------
     if "ee_annualchanges" in panels:
         ax = axes[panels.index("ee_annualchanges")]
-        if ee_arr is not None and ee_meta is not None:
-            _draw_imshow_panel(ax, ee_arr, ee_meta, "nearest")  # preserve sharp class boundaries
+        if ee_panel_arr is not None and ee_meta is not None:
+            _draw_imshow_panel(ax, ee_panel_arr, ee_meta, "nearest")  # preserve sharp class boundaries
             # Footer annotation so the reader knows what they're looking at
             # (an axis title would crowd into the panel above).
             if req.show_panel_labels:
@@ -623,38 +1000,9 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # when it finds nicer round values in the data span.
         ax.set_yticks([0.0,  max_h]) # max_h / 2.0,
         ax.set_yticklabels(['0', f'{max_h:.0f}m']) # f'{max_h / 2.0:.0f}m'
-        # Inset colorbar — lives inside the heatmap (top-left) on a
-        # semi-transparent white pad so it stays legible against any cell
-        # colour and doesn't steal width from the panel. `ax.inset_axes`
-        # installs a locator that re-positions the inset on every draw
-        # relative to the parent's current bounds, so the bar tracks the
-        # heatmap through the strip-glue / x-extent pinning steps later
-        # in this function.
-        from matplotlib.patches import Rectangle
-        _cbar_label_fs = max(7, req.font_size - 2)
-        # Background pad in heatmap-axes-fraction. Wide + short to comfortably
-        # contain the horizontal bar plus the tick numerals and "Energy (%)"
-        # label that stack below it. (The panel is wide and short, so a
-        # fraction of x is far more pixels than the same fraction of y —
-        # hence the bar is wide in x and thin in y.)
-        ax.add_patch(Rectangle(
-            (0.86, 0.62), 0.16, 0.4, # x0, y0, width, height
-            transform=ax.transAxes,
-            facecolor="white", alpha=1,
-            edgecolor="#888", linewidth=0.6,
-            zorder=5,
-        ))
-        # The bar itself — thin horizontal strip in the middle of the pad;
-        # the "Energy (%)" label sits above it and tick numerals sit below.
-        cax = ax.inset_axes([0.88, 0.76, 0.1, 0.08])
-        cax.set_zorder(6)
-        cbar = fig.colorbar(mesh, cax=cax, orientation="horizontal")
-        cbar.ax.xaxis.set_label_position("top")
-        cbar.set_label("Energy (%)", fontsize=_cbar_label_fs, labelpad=2)
-        cbar.set_ticks([z_min, z_max])
-        cbar.ax.tick_params(labelsize=_tick_fs, length=2, pad=1)
-        cbar.outline.set_linewidth(0.5)
-        cbar.outline.set_edgecolor("#666")
+        # The colorbar card (top-left) is drawn after the final layout — see
+        # `_draw_colorbar_card` near the end of this function.
+        heatmap_mesh = mesh
         # Top-right source label — pinned where the data is sparsest (canopy
         # top is mostly low-energy blue, so a white-backed badge sits
         # comfortably without obscuring meaningful cells).
@@ -690,14 +1038,26 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         # identifies each line, so a redundant "Diversity indices" / "CR"
         # label would just steal horizontal real estate.
         if has_left or not req.show_cr:
-            # Fixed [0, 10] range for the diversity-indices view: FHD/ENL
-            # typically top out around 4–6, so 10 leaves headroom for the
-            # top-right source badge without crowding the data.
-            ax.set_ylim(0, 11)
-            # Integer y-ticks across the [0, 10] range — sparse (≤5) so the
+            # [0, 11] fits FHD / ENL at the default 5 m bins (ENL ~3–8). Finer
+            # bins push ENL much higher (≈25 at 1 m), so grow the top to the
+            # 99th percentile of the plotted lines (ignores rare 2D-ENL spikes)
+            # plus headroom for the legend / source badge.
+            _left = [
+                arr for show, arr in (
+                    (req.show_fhd, fhd), (req.show_enl1d, enl1),
+                    (req.show_enl2d, enl2), (req.show_cr and not cr_on_twin, cr),
+                ) if show
+            ]
+            _vals = np.concatenate(_left) if _left else np.array([])
+            _vals = _vals[np.isfinite(_vals)]
+            y_top = 11.0
+            if _vals.size:
+                y_top = max(y_top, float(np.ceil(np.percentile(_vals, 99) * 1.25)))
+            ax.set_ylim(0, y_top)
+            # Integer y-ticks — sparse (≤5) so the
             # panel reads as a strip rather than a dense ladder, and
             # `integer=True` forces whole-number values regardless of the span.
-            # `prune="upper"` drops the topmost tick (10) so the source badge
+            # `prune="upper"` drops the topmost tick so the source badge
             # sitting above the data doesn't visually collide with a label.
             ax.yaxis.set_major_locator(MaxNLocator(nbins=3, integer=True, prune="upper"))
         else:
@@ -729,7 +1089,8 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         if req.show_panel_labels:
             _source_badge(
                 metrics_twin_ax if metrics_twin_ax is not None else ax,
-                "VSM Diversity indices",
+                "VSM Diversity indices"
+                + (f" · {req.diversity_bin_m:g} m bins" if req.diversity_bin_m else ""),
             )
 
     # No x-axis label — cardinal-suffixed tick values are self-identifying.
@@ -868,9 +1229,139 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
             borderaxespad=0.0,
         )
 
-    # Metric legend — placed inside the metrics panel at the top-right,
-    # tucked just below the "VSM Diversity indices" source badge. Drawn on
-    # the twin axis (when CR sits there) so it renders above the primary
+    # Legend cards (heatmap colorbar + metric legend) share the map-overlay
+    # look: top-left, white rounded card, light grey edge.
+    from matplotlib.patches import FancyBboxPatch
+
+    CARD_MARGIN_PT = 4.0
+    CARD_FACE, CARD_ALPHA, CARD_EDGE, CARD_LW = "white", 0.92, "#bbbbbb", 0.5
+
+    def _draw_colorbar_card(ax, mappable, title: str, unit: str) -> None:
+        """Compact horizontal colorbar like the map's legend: one title line,
+        a thin gradient bar, min / mid / max underneath (unit after max).
+        Sized in points from the panel's final position."""
+        fs = max(6, req.font_size - 4)
+        pos = ax.get_position()
+        ax_w_pt = pos.width * fig.get_figwidth() * 72.0
+        ax_h_pt = pos.height * fig.get_figheight() * 72.0
+        pad, bar_h, gap = 4.0, 4.0, 2.0
+        # Wide enough for the title (≈0.55 em per character).
+        card_w = max(90.0, 11.0 * fs, 0.55 * fs * len(title) + 2 * 4.0)
+        card_h = pad + fs * 1.15 + gap + bar_h + gap + fs * 1.15 + pad
+        fx, fy = 1.0 / ax_w_pt, 1.0 / ax_h_pt  # points → axes fraction
+        x0 = CARD_MARGIN_PT * fx
+        top = 1.0 - CARD_MARGIN_PT * fy
+        ax.add_patch(FancyBboxPatch(
+            (x0, top - card_h * fy), card_w * fx, card_h * fy,
+            boxstyle="round,pad=0,rounding_size=0.004",
+            transform=ax.transAxes,
+            facecolor=CARD_FACE, alpha=CARD_ALPHA,
+            edgecolor=CARD_EDGE, linewidth=CARD_LW, zorder=5,
+        ))
+        text_kw = dict(transform=ax.transAxes, fontsize=fs, zorder=7)
+        ax.text(x0 + pad * fx, top - pad * fy, title, ha="left", va="top", color="#222", **text_kw)
+        bar_top = top - (pad + fs * 1.15 + gap) * fy
+        bar_l = x0 + pad * fx
+        bar_w = (card_w - 2 * pad) * fx
+        cax = ax.inset_axes([bar_l, bar_top - bar_h * fy, bar_w, bar_h * fy])
+        cax.set_zorder(6)
+        cbar = fig.colorbar(mappable, cax=cax, orientation="horizontal")
+        cbar.set_ticks([])
+        cbar.outline.set_linewidth(0.5)
+        cbar.outline.set_edgecolor("#999")
+        vmin, vmax = mappable.get_clim()
+
+        def _fmt(v: float) -> str:
+            return f"{v:.3g}" if abs(v) < 100 else f"{v:.0f}"
+
+        label_y = bar_top - (bar_h + gap) * fy
+        for frac, ha, v in ((0.0, "left", vmin), (0.5, "center", (vmin + vmax) / 2), (1.0, "right", vmax)):
+            ax.text(
+                bar_l + frac * bar_w, label_y,
+                _fmt(v) + (f" {unit}" if frac == 1.0 and unit else ""),
+                ha=ha, va="top", color="#555", **text_kw,
+            )
+
+    def _draw_class_card(ax, title: str, items) -> None:
+        """Class legend card (top-left, same look as the colorbar card):
+        title line, then swatch + label pairs wrapped into rows."""
+        fs = max(6, req.font_size - 4)
+        pos = ax.get_position()
+        ax_w_pt = pos.width * fig.get_figwidth() * 72.0
+        ax_h_pt = pos.height * fig.get_figheight() * 72.0
+        pad, sw, gap, line_h = 4.0, 0.9 * fs, 3.0, fs * 1.3
+        max_row_w = max(90.0, 0.6 * ax_w_pt - 2 * pad)
+        # Lay out items into rows by estimated label width (≈0.55 em/char).
+        rows, row, row_w = [], [], 0.0
+        for it in items:
+            w = sw + gap + 0.55 * fs * len(it.label) + 8.0
+            if row and row_w + w > max_row_w:
+                rows.append((row, row_w))
+                row, row_w = [], 0.0
+            row.append((it, w))
+            row_w += w
+        if row:
+            rows.append((row, row_w))
+        title_w = 0.55 * fs * len(title)
+        card_w = max([title_w] + [rw for _, rw in rows]) + 2 * pad
+        card_h = pad + fs * 1.15 + gap + line_h * len(rows) + pad - 2.0
+        fx, fy = 1.0 / ax_w_pt, 1.0 / ax_h_pt
+        x0 = CARD_MARGIN_PT * fx
+        top = 1.0 - CARD_MARGIN_PT * fy
+        ax.add_patch(FancyBboxPatch(
+            (x0, top - card_h * fy), card_w * fx, card_h * fy,
+            boxstyle="round,pad=0,rounding_size=0.004",
+            transform=ax.transAxes,
+            facecolor=CARD_FACE, alpha=CARD_ALPHA,
+            edgecolor=CARD_EDGE, linewidth=CARD_LW, zorder=5,
+        ))
+        text_kw = dict(transform=ax.transAxes, fontsize=fs, zorder=7)
+        ax.text(x0 + pad * fx, top - pad * fy, title, ha="left", va="top", color="#222", **text_kw)
+        y = top - (pad + fs * 1.15 + gap) * fy
+        for row_items, _ in rows:
+            x = x0 + pad * fx
+            yc = y - (line_h / 2.0) * fy
+            for it, w in row_items:
+                ax.add_patch(FancyBboxPatch(
+                    (x, yc - (sw / 2.0) * fy), sw * fx, sw * fy,
+                    boxstyle="square,pad=0", transform=ax.transAxes,
+                    facecolor=it.color, edgecolor="#999", linewidth=0.4, zorder=6,
+                ))
+                ax.text(x + (sw + gap) * fx, yc, it.label, ha="left", va="center", color="#555", **text_kw)
+                x += w * fx
+            y -= line_h * fy
+
+    if "heatmap" in panels:
+        _draw_colorbar_card(axes[panels.index("heatmap")], heatmap_mesh, "Energy", "%")
+
+    if layer_legend_cards:
+        from matplotlib.cm import ScalarMappable
+        from matplotlib.colors import LinearSegmentedColormap, Normalize
+
+        for _ax, _layer in layer_legend_cards:
+            _lg = _layer.legend
+            # A legend that can't be drawn (e.g. an unparseable colour) falls
+            # back to the plain name badge instead of failing the figure.
+            try:
+                if _lg.kind == "classes":
+                    items = [
+                        type(it)(color=matplotlib.colors.to_hex(_css_color(it.color), keep_alpha=True), label=it.label)
+                        for it in _lg.items
+                    ]
+                    _draw_class_card(_ax, _layer.name, items)
+                    continue
+                _sm = ScalarMappable(
+                    norm=Normalize(vmin=_lg.min, vmax=_lg.max),
+                    cmap=LinearSegmentedColormap.from_list("layer", [_css_color(c) for c in _lg.colors]),
+                )
+                _draw_colorbar_card(_ax, _sm, _layer.name, _lg.unit)
+            except Exception as e:  # noqa: BLE001 — decorative only
+                print(f"[transect-figure] legend for {_layer.name!r} skipped: {e}")
+                if req.show_panel_labels:
+                    _source_badge(_ax, _layer.name)
+
+    # Metric legend — top-left of the metrics panel, same card style. Drawn
+    # on the twin axis (when CR sits there) so it renders above the primary
     # grid, matching the badge's z-order trick.
     if legend_handles and "metrics" in panels:
         legend_host = (
@@ -881,19 +1372,21 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
         leg = legend_host.legend(
             legend_handles,
             legend_labels,
-            loc="upper right",
-            bbox_to_anchor=(1, 0.99),
+            loc="upper left",
             ncol=len(legend_handles),
-            # frameon=True,
-            fontsize=_strip_fs,
+            fontsize=max(6, req.font_size - 4),
             handlelength=1.2,
             handletextpad=0.4,
             columnspacing=1.0,
-            borderaxespad=0.0,
-            framealpha=0.7,
-            # edgecolor="#888",
+            borderpad=0.4,
+            borderaxespad=CARD_MARGIN_PT / max(6, req.font_size - 4),
+            fancybox=True,
+            framealpha=CARD_ALPHA,
+            facecolor=CARD_FACE,
+            edgecolor=CARD_EDGE,
         )
-        # leg.get_frame().set_linewidth(0.6)
+        leg.get_frame().set_linewidth(CARD_LW)
+        leg.get_frame().set_boxstyle("round,pad=0,rounding_size=0.3")
         leg.set_zorder(6)
 
     # Output buffer.

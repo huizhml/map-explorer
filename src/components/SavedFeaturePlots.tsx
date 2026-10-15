@@ -2222,6 +2222,7 @@ export function SavedFeaturePlots({
           xAxis={transectMetricXAxis}
           heatmapMaxHeight={transectHeatmapMaxHeight}
           heightBinM={diversityHeightBinM}
+          diversityBinM={transect.fhd_interval ?? null}
           featureName={featureName}
         />
       )}

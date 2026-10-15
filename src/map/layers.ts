@@ -222,6 +222,15 @@ export class RasterLayer implements MapLayer {
     return this.opts.url;
   }
 
+  getTileSize(): number {
+    return this.opts.tileSize ?? 256;
+  }
+
+  /** Highest zoom the tile server has (undefined → no limit set). */
+  getMaxTileZoom(): number | undefined {
+    return this.opts.maxTileZoom;
+  }
+
   /** Swap the tile template and refetch — a colormap or rescale change. */
   setUrl(url: string): void {
     this.opts.url = url;

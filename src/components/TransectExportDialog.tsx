@@ -9,6 +9,7 @@ import {
   DialogTitle,
   FormControlLabel,
   FormControl,
+  IconButton,
   InputLabel,
   MenuItem,
   Paper,
@@ -19,6 +20,10 @@ import {
   Typography,
 } from '@mui/material';
 import { useMapStore } from '../stores/mapStore';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import { oneOf, usePersistentState } from '../hooks/usePersistentState';
+import { getTransectLayerCandidates, type TransectLayerCandidate } from '../utils/transectMapLayers';
 import type { VerticalProfileLineSample } from '../stores/mapStore';
 import {
   DEFAULT_DIVERSITY_HEIGHT_BIN_M,
@@ -49,6 +54,12 @@ type TransectExportDialogProps = {
   heatmapMaxHeight?: number;
   /** Meters per vertical bin (matches transect profile histogram); defaults to Tools setting. */
   heightBinM?: number;
+  /**
+   * Bin width (m) the samples' FHD / ENL were actually computed with, shown in
+   * the metrics panel label. null/undefined → unknown (older saved transects),
+   * and the label omits it rather than guessing from the current setting.
+   */
+  diversityBinM?: number | null;
   /** Saved-feature display name; used as the default export filename. */
   featureName?: string;
 };
@@ -91,6 +102,7 @@ function buildFigurePayload(args: {
   samples: VerticalProfileLineSample[];
   xAxis: FigureXAxis;
   heightBinM: number;
+  diversityBinM: number | null;
   heatmapMaxHeight: number;
   includeMap: boolean;
   basemapSource: ApiBasemapSource;
@@ -110,6 +122,9 @@ function buildFigurePayload(args: {
   metricsHeight: number;
   fontSize: number;
   satelliteBufferM: number;
+  alignMapToTransect: boolean;
+  mapLayers: TransectLayerCandidate[];
+  panelOrder: string[];
   fmt: ExportFormat;
   preview: boolean;
 }) {
@@ -118,6 +133,7 @@ function buildFigurePayload(args: {
     samples: slim,
     x_axis: args.xAxis,
     height_bin_m: args.heightBinM,
+    diversity_bin_m: args.diversityBinM,
     heatmap_max_height_m: args.heatmapMaxHeight,
     heatmap_colormap_max: HEATMAP_COLORMAP_MAX,
     include_map: args.includeMap,
@@ -136,6 +152,12 @@ function buildFigurePayload(args: {
     enl_fhd_height_px: args.metricsHeight,
     font_size: args.fontSize,
     satellite_buffer_m: args.satelliteBufferM,
+    // The preview is ~720 px wide, so a lighter satellite fetch looks the same
+    // and needs ~1/7 of the tiles; export keeps full resolution.
+    satellite_max_width_px: args.preview ? PREVIEW_SATELLITE_MAX_WIDTH_PX : EXPORT_SATELLITE_MAX_WIDTH_PX,
+    align_map_to_transect: args.alignMapToTransect,
+    map_layers: args.mapLayers.map(({ id, name, sources, legend }) => ({ id, name, sources, legend: legend ?? undefined })),
+    panel_order: args.panelOrder,
     basemap_source: args.basemapSource,
     eox_year: args.eoxYear,
     eox_brightness: args.eoxBrightness,
@@ -144,6 +166,33 @@ function buildFigurePayload(args: {
     dpi: args.preview ? 90 : 150,
   };
 }
+
+const PREVIEW_SATELLITE_MAX_WIDTH_PX = 1536;
+const EXPORT_SATELLITE_MAX_WIDTH_PX = 4096;
+/**
+ * Order `active` panel keys by the user's saved order. Keys not saved yet go
+ * in right after their nearest default-order predecessor, so a newly enabled
+ * panel shows up where it would by default rather than at the bottom.
+ */
+function mergePanelOrder(saved: string[], active: string[]): string[] {
+  const out = saved.filter((k) => active.includes(k));
+  active.forEach((k, i) => {
+    if (out.includes(k)) return;
+    let pos = 0;
+    for (let j = i - 1; j >= 0; j -= 1) {
+      const p = out.indexOf(active[j]);
+      if (p >= 0) {
+        pos = p + 1;
+        break;
+      }
+    }
+    out.splice(pos, 0, k);
+  });
+  return out;
+}
+
+/** Debounce before the 2D preview re-renders itself after a settings change. */
+const PREVIEW_AUTO_DELAY_MS = 600;
 
 /** Build the JSON payload the `/transect/figure-3d` endpoint expects.
  *
@@ -210,6 +259,7 @@ export function TransectExportDialog({
   xAxis,
   heatmapMaxHeight,
   heightBinM: heightBinMProp,
+  diversityBinM = null,
   featureName,
 }: TransectExportDialogProps) {
   void totalLengthMeters;
@@ -229,50 +279,52 @@ export function TransectExportDialog({
   // visible preview is known to be out of date until the user clicks Render.
   const [previewStale, setPreviewStale] = useState(false);
 
-  const [viewMode, setViewMode] = useState<ViewMode>('2d');
+  const [viewMode, setViewMode] = usePersistentState<ViewMode>('transectExport.viewMode', '2d', oneOf(['2d', '3d'] as const));
   const is3D = viewMode === '3d';
   // 3D camera knobs (only used when viewMode === '3d').
-  const [viewElev, setViewElev] = useState<number>(28);
+  const [viewElev, setViewElev] = usePersistentState<number>('transectExport.viewElev', 28);
   /** When true, backend auto-derives azimuth from the transect bearing. */
-  const [azimAuto, setAzimAuto] = useState<boolean>(true);
-  const [viewAzim, setViewAzim] = useState<number>(-45);
-  const [verticalExag, setVerticalExag] = useState<number>(0.1);
+  const [azimAuto, setAzimAuto] = usePersistentState<boolean>('transectExport.azimAuto', true);
+  const [viewAzim, setViewAzim] = usePersistentState<number>('transectExport.viewAzim', -45);
+  const [verticalExag, setVerticalExag] = usePersistentState<number>('transectExport.verticalExag', 0.1);
   /** Camera zoom: >1 enlarges the scene in the frame. */
-  const [viewZoom, setViewZoom] = useState<number>(2.2);
+  const [viewZoom, setViewZoom] = usePersistentState<number>('transectExport.viewZoom', 2.2);
   /** Satellite ground detail (cells/row). Higher = sharper but slower export. */
-  const [groundDetail, setGroundDetail] = useState<number>(1000);
+  const [groundDetail, setGroundDetail] = usePersistentState<number>('transectExport.groundDetail', 1000);
 
-  const [format, setFormat] = useState<ExportFormat>('png');
-  const [fontSize, setFontSize] = useState<number>(11);
-  const [figureWidth, setFigureWidth] = useState<number>(1200);
-  const [mapPanelHeight, setMapPanelHeight] = useState<number>(220);
-  const [heatmapHeight, setHeatmapHeight] = useState<number>(240);
+  const [format, setFormat] = usePersistentState<ExportFormat>('transectExport.format', 'png', oneOf(['png', 'jpg', 'pdf'] as const));
+  const [fontSize, setFontSize] = usePersistentState<number>('transectExport.fontSize', 11);
+  const [figureWidth, setFigureWidth] = usePersistentState<number>('transectExport.figureWidth', 1200);
+  const [mapPanelHeight, setMapPanelHeight] = usePersistentState<number>('transectExport.mapPanelHeight', 220);
+  const [heatmapHeight, setHeatmapHeight] = usePersistentState<number>('transectExport.heatmapHeight', 240);
   /** Height of the merged metrics panel (FHD / 1D ENL / 2D ENL / CR). */
-  const [metricsHeight, setMetricsHeight] = useState<number>(300);
+  const [metricsHeight, setMetricsHeight] = usePersistentState<number>('transectExport.metricsHeight', 300);
   /** Vertical buffer (m) above/below the transect for the satellite snapshot. */
-  const [satelliteBufferM, setSatelliteBufferM] = useState<number>(200);
+  const [satelliteBufferM, setSatelliteBufferM] = usePersistentState<number>('transectExport.satelliteBufferM', 200);
+  /** Rotate the 2D map panels so a straight, non-axis-aligned transect runs horizontally. */
+  const [alignMapToTransect, setAlignMapToTransect] = usePersistentState('transectExport.alignMapToTransect', true);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   /** Single-choice map-snapshot source: omit, Google Satellite HD, or EOX s2cloudless. */
-  const [basemapSource, setBasemapSource] = useState<BasemapSource>('google');
+  const [basemapSource, setBasemapSource] = usePersistentState<BasemapSource>('transectExport.basemapSource', 'google', oneOf(['none', 'google', 'eox_s2cloudless'] as const));
   /** Year for EOX `s2cloudless-<year>`; ignored unless basemapSource === 'eox_s2cloudless'. */
-  const [eoxYear, setEoxYear] = useState<number>(2020);
+  const [eoxYear, setEoxYear] = usePersistentState<number>('transectExport.eoxYear', 2020);
   /** Gamma-style brightness applied to the EOX mosaic: 1.0 = source pixels, >1 brighter. */
-  const [eoxBrightness, setEoxBrightness] = useState<number>(1.3);
+  const [eoxBrightness, setEoxBrightness] = usePersistentState<number>('transectExport.eoxBrightness', 1.3);
   const includeMapPanel = basemapSource !== 'none';
-  const [includeEeAnnualChangesPanel, setIncludeEeAnnualChangesPanel] = useState(false);
-  const [includeHeatmapPanel, setIncludeHeatmapPanel] = useState(true);
+  const [includeEeAnnualChangesPanel, setIncludeEeAnnualChangesPanel] = usePersistentState('transectExport.includeEeAnnualChangesPanel', false);
+  const [includeHeatmapPanel, setIncludeHeatmapPanel] = usePersistentState('transectExport.includeHeatmapPanel', true);
   // Per-line toggles for the merged metrics panel.
-  const [showFhd, setShowFhd] = useState(true);
-  const [showEnl1d, setShowEnl1d] = useState(true);
-  const [showEnl2d, setShowEnl2d] = useState(true);
-  const [showCr, setShowCr] = useState(true);
+  const [showFhd, setShowFhd] = usePersistentState('transectExport.showFhd', true);
+  const [showEnl1d, setShowEnl1d] = usePersistentState('transectExport.showEnl1d', true);
+  const [showEnl2d, setShowEnl2d] = usePersistentState('transectExport.showEnl2d', true);
+  const [showCr, setShowCr] = usePersistentState('transectExport.showCr', true);
   // When true (and CR is plotted alongside another metric), CR gets its own
   // twin right y-axis (0..1.1); otherwise all four lines share the left axis.
-  const [crOwnYaxis, setCrOwnYaxis] = useState(false);
+  const [crOwnYaxis, setCrOwnYaxis] = usePersistentState('transectExport.crOwnYaxis', false);
   // Master toggle for the small per-panel source/label badges ("VSM Vertical
   // Profile", satellite source, etc.). Off hides every badge in one click.
-  const [showPanelLabels, setShowPanelLabels] = useState(true);
+  const [showPanelLabels, setShowPanelLabels] = usePersistentState('transectExport.showPanelLabels', true);
 
   const safeWidth = clamp(figureWidth, 700, 3000);
   const safeMapPanelHeight = clamp(mapPanelHeight, 80, 1800);
@@ -292,7 +344,7 @@ export function TransectExportDialog({
   // one), so "Off" isn't a valid map source there — fall back to Google.
   useEffect(() => {
     if (is3D && basemapSource === 'none') setBasemapSource('google');
-  }, [is3D, basemapSource]);
+  }, [is3D, basemapSource, setBasemapSource]);
 
   // Content fingerprint of the incoming `samples` prop. The parent often hands
   // us a freshly-allocated array on every render even when the underlying data
@@ -330,10 +382,70 @@ export function TransectExportDialog({
     [samplesFingerprint],
   );
   const hasEnoughSamples = usableSamples.length >= 2;
+
+  // Raster layers on the map that cover the transect, each a candidate panel
+  // under the satellite snapshot. Unless the user ticks/unticks one in this
+  // dialog, a layer is included iff it's visible on the map — re-read every
+  // time the dialog opens.
+  const mapLayersList = useMapStore((s) => s.layers);
+  const layerManager = useMapStore((s) => s.layerManager);
+  const mapLayerCandidates = useMemo(() => {
+    if (!open || usableSamples.length === 0) return [];
+    const lons = usableSamples.map((p) => p.lon);
+    const lats = usableSamples.map((p) => p.lat);
+    const south = Math.min(...lats);
+    const north = Math.max(...lats);
+    const latBuf = safeSatelliteBufferM / 111320;
+    const lonBuf = safeSatelliteBufferM / (111320 * Math.max(1e-6, Math.cos((((south + north) / 2) * Math.PI) / 180)));
+    return getTransectLayerCandidates(mapLayersList, layerManager, [
+      Math.min(...lons) - lonBuf, south - latBuf, Math.max(...lons) + lonBuf, north + latBuf,
+    ]);
+  }, [open, usableSamples, mapLayersList, layerManager, safeSatelliteBufferM]);
+  const [mapLayerChoice, setMapLayerChoice] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (open) setMapLayerChoice({});
+  }, [open]);
+  const selectedMapLayers = useMemo(
+    () => mapLayerCandidates.filter((c) => mapLayerChoice[c.id] ?? c.visible),
+    [mapLayerCandidates, mapLayerChoice],
+  );
+
   const anyMetricSelected = showFhd || showEnl1d || showEnl2d || showCr;
+
+  // Top-to-bottom order of the enabled 2D panels (keys as the backend's
+  // `panel_order`), adjustable with ↑/↓ and remembered across sessions.
+  const [savedPanelOrder, setSavedPanelOrder] = usePersistentState<string[]>(
+    'transectExport.panelOrder', [], (v) => Array.isArray(v) && v.every((k) => typeof k === 'string'),
+  );
+  const activePanels = useMemo(() => {
+    const out: { key: string; label: string }[] = [];
+    if (includeMapPanel) {
+      out.push({ key: 'map', label: basemapSource === 'eox_s2cloudless' ? `EOX Sentinel-2 ${eoxYear}` : 'Google Satellite' });
+    }
+    for (const c of selectedMapLayers) out.push({ key: `layer:${c.id}`, label: c.name });
+    if (includeEeAnnualChangesPanel) out.push({ key: 'ee_annualchanges', label: 'JRC TMF (Dec 2020)' });
+    if (includeHeatmapPanel) out.push({ key: 'heatmap', label: 'Heatmap' });
+    if (anyMetricSelected) out.push({ key: 'metrics', label: 'Diversity indices' });
+    return out;
+  }, [includeMapPanel, basemapSource, eoxYear, selectedMapLayers, includeEeAnnualChangesPanel, includeHeatmapPanel, anyMetricSelected]);
+  const orderedPanels = useMemo(() => {
+    const byKey = new Map(activePanels.map((p) => [p.key, p]));
+    return mergePanelOrder(savedPanelOrder, activePanels.map((p) => p.key)).map((k) => byKey.get(k)!);
+  }, [savedPanelOrder, activePanels]);
+  const panelOrder = useMemo(() => orderedPanels.map((p) => p.key), [orderedPanels]);
+  const movePanel = useCallback((index: number, delta: -1 | 1) => {
+    const next = [...panelOrder];
+    const j = index + delta;
+    if (j < 0 || j >= next.length) return;
+    [next[index], next[j]] = [next[j], next[index]];
+    // Keep remembered positions of panels that are off right now (after the
+    // active ones); cap so per-session layer ids don't pile up forever.
+    setSavedPanelOrder([...next, ...savedPanelOrder.filter((k) => !next.includes(k))].slice(0, 40));
+  }, [panelOrder, savedPanelOrder, setSavedPanelOrder]);
   const anyPanelSelected = is3D
     ? true // 3D always has the satellite ground plane + heatmap wall.
-    : includeMapPanel ||
+    : selectedMapLayers.length > 0 ||
+      includeMapPanel ||
       includeEeAnnualChangesPanel ||
       includeHeatmapPanel ||
       anyMetricSelected;
@@ -371,6 +483,7 @@ export function TransectExportDialog({
             samples: usableSamples,
             xAxis,
             heightBinM,
+            diversityBinM,
             heatmapMaxHeight: heatmapMaxHeight ?? DEFAULT_HEATMAP_MAX_HEIGHT_M,
             includeMap: includeMapPanel,
             // Backend ignores basemap_source / eox_year when include_map is false,
@@ -392,6 +505,9 @@ export function TransectExportDialog({
             metricsHeight: safeMetricsHeight,
             fontSize: safeFontSize,
             satelliteBufferM: safeSatelliteBufferM,
+            alignMapToTransect,
+            mapLayers: selectedMapLayers,
+            panelOrder,
             fmt: format,
             preview,
           });
@@ -421,6 +537,7 @@ export function TransectExportDialog({
       usableSamples,
       xAxis,
       heightBinM,
+      diversityBinM,
       heatmapMaxHeight,
       is3D,
       includeMapPanel,
@@ -441,6 +558,9 @@ export function TransectExportDialog({
       safeMetricsHeight,
       safeFontSize,
       safeSatelliteBufferM,
+      alignMapToTransect,
+      selectedMapLayers,
+      panelOrder,
       safeViewElev,
       azimAuto,
       safeViewAzim,
@@ -456,6 +576,11 @@ export function TransectExportDialog({
   // avoids stacking up heavy (esp. 3D) renders on the server while the user is
   // still adjusting parameters. The previous image stays visible (dimmed) during
   // a refresh so the panel doesn't flash empty.
+  // Always the current `requestFigure`, so an in-flight render can tell whether
+  // settings changed after it started.
+  const latestRequestFigureRef = useRef(requestFigure);
+  latestRequestFigureRef.current = requestFigure;
+
   const renderPreview = useCallback(async () => {
     if (!hasEnoughSamples) {
       setExportError('Need at least 2 transect samples to render.');
@@ -474,6 +599,9 @@ export function TransectExportDialog({
     try {
       const result = await requestFigure(true, controller.signal);
       if (token !== previewRenderTokenRef.current) return;
+      // Settings changed while this render was in flight: show it, but keep the
+      // preview stale so the (auto) re-render still happens.
+      const settingsChanged = latestRequestFigureRef.current !== requestFigure;
       if (!result) {
         if (previewObjectUrlRef.current) {
           URL.revokeObjectURL(previewObjectUrlRef.current);
@@ -486,7 +614,7 @@ export function TransectExportDialog({
       const prevUrl = previewObjectUrlRef.current;
       previewObjectUrlRef.current = url;
       setPreviewImageUrl(url);
-      setPreviewStale(false);
+      setPreviewStale(settingsChanged);
       // Revoke the old URL only after React has swapped in the new one,
       // so the <img> never points at a freed blob mid-frame.
       if (prevUrl) {
@@ -515,6 +643,20 @@ export function TransectExportDialog({
     }
     setPreviewStale(true);
   }, [requestFigure]);
+
+  // Auto-refresh the 2D preview shortly after the last settings change, once a
+  // preview exists. The backend caches the imagery, so layout-only changes
+  // re-render quickly. `renderPreview` changes identity with every setting, so
+  // each change restarts the timer (debounce). 3D renders are slow, so they
+  // stay on the manual Render button. Never interrupt an export (it shares
+  // `abortRef`).
+  useEffect(() => {
+    if (!open || is3D || !previewStale || !previewImageUrl || isExporting) return;
+    const id = window.setTimeout(() => {
+      void renderPreview();
+    }, PREVIEW_AUTO_DELAY_MS);
+    return () => window.clearTimeout(id);
+  }, [open, is3D, previewStale, previewImageUrl, isExporting, renderPreview]);
 
   // Abort any in-flight render when the dialog closes.
   useEffect(() => {
@@ -668,7 +810,9 @@ export function TransectExportDialog({
             sx={{ minWidth: 170 }}
             // 3D always has a ground plane, so the buffer always applies there.
             disabled={!is3D && !includeMapPanel}
-            helperText={is3D ? 'Swath half-width (⊥ to line)' : 'Vertical pad along transect'}
+            helperText={
+              is3D || alignMapToTransect ? 'Swath half-width (⊥ to line)' : 'Vertical pad along transect'
+            }
           />
         </Stack>
 
@@ -781,6 +925,16 @@ export function TransectExportDialog({
                 }
                 label="CR on its own y-axis"
               />
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={alignMapToTransect}
+                    onChange={(e) => setAlignMapToTransect(e.target.checked)}
+                    disabled={!includeMapPanel && !includeEeAnnualChangesPanel && selectedMapLayers.length === 0}
+                  />
+                }
+                label="Rotate map along transect"
+              />
               {/* Master toggle for the per-panel source/label badges (e.g.
                   "VSM Vertical Profile", satellite source). */}
               <FormControlLabel
@@ -792,6 +946,58 @@ export function TransectExportDialog({
                 }
                 label="Panel labels"
               />
+              {mapLayerCandidates.length > 0 && (
+                <Box sx={{ width: '100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', columnGap: 1 }}>
+                  <Typography variant="body2" color="text.secondary" sx={{ mr: 1 }}>
+                    Map layers (drawn under the satellite):
+                  </Typography>
+                  {mapLayerCandidates.map((c) => (
+                    <FormControlLabel
+                      key={c.id}
+                      control={
+                        <Checkbox
+                          checked={mapLayerChoice[c.id] ?? c.visible}
+                          onChange={(e) => setMapLayerChoice((prev) => ({ ...prev, [c.id]: e.target.checked }))}
+                        />
+                      }
+                      label={c.name}
+                    />
+                  ))}
+                </Box>
+              )}
+              {orderedPanels.length > 1 && (
+                <Box sx={{ width: '100%' }}>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                    Panel order (top → bottom):
+                  </Typography>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, maxWidth: 420 }}>
+                    {orderedPanels.map((p, i) => (
+                      <Box
+                        key={p.key}
+                        sx={{
+                          display: 'flex', alignItems: 'center', gap: 0.5,
+                          px: 1, py: 0.25, border: '1px solid', borderColor: 'divider', borderRadius: 1,
+                        }}
+                      >
+                        <Typography variant="body2" sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {i + 1}. {p.label}
+                        </Typography>
+                        <IconButton size="small" aria-label={`Move ${p.label} up`} disabled={i === 0} onClick={() => movePanel(i, -1)}>
+                          <ArrowUpwardIcon fontSize="inherit" />
+                        </IconButton>
+                        <IconButton
+                          size="small"
+                          aria-label={`Move ${p.label} down`}
+                          disabled={i === orderedPanels.length - 1}
+                          onClick={() => movePanel(i, 1)}
+                        >
+                          <ArrowDownwardIcon fontSize="inherit" />
+                        </IconButton>
+                      </Box>
+                    ))}
+                  </Box>
+                </Box>
+              )}
             </>
           )}
 
@@ -951,7 +1157,7 @@ export function TransectExportDialog({
                     pointerEvents: 'none',
                   }}
                 >
-                  {isRenderingPreview ? 'Rendering…' : 'Stale — click Render'}
+                  {isRenderingPreview ? 'Rendering…' : is3D ? 'Stale — click Render' : 'Updating…'}
                 </Box>
               )}
             </Box>

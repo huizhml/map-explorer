@@ -1,17 +1,9 @@
 import { Box, Typography } from '@mui/material';
+import { eeClassLabels, eeHexColor, type EarthEngineLegendSpec } from '../utils/layerLegend';
 
 /** Stored on EE layer metadata for legend display */
-export type EarthEngineLegendSpec = {
-  min: number;
-  max: number;
-  palette: string[];
-};
-
-function hexColor(hex: string): string {
-  const s = (hex ?? '').trim();
-  if (!s) return '#888888';
-  return s.startsWith('#') ? s : `#${s}`;
-}
+export type { EarthEngineLegendSpec };
+const hexColor = eeHexColor;
 
 function formatLegendValue(n: number): string {
   if (!Number.isFinite(n)) return '—';
@@ -20,17 +12,7 @@ function formatLegendValue(n: number): string {
   return t || String(n);
 }
 
-function classLabels(spec: EarthEngineLegendSpec): string[] {
-  const { min, max, palette } = spec;
-  if (palette.length === 0) return [];
-  if (Number.isInteger(min) && Number.isInteger(max)) {
-    const classCount = max - min + 1;
-    if (classCount === palette.length) {
-      return palette.map((_, i) => String(min + i));
-    }
-  }
-  return palette.map((_, i) => `Class ${i + 1}`);
-}
+const classLabels = eeClassLabels;
 
 /**
  * Discrete class legend for Earth Engine palettes.

@@ -26,8 +26,17 @@ import time
 import pandas as pd
 
 MAX_HEIGHT_METERS = 150 # 100.0
-REALISTIC_MAX=150 #m
-REALISTIC_MIN=-150
+# Diversity indices (FHD / ENL / CR) — one rule set for every code path (map
+# tiles, point click, transect, GEDI): RH0..RH100 indexed by RH number, RH >= 0
+# counted, RH > MAX_HEIGHT_METERS clipped to it, CR from RH25 and RH98.
+N_RH = 101
+RH25_INDEX = 25
+RH98_INDEX = 98
+# RH0 is always negative (below ground), so it never enters the diversity
+# indices; the VRT and the transect skip reading it. VRT band i (0-based) is
+# RH(VRT_FIRST_RH + i).
+VRT_FIRST_RH = 1
+VRT_N_BANDS = N_RH - VRT_FIRST_RH
 # Meters: y-axis extent for transect RH heatmap only (diversity indices use MAX_HEIGHT).
 HEATMAP_MAX_HEIGHT = 50.0
 # Meters: bounds for the point vertical-profile curve so it also shows the
@@ -50,9 +59,10 @@ def pixel_hist(rhs: np.ndarray, interval: int = 5, max_height: float = None, min
     """
     Compute per-pixel histogram of RH values over [min_height, max_height].
 
-    min_height defaults to 0 so diversity-index callers keep ignoring ground
-    return (RH <= 0, which would dominate the histogram). Only the vertical-
-    profile curve passes a negative min_height to also show the below-0 tail.
+    Used for the displayed profile / heatmap only (diversity indices bin in
+    `pixel_diversity_indices`). min_height defaults to 0 and RH <= min_height
+    is dropped, so the ground return doesn't dominate the heatmap. The point
+    curve passes a negative min_height to also show the below-0 tail.
     """
     n_bins = int((max_height - min_height) / interval)
     rhs_arr = np.asarray(rhs, dtype=np.float32)
@@ -81,25 +91,34 @@ def pixel_vertical_profile(rhs, interval=1, max_height=50, min_height=0.0):
 
 def pixel_diversity_indices(rhs, bin_width=5, max_height=MAX_HEIGHT_METERS):
     """
-    Compute per-pixel FHD using a simple histogram approach. NOTE!!!: rhs should be in meters!!!
+    Per-pixel FHD / 1D ENL / 2D ENL / CR — same rules as `_chunk_diversity`.
+
+    rhs: RH0..RH100 in METRES, indexed by RH number (rhs[i] is RH i); missing
+    values are None/NaN and keep their slot, so CR always reads RH25/RH98.
+    RH >= 0 are binned over [0, max_height]; RH > max_height is clipped to it.
     """
-    if isinstance(rhs, pd.Series):
-        rhs = rhs.values
-    hist, bins = pixel_hist(rhs, bin_width, max_height)
-    p = hist / hist.sum() # NOTE: normalize the histogram to get the probability
-    mask = p > 0
-    fhd = -np.sum(p[mask] * np.log(p[mask]))#.astype(np.float32)
-    enl1d = np.exp(fhd)
-    enl2d = np.float32(1.0 / np.sum(p[mask] ** 2))
-    if np.isinf(enl2d):
-        print(f'ENL2D is inf, setting to NaN, rhs: {rhs}, p: {p}')
-        enl2d = np.nan
-    rh25 = max(rhs[25], 0)
-    if rhs[98] <= 0:
-        cr = np.nan
+    rhs = np.array([np.nan if v is None else v for v in rhs], dtype=np.float64)
+    rhs = np.minimum(rhs, max_height)  # NaN stays NaN
+    above = rhs[np.isfinite(rhs) & (rhs >= 0)]
+    if above.size == 0:
+        fhd = enl1d = enl2d = np.nan
     else:
-        cr = (rhs[98] - rh25)/rhs[98]
-    
+        hist, _ = np.histogram(
+            above, bins=int(max_height / bin_width), range=(0.0, max_height),
+        )
+        p = hist / hist.sum()
+        p = p[p > 0]
+        fhd = float(-np.sum(p * np.log(p)))
+        enl1d = float(np.exp(fhd))
+        enl2d = float(1.0 / np.sum(p ** 2))
+
+    rh25 = rhs[RH25_INDEX] if rhs.size > RH25_INDEX else np.nan
+    rh98 = rhs[RH98_INDEX] if rhs.size > RH98_INDEX else np.nan
+    if np.isfinite(rh25) and np.isfinite(rh98) and rh98 > 0:
+        cr = float((rh98 - max(rh25, 0.0)) / rh98)
+    else:
+        cr = np.nan
+
     return fhd, enl1d, enl2d, cr
 
 def prepare_rh_profile(rh_datacube):
@@ -121,18 +140,15 @@ def prepare_rh_profile(rh_datacube):
 
 def mask_rh_profile(rh_datacube):
     """
-    This masking is for calculating diversity indices, which only counts enegy returned above ground, and in range (0, max_height). 
-    RH metrics that are all nodata, infinite and zeros, will be masked out as nodata
-    There shouldn't be nodata or infinite appear in one of the 101 RH metrics, but I didn't check
-    Negative values won't be counted later. 
-    Values above max_height will be clipped to max_height, which is 150m by default.
+    This masking is for calculating diversity indices, which only count RH >= 0
+    in range [0, max_height].
+    A pixel whose RH metrics are all nodata / infinite / negative is masked out as nodata.
+    Negative values won't be counted later.
+    Values above max_height are clipped to max_height by the caller (not masked).
     NOTE: rh_datacube should be in meters, nodata should be nan!!! rh_datacube should have 4 dimensions (n, rows, cols, bands)
     """
     valid = np.isfinite(rh_datacube) & (rh_datacube >= 0) # all 101 RH metrics <0 should be invalid
-    invalid_mask = valid.sum(axis=-1) == 0
-    realistic = (rh_datacube < REALISTIC_MIN) | (rh_datacube > REALISTIC_MAX)
-    realistic_mask = realistic.any(axis=-1) # any value smaller than -150 or larger than 150, the whole RH profile will be masked out, 
-    nodata_mask = invalid_mask | realistic_mask # (n, rows, cols) True for nodata pixels, False for valid pixels
+    nodata_mask = valid.sum(axis=-1) == 0 # (n, rows, cols) True for nodata pixels, False for valid pixels
     n, rows, cols, bands = rh_datacube.shape
     n_pixels = n * rows * cols
     pixel_valid = nodata_mask.reshape(n_pixels, 1) == False
@@ -145,10 +161,10 @@ def mask_rh_profile(rh_datacube):
 def batch_binning(tile, bin_width=5, max_height=MAX_HEIGHT_METERS):
     """
     Vectorized binning for a batch of spatial chunks using searchsorted.
+    tile: (n, rows, cols, bands) in meters, nodata as NaN, already clipped to max_height.
     """
-    tile, n_batch, n_bands, n_rows, n_cols = prepare_rh_profile(tile) # (n, rows, cols, bands) in meters, with nodata as nan
-    tile_flat, nodata_mask, _, n_pixels = mask_rh_profile(tile) # (n, rows, cols, 1) nodata mask should work for all bands, and apply to the original data, therefore in original shape, not flattened shape.
-    tile_clean = np.minimum(tile_flat, max_height) # clip to max height, (n_pixels, n_bands) in meters, with nodata as -1.0, which is smaller than 0 and won't be counted in the histogram later.
+    n_batch, n_rows, n_cols, n_bands = tile.shape
+    tile_clean, nodata_mask, _, n_pixels = mask_rh_profile(tile) # (n_pixels, n_bands), nodata pixels as -1.0, which is smaller than 0 and won't be counted in the histogram later.
     
     # Sort along axis=1 (bands)
     profiles = np.sort(tile_clean, axis=1)
@@ -189,7 +205,11 @@ def _chunk_diversity(data, bin_width=5, max_height=MAX_HEIGHT_METERS):
         data = data[None, ...]  # add band dimension for consistency
 
     n_batch, n_bands, n_rows, n_cols = data.shape
-    hist, nodata_mask = batch_binning(data, bin_width=bin_width, max_height=max_height)
+    if n_bands != VRT_N_BANDS:
+        raise ValueError(f"Expected {VRT_N_BANDS} bands (RH{VRT_FIRST_RH}..RH100), got {n_bands}")
+    rh_m, *_ = prepare_rh_profile(data)  # (n, rows, cols, bands) in meters, nodata as NaN
+    rh_m = np.minimum(rh_m, max_height)  # clip tall values (NaN stays NaN)
+    hist, nodata_mask = batch_binning(rh_m, bin_width=bin_width, max_height=max_height)
 
     # Normalize
     total = hist.sum(axis=-1, keepdims=True)
@@ -207,11 +227,11 @@ def _chunk_diversity(data, bin_width=5, max_height=MAX_HEIGHT_METERS):
     sum_p2 = np.sum(np.where(p > 0, p ** 2, 0.0), axis=-1)
     enl2d = np.where(sum_p2 > 0, 1.0 / sum_p2, np.nan).astype(np.float32)
 
-    # CR
-    # TODO: check order of RHs? at least rh25 and rh98
-    rh25 = np.maximum(data[:, 24, :], 0)
-    rh98 = data[:, 97, :]
-    cr = np.where(rh98 > 0, (rh98 - rh25) / rh98, np.nan).astype(np.float32)
+    # CR — band i is RH(VRT_FIRST_RH + i) (see create_vrt).
+    rh25 = np.maximum(rh_m[..., RH25_INDEX - VRT_FIRST_RH], 0)
+    rh98 = rh_m[..., RH98_INDEX - VRT_FIRST_RH]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cr = np.where(rh98 > 0, (rh98 - rh25) / rh98, np.nan).astype(np.float32)
 
     fhd = fhd.reshape(n_batch, n_rows, n_cols)
     enl1d = enl1d.reshape(n_batch, n_rows, n_cols)
@@ -287,7 +307,10 @@ def compute_entropy(output_path: Path=None, tile_id:str=None, year:int=None, vrt
         n_bands = src.count
         print(f"VRT: {nx}x{ny}, {n_bands} bands, dtype={src.dtypes[0]}")
 
-    assert n_bands == 100, f"Expected 100 bands, got {n_bands}"
+    assert vrt_is_current(vrt_path), (
+        f"{vrt_path} is not an RH{VRT_FIRST_RH}..RH100 VRT (old VRTs were "
+        f"RH0..RH99) — delete it and rebuild with create_vrt"
+    )
 
     out_profile = {
         "driver": "GTiff",
@@ -404,6 +427,12 @@ class ProgressMonitor:
 
 
 
+def vrt_is_current(vrt_path) -> bool:
+    """True if the VRT holds RH1..RH100 in order (create_vrt labels each band)."""
+    with rasterio.open(Path(vrt_path).expanduser()) as src:
+        return src.descriptions == tuple(f"RH{rh}" for rh in range(VRT_FIRST_RH, N_RH))
+
+
 def create_vrt(tile_dir, vrt_path, q_idx="1"):
     # Imported lazily: the osgeo bindings need a system GDAL, which the slim
     # deployment image doesn't ship. This is the only function that needs them.
@@ -414,20 +443,27 @@ def create_vrt(tile_dir, vrt_path, q_idx="1"):
     vrt_path.parent.mkdir(parents=True, exist_ok=True)
 
     tile_id = tile_dir.stem
+    def _rh_num(path):
+        return int(Path(path).name.split("RH")[-1].split("_")[0])
+
+    # Skip RH0 (always below ground). Band i must be RH(VRT_FIRST_RH + i) —
+    # `_chunk_diversity` reads RH25/RH98 by band index.
     files = sorted(
-        glob.glob(f"{tile_dir}/RH*_Q{q_idx}.tif"),
-        key=lambda x: int(x.split("RH")[-1].split("_")[0]),
+        (f for f in glob.glob(f"{tile_dir}/RH*_Q{q_idx}.tif") if _rh_num(f) >= VRT_FIRST_RH),
+        key=_rh_num,
     )
-    files = files[:100]
     print(f"Creating VRT for {tile_id} with {len(files)} files")
-    assert len(files) == 100, f"Expected 100 files, found {len(files)}"
+    rh_nums = [_rh_num(f) for f in files]
+    assert rh_nums == list(range(VRT_FIRST_RH, N_RH)), (
+        f"Expected RH{VRT_FIRST_RH}..RH100 ({VRT_N_BANDS} files) in {tile_dir}, found {rh_nums}"
+    )
 
     vrt_options = gdal.BuildVRTOptions(separate=True)
     vrt = gdal.BuildVRT(str(vrt_path), files, options=vrt_options)
 
-    for i in range(1, len(files) + 1):
+    for i, rh in enumerate(rh_nums, start=1):
         band = vrt.GetRasterBand(i)
-        band.SetDescription(f"RH{i - 1}")
+        band.SetDescription(f"RH{rh}")
 
     vrt.FlushCache()
     vrt = None

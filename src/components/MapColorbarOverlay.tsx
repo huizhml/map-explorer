@@ -4,6 +4,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type { Layer } from './LayerControl';
 import { COLORMAP_GRADIENTS } from '../constants/colormaps';
+import { getLayerUnit as getUnit } from '../utils/layerLegend';
 
 type ColorbarGroup = {
   key: string;
@@ -32,19 +33,6 @@ function formatValue(value: number): string {
   return value.toFixed(2).replace(/\.?0+$/, '');
 }
 
-/**
- * Canopy-height rasters (anything with an RH index) are int16 decimetres, and
- * their rescale bounds are in those raw units; label them in metres. Other
- * prediction-typed layers (canopy ratio, entropy, diversity, ALS/LVIS) keep
- * their raw values with no unit.
- */
-const DECIMETRES_TO_M = 0.1;
-
-function getUnit(layer: Layer): { scale: number; unit: string } {
-  return Number.isFinite(Number(layer.metadata?.rhIndex))
-    ? { scale: DECIMETRES_TO_M, unit: 'm' }
-    : { scale: 1, unit: '' };
-}
 
 function getGroupLabel(layerNames: string[]): string {
   if (layerNames.length === 1) return layerNames[0];

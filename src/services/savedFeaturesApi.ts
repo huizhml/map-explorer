@@ -76,6 +76,8 @@ export type SavedFeaturePlotData = {
     total_length_m?: number;
     max_height?: number;
     heatmap_max_height?: number;
+    /** Height-bin width (m) the FHD / ENL were computed with; absent on older saves. */
+    fhd_interval?: number;
     line_coordinates?: Array<[number, number]>;
     samples?: Array<{
       index: number;

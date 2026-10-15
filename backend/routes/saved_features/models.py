@@ -180,10 +180,51 @@ class TransectFigureSample(BaseModel):
     cr: Optional[float] = None
 
 
+class TransectLegendClass(BaseModel):
+    color: str
+    label: str
+
+
+class TransectMapLayerLegend(BaseModel):
+    """Legend for a map-layer panel, mirroring the map's legend overlay:
+    a colorbar (`continuous`) or class swatches (`classes`, e.g. EE palettes)."""
+    kind: Literal["continuous", "classes"] = "continuous"
+    # continuous: colormap stops, low → high (CSS colours), and the value range.
+    colors: List[str] = Field(default_factory=list)
+    min: float = 0.0
+    max: float = 1.0
+    unit: str = ""
+    # classes
+    items: List[TransectLegendClass] = Field(default_factory=list, max_length=64)
+
+
+class TransectMapTileSource(BaseModel):
+    url: str  # XYZ template with {z}/{x}/{y}
+    tile_size: int = Field(default=256, ge=64, le=1024)
+    # Highest zoom the server has (the map overzooms above it).
+    max_zoom: int = Field(default=18, ge=0, le=22)
+
+
+class TransectMapLayer(BaseModel):
+    """A raster layer from the map, rendered as its own line-aligned panel
+    below the satellite snapshot. Fetched from the same XYZ tiles the map
+    shows, so colormap / rescale match what the user sees."""
+    # Map layer id — how `panel_order` refers to this panel ("layer:<id>").
+    id: Optional[str] = None
+    name: str
+    # Bottom first; several when the map layer is a group (e.g. the global VSM
+    # mosaic + per-MGRS-tile layers), alpha-composited in order.
+    sources: List[TransectMapTileSource] = Field(min_length=1, max_length=64)
+    legend: Optional[TransectMapLayerLegend] = None
+
+
 class TransectFigureRequest(BaseModel):
     samples: List[TransectFigureSample]
     x_axis: Literal["lon", "lat"] = "lon"
     height_bin_m: float = 5.0
+    # Bin width (m) the samples' FHD / ENL were computed with — shown in the
+    # metrics panel label. None = unknown (older saved transects): omitted.
+    diversity_bin_m: Optional[float] = None
     heatmap_max_height_m: float = 50.0
     heatmap_colormap_max: float = 10.0
     include_map: bool = True
@@ -223,6 +264,19 @@ class TransectFigureRequest(BaseModel):
     dpi: int = 150
     fmt: Literal["png", "jpg", "pdf"] = "png"
     satellite_buffer_m: float = 200.0
+    # When the transect is a straight line that isn't parallel to the x-axis,
+    # rotate the 2D map panels so the line runs horizontally and crop a
+    # line-aligned strip (± `satellite_buffer_m` perpendicular to the line)
+    # instead of the north-up bbox. Falls back to north-up for polylines.
+    align_map_to_transect: bool = True
+    # Map layers to draw as extra panels under the satellite snapshot (2D only).
+    map_layers: List[TransectMapLayer] = Field(default_factory=list, max_length=12)
+    map_layer_height_px: int = 220
+    # Top-to-bottom panel order, by key: "map", "layer:<map layer id>",
+    # "ee_annualchanges", "heatmap", "metrics". Panels not listed keep their
+    # default relative place after the listed ones; the JRC class strip always
+    # stays glued on top of the heatmap. Empty → default order.
+    panel_order: List[str] = Field(default_factory=list, max_length=64)
     # Higher resolution = sharper satellite imagery.  4096 px ≈ zoom level 17–18
     # for typical 200 m-buffered transects, which is near Google's max detail.
     satellite_max_width_px: int = 4096

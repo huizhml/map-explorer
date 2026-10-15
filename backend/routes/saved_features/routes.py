@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from rasterio.warp import transform_bounds
 
@@ -1330,14 +1330,37 @@ async def transect_satellite_snapshot(req: TransectSatelliteRequest):
     )
 
 
+# Hosts the transect figure may fetch map-layer tiles from, besides this
+# backend itself (the map's own /cog/tiles etc.). Keeps the endpoint from
+# being used to make the server fetch arbitrary URLs.
+_EXTRA_TILE_HOSTS = {"earthengine.googleapis.com", "tiles.maps.eox.at"}
+
+
+def _check_map_layer_urls(req: TransectFigureRequest, request: Request) -> None:
+    from urllib.parse import urlparse
+
+    own_host = request.url.hostname
+    for layer in req.map_layers:
+        for src in layer.sources:
+            parsed = urlparse(src.url)
+            if parsed.scheme not in ("http", "https") or (
+                parsed.hostname != own_host and parsed.hostname not in _EXTRA_TILE_HOSTS
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Map layer '{layer.name}': tiles must come from this API or Earth Engine.",
+                )
+
+
 @router.post("/transect/figure")
-async def transect_figure(req: TransectFigureRequest):
+async def transect_figure(req: TransectFigureRequest, request: Request):
     """Render the full transect figure (map + heatmap + metrics) as one image.
 
     All panels share the same x-axis (longitude or latitude) by construction
     via matplotlib's `sharex=True`, so longitudes line up exactly without any
     margin gymnastics on the frontend.
     """
+    _check_map_layer_urls(req, request)
     loop = asyncio.get_event_loop()
     payload, media_type = await loop.run_in_executor(
         None, lambda: locked_render(_render_transect_figure, req),

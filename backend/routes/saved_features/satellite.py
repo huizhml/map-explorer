@@ -358,7 +358,9 @@ def _stitch_bbox_xyz(
     m_per_px_target = max(0.01, span_m / max_width_px)
     m_per_px_zoom0 = 156543.03392 * max(0.1, math.cos(lat_rad))
 
-    zoom = int(math.floor(math.log2(m_per_px_zoom0 / m_per_px_target)))
+    # m_per_px_zoom0 is for 256-px tiles; larger tiles carry more pixels per
+    # zoom level, so step the zoom down to keep the output near max_width_px.
+    zoom = int(math.floor(math.log2(m_per_px_zoom0 / m_per_px_target * 256.0 / tile_px)))
     zoom = max(0, min(int(max_zoom), zoom))
 
     def _ll_to_world(lon_v: float, lat_v: float) -> Tuple[float, float]:

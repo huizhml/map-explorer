@@ -3060,6 +3060,13 @@ export interface components {
              * @default 200
              */
             satellite_buffer_m: number;
+            /** Diversity Bin M */
+            diversity_bin_m?: number | null;
+            /**
+             * Align Map To Transect
+             * @default true
+             */
+            align_map_to_transect: boolean;
             /**
              * Satellite Max Width Px
              * @default 4096

@@ -25,6 +25,8 @@ from rasterio.warp import transform as rw_transform
 from utils import (
     HEATMAP_MAX_HEIGHT,
     MAX_HEIGHT_METERS,
+    N_RH,
+    VRT_FIRST_RH,
     profile_curve_points,
     profile_y_bounds,
     pixel_vertical_profile,
@@ -306,8 +308,10 @@ def _compute_profile_at_point(
                 f"{e}\n{traceback.format_exc()}"
             )
         try:
+            # Full RH0..RH100 list (None = missing) so CR reads RH25/RH98 by number.
             raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(
-                valid_vals, bin_width=fhd_interval, max_height=MAX_HEIGHT_METERS
+                [p["value"] if not p["missing"] else None for p in profile],
+                bin_width=fhd_interval, max_height=MAX_HEIGHT_METERS,
             )
             fhd = _safe_scalar(raw_fhd)
             enl1d = _safe_scalar(raw_enl1d)
@@ -339,7 +343,9 @@ def _compute_profile_at_point(
     }
 
 
-def _derive_profile_and_metrics(valid_vals: List[float], height_bin_m: int = 5, max_height: int = MAX_HEIGHT_METERS):
+def _derive_profile_and_metrics(row_values: List[Optional[float]], height_bin_m: int = 5, max_height: int = MAX_HEIGHT_METERS):
+    """row_values: RH0..RH100 in metres, indexed by RH number (None = missing)."""
+    valid_vals = [v for v in row_values if v is not None]
 
     def _safe_scalar(v: float):
         return None if (math.isnan(v) or math.isinf(v)) else v
@@ -360,7 +366,7 @@ def _derive_profile_and_metrics(valid_vals: List[float], height_bin_m: int = 5, 
         except Exception as e:
             print(f"[vertical-profile] pixel_vertical_profile error: {e}")
         try:
-            raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(valid_vals, bin_width=hb, max_height=max_height)
+            raw_fhd, raw_enl1d, raw_enl2d, raw_cr = pixel_diversity_indices(row_values, bin_width=hb, max_height=max_height)
             fhd = _safe_scalar(float(raw_fhd))
             enl1d = _safe_scalar(float(raw_enl1d))
             enl2d = _safe_scalar(float(raw_enl2d))
@@ -698,7 +704,9 @@ async def predictions_vertical_profile_line(request: VerticalProfileLineRequest)
 
             rh_results: Dict[int, Tuple[List[Optional[float]], bool]] = {}
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(work_rh, rh) for rh in range(0, 101)]
+                # RH0 is always below ground and unused by the transect
+                # (heatmap and diversity indices only count RH >= 0): skip it.
+                futures = [pool.submit(work_rh, rh) for rh in range(VRT_FIRST_RH, N_RH)]
                 for fut in as_completed(futures):
                     rh, vals, missing = fut.result()
                     rh_results[rh] = (vals, missing)
@@ -706,7 +714,10 @@ async def predictions_vertical_profile_line(request: VerticalProfileLineRequest)
             for local_i, global_i in enumerate(indices):
                 missing_files = 0
                 row_values: List[Optional[float]] = []
-                for rh in range(0, 101):
+                for rh in range(0, N_RH):
+                    if rh < VRT_FIRST_RH:
+                        row_values.append(None)  # not read; keeps RH-number indexing
+                        continue
                     vals, file_missing = rh_results[rh]
                     val = vals[local_i] if local_i < len(vals) else None
                     if file_missing:
@@ -716,8 +727,7 @@ async def predictions_vertical_profile_line(request: VerticalProfileLineRequest)
                         row_values.append(val / 10.0 if val is not None else None)
 
                 rh_profile[global_i] = row_values
-                valid_vals = [v for v in row_values if v is not None]
-                vp, fhd, enl1d, enl2d, cr = _derive_profile_and_metrics(valid_vals, height_bin_m=request.fhd_interval)
+                vp, fhd, enl1d, enl2d, cr = _derive_profile_and_metrics(row_values, height_bin_m=request.fhd_interval)
                 vertical_profile[global_i] = vp
                 out[global_i]["fhd"] = fhd
                 out[global_i]["enl1d"] = enl1d
