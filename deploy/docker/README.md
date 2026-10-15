@@ -91,24 +91,17 @@ Why the flags in that script are what they are:
 - `--timeout 300` — a cold 3D transect render takes tens of seconds.
 - `--max-instances 4` — a cap, so a crawler cannot fan out into a real bill.
 
-## The three pages
+## The pages
 
 The frontend is a Vite multi-page build, not a single app with routes, so each
-page ships only what it uses:
+page ships only what it uses. The page list and URLs are in
+[RUNNING.md](../../RUNNING.md); what matters for this backend is that only the
+title page and the map (`explorer/`) are published.
 
-| Entry | Page | Weight (gzip) |
-|---|---|---|
-| `index.html` | Story — narrative intro | ~64 KB |
-| `explore.html` | Simple map — what reviewers get | ~137 KB |
-| `dev.html` | Full app — the working tool | ~746 KB |
-
-`dev.html` is built and deployed but **deliberately not linked from anywhere**.
-On the public backend most of what it offers (upload, saving, auxiliary layers,
-directory browsing) is blocked or unconfigured, so a reviewer who wandered into
-it would meet a wall of 403s and 503s. Reaching it requires knowing the URL.
-
-Keep it that way: adding a link is the easy mistake, and nothing in the reviewer
-flow needs it.
+The full app (`dev/`) is **not built for publishing at all**. On this read-only
+backend most of what it offers (upload, saving, auxiliary layers, directory
+browsing) is blocked or unconfigured, so a reviewer who reached it would meet a
+wall of 403s and 503s. It runs locally only, against a writable backend.
 
 ## Earth Engine
 

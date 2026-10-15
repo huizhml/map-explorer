@@ -5,10 +5,10 @@ import ForestPair from './ForestPair';
 import GediShot, { GEDI_STEPS } from './GediShot';
 import { useCountUp } from './useInView';
 import { useDeck } from './useDeck';
+import { publicUrl } from './publicUrl';
 import './story.css';
 
-/** Links are relative so they keep working under the /map-explorer/ Pages base. */
-const EXPLORE_URL = './explore.html';
+const EXPLORE_URL = `${import.meta.env.BASE_URL}explorer/`;
 
 /** `**like this**` in a chapter's prose comes out bold. */
 function emphasise(text: string) {
@@ -93,11 +93,11 @@ function Visual({
           {/* muted + playsInline are what make autoplay permitted at all; the
               poster covers the gap before it loads and the case where it never
               plays. The clip is a ping-pong, so looping has no visible cut. */}
-          <video autoPlay muted loop playsInline poster={visual.poster} aria-label={visual.alt}>
+          <video autoPlay muted loop playsInline poster={publicUrl(visual.poster)} aria-label={visual.alt}>
             {visual.sources.map((src) => (
               <source
                 key={src}
-                src={src}
+                src={publicUrl(src)}
                 type={src.endsWith('.webm') ? 'video/webm' : 'video/mp4'}
               />
             ))}
@@ -109,7 +109,7 @@ function Visual({
     case 'figure':
       return (
         <figure className="story-figure">
-          <img src={visual.src} alt={visual.alt} loading="lazy" />
+          <img src={publicUrl(visual.src)} alt={visual.alt} loading="lazy" />
           {visual.caption && <figcaption>{visual.caption}</figcaption>}
         </figure>
       );

@@ -2,6 +2,18 @@ import { Hero } from '../story/Hero';
 import '../story/story.css';
 
 /**
+ * Where the dataset is written up and where it came from, offered beside the map.
+ *
+ * A link with an empty URL is not rendered: better no button than one into a
+ * 404, so a link can be blanked here without touching the markup.
+ */
+const LINKS: { label: string; href: string }[] = [
+  { label: 'Preprint', href: 'https://eartharxiv.org/repository/view/15380/' },
+  { label: 'Data', href: 'https://source.coop/geoai-ucph/gvsm' },
+  { label: 'Code', href: 'https://github.com/huizhml/global-vegetation-structure' },
+];
+
+/**
  * The review site's about page: the story's title slide and nothing else.
  *
  * The map is the front door; this is where its footer points anyone who wants
@@ -19,7 +31,26 @@ export default function Landing() {
   return (
     <div className="story story-deck">
       <div className="story-deck__track">
-        <Hero actions={<a className="story-cta" href="./">Explore the map →</a>} />
+        <Hero
+          actions={
+            <>
+              <a className="story-cta" href={`${import.meta.env.BASE_URL}explorer/`}>
+                Explore the map →
+              </a>
+              {LINKS.filter((l) => l.href).map((l) => (
+                <a
+                  key={l.label}
+                  className="story-cta story-cta--ghost"
+                  href={l.href}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {l.label}
+                </a>
+              ))}
+            </>
+          }
+        />
       </div>
     </div>
   );

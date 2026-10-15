@@ -31,7 +31,7 @@ import './explore.css';
  * Drawn with MapLibre, which renders everything through WebGL: zooming scales
  * the tiles already on the GPU instead of redrawing a canvas every frame, which
  * is what made the OpenLayers version of this page feel heavy. The full app
- * (dev.html) is a separate page and still on OpenLayers.
+ * (dev/) is a separate page and still on OpenLayers.
  *
  * MapLibre zoom levels are OpenLayers' minus one; every zoom constant on this
  * page is in MapLibre's numbering.

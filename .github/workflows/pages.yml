@@ -28,59 +28,41 @@ jobs:
 
       - run: npm ci
 
+      # The site itself, under this repo's own path, until it has somewhere
+      # better to live: setting the REVIEW_SITE_REPO variable moves it (see the
+      # review-site job) and these two steps stop running, so the two never
+      # publish at once.
+      #
       # `build:web` skips `tsc -b` on purpose: the repo currently has 17
       # pre-existing type errors, and Vite strips types without checking them
       # anyway, so type-checking here would only block deploys. Run
       # `npm run build` locally to see them.
-      - run: npm run build:web -- --base=/${{ github.event.repository.name }}/
+      - if: vars.REVIEW_SITE_REPO == ''
+        run: npm run build:web -- --base=/${{ github.event.repository.name }}/
         env:
           # Repo Settings → Secrets and variables → Actions → Variables.
           # e.g. https://your-user-gvsm-map-explorer-api.hf.space
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
 
-      # The review site, written into this artifact's root: /<repo>/ is the
-      # map and /<repo>/about.html its title page. It shares the directory
-      # with dev.html rather than sitting in a subfolder, so a bare URL lands
-      # somewhere real instead of on a 404.
-      #
-      # This step is what puts a map on the site at all — build:web above no
-      # longer builds explore.html, so that the app is not published twice
-      # under two names.
-      #
-      # Only while it has nowhere better to live: setting the REVIEW_SITE_REPO
-      # variable moves it elsewhere (see the review-site job) and this step
-      # stops running, so the two never publish at once.
-      #
-      # Must run *after* build:web, which empties dist/; this one adds to it.
+      # The map lived at explore.html before it moved to explorer/.
       - if: vars.REVIEW_SITE_REPO == ''
-        run: npm run build:review -- --base=/${{ github.event.repository.name }}/
-        env:
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+        run: scripts/write-redirect.sh dist/explore.html ./explorer/
 
-      # Once the review site has moved, its old URLs here would 404 — and some
-      # of them are already in reviewers' hands. Leave a forwarding page at
-      # each, carrying any query string and hash across.
+      # Once the site has moved, this repo's Pages holds nothing but forwarding
+      # pages for the URLs already in reviewers' hands: the bare URL (the title
+      # page) and explore.html (the map). dev.html is not forwarded — the full
+      # app is local only now.
       - if: vars.REVIEW_SITE_REPO != ''
-        name: Point the old review URLs at the new site
+        name: Point the old URLs at the new site
         env:
           REVIEW_SITE_REPO: ${{ vars.REVIEW_SITE_REPO }}
           REVIEW_SITE_PATH: ${{ vars.REVIEW_SITE_PATH }}
         run: |
           set -euo pipefail
           eval "$(scripts/review-site-target.sh)"
-          for page in index.html explore.html about.html; do
-            target="$REVIEW_SITE_URL"
-            [ "$page" = about.html ] && target="${REVIEW_SITE_URL}about.html"
-            cat > "dist/$page" <<HTML
-          <!doctype html>
-          <meta charset="utf-8">
-          <meta http-equiv="refresh" content="0; url=$target">
-          <link rel="canonical" href="$target">
-          <title>Moved</title>
-          <script>location.replace('$target' + location.search + location.hash)</script>
-          <p>This page has moved to <a href="$target">$target</a>.</p>
-          HTML
-          done
+          rm -rf dist
+          scripts/write-redirect.sh dist/index.html "$REVIEW_SITE_URL"
+          scripts/write-redirect.sh dist/explore.html "${REVIEW_SITE_URL}explorer/"
 
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -147,7 +129,7 @@ jobs:
       - name: Build the review site
         env:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
-        run: npm run build:review -- --base="$REVIEW_SITE_BASE" --outDir ../dist-review
+        run: npm run build:web -- --base="$REVIEW_SITE_BASE" --outDir dist-review
 
       - name: Push it to the review repository
         env:

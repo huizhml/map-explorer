@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import data from './forest-pair.json';
 import { ease, useTween } from './tween';
+import { publicUrl } from './publicUrl';
 
 /**
  * Chapter 1: two places a map from above cannot tell apart.
@@ -286,7 +287,7 @@ export default function ForestPair({ active }: { active: boolean }) {
       return (
         <img
           key={level.src}
-          src={level.src}
+          src={publicUrl(level.src)}
           alt=""
           // Scaled rather than resized: a transform is composited, so the
           // flight does not relayout the panel sixty times a second.

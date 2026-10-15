@@ -153,15 +153,8 @@ export function SimpleControls(props: Props) {
           Holding the logos too, so the two travel to the bottom of the panel
           together: the foot is what carries `margin-top: auto`. */}
       <footer className="ex-panel__foot">
-        {/* On the review site the map is the index, and './about.html' is its
-            title page. On the main site './index.html' is the story deck when
-            it is published; while it is not there is no such page, so there is
-            no link either: better nothing than a link into a 404. */}
-        {__REVIEW__ ? (
-          <a href="./about.html">About this map</a>
-        ) : (
-          __STORY__ && <a href="./index.html">← Story</a>
-        )}
+        {/* The map lives one level below the site's title page. */}
+        <a href={import.meta.env.BASE_URL}>About this map</a>
 
         <PartnerLogos variant="panel" />
       </footer>

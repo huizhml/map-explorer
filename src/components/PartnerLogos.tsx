@@ -9,9 +9,9 @@ import './partner-logos.css';
  * landing page and another on the map would be a claim about who was involved,
  * not a styling difference.
  *
- * Files live in public/logos/ and are referenced relatively, like HERO_IMAGE —
- * every page of both builds sits at the site root, and a relative path survives
- * the Pages base where an absolute one does not.
+ * Files live in public/logos/ and are referenced against the site base, like
+ * HERO_IMAGE — the map is a directory below the title page, so a page-relative
+ * path would differ between the two.
  *
  * One web-format file per logo, flattened out of the vendor packages: those ship
  * print formats (.ai, .eps, CMYK, Pantone) that would otherwise be published
@@ -49,7 +49,7 @@ export function PartnerLogos({ variant }: { variant: 'hero' | 'panel' }) {
               a fixed height would override the width cap and let the widest
               marks run out of the sidebar. */}
           <img
-            src={`./logos/${l.file}`}
+            src={`${import.meta.env.BASE_URL}logos/${l.file}`}
             alt={l.alt}
             style={l.scale === 1 ? undefined : ({ '--pl-scale': l.scale } as CSSProperties)}
             loading="lazy"

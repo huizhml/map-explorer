@@ -27,9 +27,9 @@ type Site = {
   transect?: Transect | null;
 };
 
-// Relative so it resolves under the /map-explorer/ Pages base as well as at root.
-const BUNDLE_URL = './sites/sites.json';
-const IMAGE_BASE = './sites/';
+// Against the site base, not the page: the map is a directory below it.
+const BUNDLE_URL = `${import.meta.env.BASE_URL}sites/sites.json`;
+const IMAGE_BASE = `${import.meta.env.BASE_URL}sites/`;
 
 const LINE_SOURCE = 'site-transect';
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };

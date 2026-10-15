@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from 'react';
 import data from './gedi-shot.json';
 import { ease, useNarrow, useTween } from './tween';
+import { publicUrl } from './publicUrl';
 
 /**
  * What one GEDI bar actually is, animated as the chapter scrolls. Six beats,
@@ -623,7 +624,7 @@ export default function GediShot({ step, scrub = 0 }: { step: number; scrub?: nu
           <g transform={`translate(${STAGE_X} ${STAGE_Y.toFixed(1)}) scale(${STAGE_SCALE.toFixed(4)})`}>
           <g clipPath={`url(#${mapId})`}>
             <image
-              href={backdrop.src}
+              href={publicUrl(backdrop.src)}
               x={backdrop.x}
               y={backdrop.y}
               width={backdrop.w}

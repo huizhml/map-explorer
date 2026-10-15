@@ -28,14 +28,14 @@ export const HERO_LEDE =
 /**
  * Hero background. Drop a file at public/story/hero.webp and it appears; leave
  * it out and the title slide falls back to flat dark, which is why this is an
- * inline style with a relative URL rather than a CSS url(): a missing file is a
- * 404 at runtime instead of a failed build, and the path survives the Pages
+ * inline style with a runtime URL rather than a CSS url(): a missing file is a
+ * 404 at runtime instead of a failed build, and the path follows the site
  * base.
  *
  * WebP, ~2560 px wide, under ~300 KB. The story page is 64 KB of code — an
  * unoptimised background would dominate the first paint several times over.
  */
-export const HERO_IMAGE = './story/hero.webp';
+export const HERO_IMAGE = `${import.meta.env.BASE_URL}story/hero.webp`;
 
 export function Hero({ actions, hidden }: { actions: ReactNode; hidden?: boolean }) {
   return (

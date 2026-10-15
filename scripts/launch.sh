@@ -465,7 +465,7 @@ launch_frontend() {
   # Verify end-to-end
   sleep 1
   if curl -s -o /dev/null -w "%{http_code}" "http://localhost:$FRONTEND_PORT" 2>/dev/null | grep -q "[2345]"; then
-    ok "Frontend verified: http://localhost:$FRONTEND_PORT"
+    ok "Frontend verified: http://localhost:$FRONTEND_PORT/vsm"
   else
     warn "Frontend not responding yet — may need a moment to start"
   fi
@@ -719,11 +719,12 @@ case "${1:-all}" in
     echo -e "  ${BOLD}${GREEN}🚀 Everything is up!${RESET}"
     echo ""
     echo -e "  Backend  → ${BOLD}http://localhost:${BACKEND_PORT}${RESET}"
-    # /dev.html, not /: the root is the public story page since the frontend
-    # became a multi-page build. The full tool lives at /dev.html.
-    echo -e "  Frontend → ${BOLD}http://localhost:${FRONTEND_PORT}/dev.html${RESET}  ${DIM}(full app)${RESET}"
-    echo -e "             ${DIM}http://localhost:${FRONTEND_PORT}/explore.html  (simple map)${RESET}"
-    echo -e "             ${DIM}http://localhost:${FRONTEND_PORT}/              (story)${RESET}"
+    # Same paths as the published site (vite.config.ts), plus dev/ and story/,
+    # which are local only.
+    echo -e "  Frontend → ${BOLD}http://localhost:${FRONTEND_PORT}/vsm/dev${RESET}       ${DIM}(full app)${RESET}"
+    echo -e "             ${DIM}http://localhost:${FRONTEND_PORT}/vsm/explorer  (map)${RESET}"
+    echo -e "             ${DIM}http://localhost:${FRONTEND_PORT}/vsm           (landing page)${RESET}"
+    echo -e "             ${DIM}http://localhost:${FRONTEND_PORT}/vsm/story     (story draft)${RESET}"
     echo ""
     echo -e "  ${DIM}$0 restart backend${RESET}   restart backend only"
     echo -e "  ${DIM}$0 restart frontend${RESET}  restart frontend only"
