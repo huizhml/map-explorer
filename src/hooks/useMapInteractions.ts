@@ -407,7 +407,7 @@ export function useMapInteractions(updateLayersList: () => void) {
                 lat: s.lat,
                 profile: (
                   rhMatrix[s.index]
-                  ?? Array.from({ length: Math.max(1, data.max_height ?? rhMatrix[0]?.length ?? 0) }, () => null)
+                  ?? Array.from({ length: Math.max(1, data.heatmap_max_height ?? rhMatrix[0]?.length ?? 0) }, () => null)
                 ).map((value, rh) => ({
                   rh,
                   value,

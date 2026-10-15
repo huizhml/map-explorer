@@ -351,17 +351,19 @@ def _derive_profile_and_metrics(row_values: List[Optional[float]], height_bin_m:
         return None if (math.isnan(v) or math.isinf(v)) else v
 
     hb = max(1, min(int(height_bin_m), int(max_height)))
-    # Always return a fixed profile shape derived from configured MAX_HEIGHT.
-    # even when there are not enough valid samples or metrics computation fails.
-    n_bins = max(1, int(max_height / hb))
-    vertical_profile: List[Optional[float]] = [None] * n_bins
+    # Always return the heatmap's fixed shape — 1 m bins over [0, HEATMAP_MAX_HEIGHT],
+    # as pixel_vertical_profile produces — even when there are not enough valid
+    # samples or the histogram fails. The heatmap sizes its rows from the longest
+    # profile, so a placeholder sized from MAX_HEIGHT / fhd_interval (150 rows at
+    # 1 m) squashed every real profile into the bottom third of the axis.
+    vertical_profile: List[Optional[float]] = [None] * int(HEATMAP_MAX_HEIGHT)
     fhd, enl1d, enl2d, cr = None, None, None, None
     if len(valid_vals) >= 3:
         # Convert the histogram first and unconditionally — diversity-metrics
         # failures (e.g. IndexError on sparse profiles) must not strand
         # `vertical_profile` as a numpy array nor wipe out the profile shape.
         try:
-            vp = pixel_vertical_profile(valid_vals)
+            vp = pixel_vertical_profile(valid_vals, interval=1, max_height=HEATMAP_MAX_HEIGHT)
             vertical_profile = vp.tolist() if hasattr(vp, "tolist") else list(vp)
         except Exception as e:
             print(f"[vertical-profile] pixel_vertical_profile error: {e}")

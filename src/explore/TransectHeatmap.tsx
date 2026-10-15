@@ -167,7 +167,12 @@ export function TransectHeatmap({ transect, max = 10 }: { transect: Transect; ma
     if (!canvas || !samples?.length) return;
 
     const cols = samples.length;
-    const rows = samples[0].profile.length;
+    // Rows from profiles that hold data, not samples[0]: an empty sample's
+    // placeholder can be a different length and would rescale every column.
+    const rows = samples.reduce(
+      (acc, s) => (s.profile.some((v) => v != null) ? Math.max(acc, s.profile.length) : acc),
+      0,
+    );
     if (!rows) return;
 
     canvas.width = cols;

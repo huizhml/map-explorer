@@ -679,10 +679,19 @@ export function TransectProfileHeatmap({
   };
   const hb = Math.max(1, heightBinM);
   const maxHm = Math.max(1, Math.round(heatmapMaxHeight ?? DEFAULT_HEATMAP_MAX_HEIGHT_M));
-  /** Vertical bins; `profile[].rh` is bin index 0 … nBins−1 (histogram), not height in meters. */
+  /**
+   * Vertical bins; `profile[].rh` is bin index 0 … nBins−1 (histogram), not height in meters.
+   * Counted only over profiles that hold data: all-empty placeholders in older
+   * transects can be longer (MAX_HEIGHT / bin) and would squash the real ones.
+   */
   const nBins = Math.max(
     1,
-    samples.reduce((acc, s) => Math.max(acc, s.profile?.length ?? 0), 0) || Math.round(maxHm / hb),
+    samples.reduce(
+      (acc, s) => (s.profile?.some((p) => p.value != null && !p.missing)
+        ? Math.max(acc, s.profile.length)
+        : acc),
+      0,
+    ) || Math.round(maxHm / hb),
   );
   /** Meters per row — derived from domain so labels match the grid even if `heightBinM` prop drifts. */
   const binMeters = maxHm / nBins;

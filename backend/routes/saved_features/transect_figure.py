@@ -952,9 +952,16 @@ def _render_transect_figure(req: TransectFigureRequest) -> Tuple[bytes, str]:
     if "heatmap" in panels:
         ax = axes[panels.index("heatmap")]
         max_h = max(1.0, req.heatmap_max_height_m)
+        # Rows come from profiles that hold data: all-empty placeholders in
+        # older saved transects can be longer (MAX_HEIGHT / bin) and would
+        # squash the real profiles toward the ground.
         n_bins = max(
             1,
-            max((len(s.profile) for s in samples), default=int(round(max_h / max(1.0, req.height_bin_m)))),
+            max(
+                (len(s.profile) for s in samples
+                 if any(not p.missing and p.value is not None for p in s.profile)),
+                default=int(round(max_h / max(1.0, req.height_bin_m))),
+            ),
         )
         grid = np.full((n_bins, len(samples)), np.nan, dtype=float)
         for i, s in enumerate(samples):
