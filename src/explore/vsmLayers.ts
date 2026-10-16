@@ -117,15 +117,18 @@ export class VsmLayers {
   }
 
   /**
-   * The COG each RH is read from at a point: the mosaic, as the OpenLayers
-   * page did, or — where there is no mosaic — the 10 m tile under the point.
+   * The COG each RH is read from at a point: the 10 m tile under the point, or
+   * — where there is none — the mosaic. Not the mosaic first: its pixels are
+   * 0.01° (~1.1 km), so every click inside one read the same value however
+   * much the 10 m map under the cursor varied, and disagreed with the profile,
+   * which is read from the tiles.
    */
   async readUrls(lon: number, lat: number): Promise<{ rh: number; url: string | null }[]> {
     const tile = this.grid.tiles.find((t) => lon >= t.bbox[0] && lon <= t.bbox[2] && lat >= t.bbox[1] && lat <= t.bbox[3]);
     return Promise.all(
       [...this.byRh.values()].map(async (s) => ({
         rh: s.rh,
-        url: (await this.mosaicCog(s.rh)) ?? (tile ? await this.tileCog(tile.name, s.rh) : null),
+        url: (tile ? await this.tileCog(tile.name, s.rh) : null) ?? (await this.mosaicCog(s.rh)),
       })),
     );
   }
