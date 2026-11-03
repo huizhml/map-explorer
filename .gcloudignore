@@ -20,3 +20,9 @@ test_*.py
 .env*
 keys/
 *.log
+# Local working data of the dev backend (saved-feature images, the local
+# saved_features.db): 1.5 GB that `COPY backend/` would bake into the image.
+# The container reads its state from deploy/data/ instead (entrypoint.sh).
+backend/data/
+# Prototypes and their downloaded data; nothing in the image uses them.
+spike/
