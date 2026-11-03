@@ -49,7 +49,7 @@ Google's perpetual free tier (not the $300 trial credit) gives you, per month:
 | Cloud Run requests | 2,000,000 | Not reachable at review traffic |
 | Cloud Run vCPU | 180,000 vCPU-s | At `--cpu 2`, **25 h/month of request-handling time**. CPU is only billed while a request is in flight. |
 | Cloud Run memory | 360,000 GiB-s | At `--memory 2Gi`, 50 h — so vCPU binds first |
-| Cloud Run egress | 1 GB **from North America** | Does **not** cover europe-north1 |
+| Cloud Run egress | 1 GB **from North America** | Covers us-west1 (the service moved there on 2026-10-28; it did not cover europe-north1) |
 | Artifact Registry | 0.5 GB | The image is ~1.5–2.5 GB, so this is exceeded |
 | Cloud Build | 2,500 build-min | A build takes ~5–10 min |
 

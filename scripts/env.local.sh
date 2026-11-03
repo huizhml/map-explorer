@@ -49,6 +49,15 @@ export GDAL_INGESTED_BYTES_AT_OPEN=32768
 export GDAL_CACHEMAX=256
 export VSI_CACHE=TRUE
 export VSI_CACHE_SIZE=536870912
+# The source.coop proxy answers a few requests per thousand with 520/522;
+# GDAL only retries 429/502/503/504 unless told otherwise (same as Cloud Run).
+export GDAL_HTTP_RETRY_CODES=ALL
+export GDAL_HTTP_MAX_RETRY=4
+export GDAL_HTTP_RETRY_DELAY=1
+# A few requests in a hundred stall at source.coop for ~2 min (measured
+# 2026-10-29: 4 of 101 levels), and the cube waits for its slowest level.
+# Typical requests take 1–6 s; cut a stalled one off and let the backend retry.
+export GDAL_HTTP_TIMEOUT=15
 
 # Headless matplotlib; without it figure rendering tries to open a window.
 export MPLBACKEND=Agg

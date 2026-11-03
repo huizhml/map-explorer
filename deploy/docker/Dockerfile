@@ -6,10 +6,16 @@
 # BUILD CONTEXT IS THE REPO ROOT:
 #   docker build -f deploy/docker/Dockerfile -t map-explorer-api .
 #
-# python:3.11-slim is enough: the rasterio wheel bundles its own GDAL 3.9, and
-# that build decodes the LERC_ZSTD COGs on source.coop (verified). No
-# osgeo/gdal base image needed — backend/utils.py imports osgeo lazily.
-FROM python:3.11-slim
+# python:3.12-slim is enough: the rasterio 1.5 wheel bundles its own GDAL 3.12
+# (rasterio >= 1.5 needs Python >= 3.12), and that build decodes the LERC_ZSTD
+# COGs on source.coop (verified). No osgeo/gdal base image needed —
+# backend/utils.py imports osgeo lazily.
+#
+# GDAL >= 3.11 matters: it is the first version that reads a tile-interleaved
+# multi-band COG (INTERLEAVE=TILE, one file per tile holding RH0..RH100) with
+# one merged range request per block instead of one request per band. With
+# GDAL 3.9 the same point profile took 232 requests / ~80 s (measured 2026-10-28).
+FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \

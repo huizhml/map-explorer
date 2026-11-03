@@ -946,28 +946,61 @@ body {
   padding: 1rem 0;
 }
 
+/* The indices: small stats, label above value, no box. Height max beside
+   them is set the same way, so the line reads as one row of figures. */
 .ex-profile__metrics {
   display: flex;
-  gap: 1.1rem;
-  margin: 0.5rem 0 0;
-  padding-top: 0.5rem;
-  border-top: 1px solid #eef2f0;
+  flex-wrap: wrap;
+  gap: 0.3rem 1.25rem;
+  margin: 0;
 }
 .ex-profile__metrics div {
   display: flex;
   flex-direction: column;
+  gap: 0.15rem;
+}
+.ex-profile__metrics dt,
+.ex-profile__bar .ex-profile__ymax > span:first-child {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8b9993;
+  line-height: 1;
 }
 .ex-profile__metrics dt {
-  font-size: 0.66rem;
-  color: #8b9993;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  cursor: help;
 }
 .ex-profile__metrics dd {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   font-weight: 600;
+  line-height: 1.1;
+  color: #1f2d27;
   font-variant-numeric: tabular-nums;
+}
+/* Indices left, Height max right: one line right above the charts. */
+.ex-profile__bar {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  margin: 0.5rem 0 0.1rem;
+}
+.ex-profile__bar .ex-profile__metrics {
+  flex: 1 1 auto;
+}
+.ex-profile__bar .ex-profile__ymax {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+  margin-left: auto;
+}
+.ex-profile__bar .ex-profile__ymax > span:last-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: #6b7a74;
 }
 
 /* ---------------------------------------------------------- random site ---- */
@@ -1438,4 +1471,1045 @@ body {
 }
 .ex-colorbar__ticks span:last-child {
   margin-right: -0.1rem;
+}
+
+/* ------------------------------------------------------ card + 3D cube ---- */
+
+/* The card carries the cube, so it takes a fixed width instead of
+   shrink-wrapping its text: the canvas needs a size to render into. */
+.ex-reading--cube {
+  width: min(540px, calc(100vw - 4rem));
+  box-sizing: border-box;
+  padding: 0.85rem 1rem 1rem;
+  border-radius: 12px;
+  box-shadow: 0 10px 34px rgba(16, 40, 32, 0.16), 0 1px 3px rgba(16, 40, 32, 0.08);
+}
+@media (min-width: 900px) {
+  .ex-reading--cube {
+    width: min(540px, calc(100vw - 360px - var(--ex-flyout-clear)));
+  }
+}
+
+.ex-reading__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.ex-reading__where {
+  min-width: 0;
+}
+.ex-reading--cube .ex-reading__place {
+  font-size: 0.95rem;
+  font-weight: 650;
+  color: #1f2d27;
+}
+.ex-reading--cube .ex-reading__coords {
+  margin-top: 0.1rem;
+}
+.ex-reading__moved {
+  color: #10796a;
+}
+.ex-reading__actions {
+  display: flex;
+  gap: 0.3rem;
+  flex: none;
+}
+.ex-icon-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e3e8e5;
+  border-radius: 8px;
+  background: #fff;
+  color: #47544e;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.ex-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ex-spinner--solo {
+  margin: 0;
+}
+.ex-icon-btn:hover {
+  background: #f1f6f4;
+  border-color: #cfe0d9;
+  color: #10796a;
+}
+.ex-icon-btn:focus-visible,
+.ex-seg button:focus-visible,
+.ex-cube__tools button:focus-visible {
+  outline: 2px solid #10796a;
+  outline-offset: 1px;
+}
+
+.ex-share {
+  margin-top: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: #f4f7f6;
+  border: 1px solid #e3e8e5;
+  font-size: 0.72rem;
+  color: #47544e;
+}
+.ex-share.is-copied {
+  background: #ecf7f3;
+  border-color: #cbe6dc;
+}
+.ex-share__msg {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-bottom: 0.3rem;
+}
+.ex-share.is-copied .ex-share__msg {
+  color: #10796a;
+  font-weight: 600;
+}
+.ex-share input {
+  width: 100%;
+  box-sizing: border-box;
+  font: 0.68rem ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #47544e;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid #d5ddd9;
+  border-radius: 5px;
+  background: #fff;
+}
+
+.ex-reading__values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+.ex-chip {
+  display: inline-block;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  background: #f1f5f3;
+  border: 1px solid #e3e8e5;
+  font-size: 0.8rem;
+  font-weight: 650;
+  color: #1f2d27;
+  font-variant-numeric: tabular-nums;
+}
+.ex-chip--muted {
+  font-weight: 500;
+  color: #8b9993;
+}
+
+/* Section titles inside the card. */
+.ex-sec__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.95rem 0 0.4rem;
+}
+.ex-sec__head h3 {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #5d6c66;
+}
+.ex-sec__head > span {
+  font-size: 0.68rem;
+  color: #8b9993;
+  font-variant-numeric: tabular-nums;
+}
+
+.ex-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 0.4rem;
+  vertical-align: -1px;
+  border: 2px solid #cfe7e1;
+  border-top-color: #10796a;
+  border-radius: 50%;
+  animation: ex-spin 0.8s linear infinite;
+}
+@keyframes ex-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ex-cube--placeholder {
+  height: 300px;
+  margin-top: 0.95rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e3e8e5;
+  border-radius: 10px;
+  color: #8b9993;
+  font-size: 0.75rem;
+}
+
+.ex-cube__view {
+  position: relative;
+  height: 310px;
+  background: #fff;
+  border: 1px solid #e3e8e5;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.ex-cube__view canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  outline: none;
+}
+.ex-cube__view canvas:focus-visible {
+  box-shadow: inset 0 0 0 2px #10796a;
+}
+.ex-cube__tip {
+  position: fixed;
+  display: none;
+  pointer-events: none;
+  z-index: 1100;
+  background: rgba(20, 28, 25, 0.92);
+  color: #e4ebe8;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+.ex-cube__tip b {
+  color: #fff;
+}
+.ex-cube__tip-hint {
+  color: #9fb3ab;
+  font-size: 0.64rem;
+}
+.ex-cube__tools {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+}
+.ex-cube__tools button {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e3e8e5;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #47544e;
+  cursor: pointer;
+}
+.ex-cube__tools button:hover {
+  color: #10796a;
+  background: #f1f6f4;
+}
+.ex-cube__status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  text-align: center;
+  color: #6b7a74;
+  font-size: 0.75rem;
+  pointer-events: none;
+}
+
+/* Top-left of the view: the overview image (enlarged / saved page) and the
+   colour bar under it. The cube's labels sit low, so this corner is free. */
+.ex-cube__topleft {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+.ex-cube__topleft > * {
+  pointer-events: auto;
+}
+.ex-cube__overview {
+  margin: 0;
+  width: 180px;
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e3e8e5;
+  box-shadow: 0 2px 8px rgba(16, 40, 32, 0.08);
+}
+.ex-cube__overview canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 5px;
+}
+.ex-cube__overview.is-pickable canvas {
+  cursor: crosshair;
+  touch-action: none;
+}
+.ex-cube__overview figcaption {
+  margin-top: 3px;
+  font-size: 0.6rem;
+  color: #6b7a74;
+  text-align: center;
+}
+.ex-cube__legend {
+  /* As wide as its title, never wrapped onto two lines. */
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 150px;
+  padding: 5px 8px 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #e3e8e5;
+  font-size: 0.62rem;
+  color: #5d6c66;
+  backdrop-filter: blur(4px);
+}
+.ex-cube__legend-title {
+  white-space: nowrap;
+  margin-bottom: 3px;
+  font-weight: 600;
+}
+.ex-cube__legend-note {
+  margin-top: 2px;
+  color: #8b9993;
+}
+.ex-cube__cbar-ramp {
+  position: relative;
+  height: 8px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+/* The part of the ramp drawn transparent in the cube: a checkerboard, the
+   usual sign for "see-through". */
+.ex-cube__cbar-clear {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: repeating-conic-gradient(#d5ddd9 0 25%, #fff 0 50%) 0 0 / 6px 6px;
+}
+/* RH surfaces: one swatch per level, a button that hides or shows it. */
+.ex-cube__levels {
+  display: grid;
+  grid-template-columns: repeat(5, auto);
+  gap: 2px 4px;
+}
+.ex-cube__levels button {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 3px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  color: #47544e;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.ex-cube__levels button:hover {
+  background: #eef2f0;
+}
+.ex-cube__levels i {
+  width: 12px;
+  height: 8px;
+  border-radius: 2px;
+}
+.ex-cube__levels button.is-off {
+  color: #aab5b0;
+}
+.ex-cube__levels button.is-off i {
+  opacity: 0.2;
+}
+.ex-cube__cbar-ticks {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.ex-cube__cbar-ticks input {
+  width: 3.4em;
+  margin-right: 2px;
+  font: inherit;
+  padding: 0 0.15rem;
+  border: 1px solid #d5ddd9;
+  border-radius: 4px;
+  text-align: right;
+  background: #fff;
+}
+
+.ex-cube__controls {
+  font-size: 0.72rem;
+  color: #47544e;
+  container-type: inline-size;
+}
+/* Switches left (as wide as their buttons need), sliders right. One grid of
+   four rows, each a label line and a 24 px control line shared by both
+   columns (subgrid), so a switch and its slider always line up. */
+.ex-cube__panes {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-rows: repeat(4, auto 24px);
+  grid-auto-flow: column;
+  column-gap: 0.9rem;
+}
+.ex-cube__rows,
+.ex-cube__sliders {
+  display: contents;
+}
+.ex-cube__panes .ex-field-mini,
+.ex-cube__panes .ex-cube__slider {
+  grid-row: span 2;
+  grid-template-rows: subgrid;
+  row-gap: 0;
+}
+.ex-cube__panes .ex-field-mini {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+/* The label line (switches, and Opacity in RH surfaces): room above it is
+   the gap between rows. */
+.ex-cube__panes .ex-field-mini__label,
+.ex-cube__panes .ex-cube__slider--field .ex-cube__axis {
+  align-self: end;
+  padding: 0.5rem 0 0.25rem;
+  line-height: 1;
+}
+/* The X / Y / Z sliders take one line each — name, range, value — on the
+   control line, level with the buttons beside them. */
+.ex-cube__sliders .ex-cube__slider {
+  grid-template-columns: 4.3rem minmax(0, 1fr) 5.4rem;
+  grid-template-areas: '. . .' 'axis range out';
+  column-gap: 0.5rem;
+}
+.ex-cube__sliders .ex-cube__slider .ex-cube__axis,
+.ex-cube__sliders .ex-cube__slider output {
+  align-self: center;
+}
+/* Opacity: label above like a switch, then range and value on the control line. */
+.ex-cube__panes .ex-cube__slider--field {
+  grid-template-areas: 'axis axis' 'range out';
+}
+.ex-cube__panes .ex-cube__slider--field output {
+  align-self: center;
+}
+/* Too narrow for two columns (enlarged card, saved page): sliders under the switches. */
+@container (max-width: 440px) {
+  .ex-cube__panes {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-flow: row;
+  }
+  .ex-cube__sliders .ex-cube__slider {
+    grid-row: auto;
+    grid-template-rows: 28px;
+    grid-template-areas: 'axis range out';
+  }
+  .ex-cube__sliders .ex-cube__slider:first-child {
+    margin-top: 0.4rem;
+  }
+}
+.ex-seg.is-disabled button {
+  color: #b5c0bb;
+  cursor: default;
+}
+.ex-cube__controls .ex-seg button {
+  height: 20px;
+  padding: 0 0.45rem;
+}
+.ex-field-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  min-width: 0;
+}
+.ex-field-mini__label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8b9993;
+}
+
+/* Segmented control: a pill track with the chosen option raised. */
+.ex-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: #eef2f0;
+}
+.ex-seg button {
+  flex: 1;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #5d6c66;
+  padding: 0.28rem 0.5rem;
+  font: inherit;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ex-seg button:hover {
+  color: #1f2d27;
+}
+.ex-seg--wrap {
+  flex-wrap: wrap;
+}
+.ex-seg--wrap button {
+  flex: 1 1 auto;
+}
+.ex-seg button.is-on {
+  background: #fff;
+  color: #10796a;
+  font-weight: 650;
+  box-shadow: 0 1px 2px rgba(16, 40, 32, 0.14);
+}
+
+/* Two lines: name and value, then the full-width range. */
+.ex-cube__slider {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto 22px;
+  grid-template-areas: 'axis out' 'range range';
+  gap: 0.15rem 0.5rem;
+}
+.ex-cube__slider .ex-cube__axis,
+.ex-cube__slider output {
+  align-self: end;
+  line-height: 1;
+}
+/* Slider names are set like the switch labels, so each row reads as one line. */
+.ex-cube__panes .ex-cube__axis,
+.ex-cube__slider--field .ex-cube__axis {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8b9993;
+}
+.ex-cube__slider .ex-cube__axis {
+  grid-area: axis;
+}
+.ex-cube__slider output {
+  grid-area: out;
+}
+.ex-cube__slider input[type='range'] {
+  grid-area: range;
+  align-self: center;
+}
+.ex-cube__axis {
+  color: #5d6c66;
+  white-space: nowrap;
+}
+/* The axis letter is set like the name (no badge); the axis the keys move
+   (X / Y / Z) turns green. */
+.ex-cube__axis b {
+  margin-right: 0.3rem;
+  color: #5d6c66;
+}
+.ex-cube__slider.is-active .ex-cube__axis,
+.ex-cube__slider.is-active .ex-cube__axis b {
+  color: #10796a;
+}
+/* Slim range inputs: a 3 px track and an 11 px thumb, instead of the
+   browser's thick default. */
+.ex-cube__controls input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.ex-cube__controls input[type='range']::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: #d5ddd9;
+}
+.ex-cube__controls input[type='range']::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: #d5ddd9;
+}
+.ex-cube__controls input[type='range']::-moz-range-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: #10796a;
+}
+.ex-cube__controls input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -4px;
+  border: 0;
+  border-radius: 50%;
+  background: #10796a;
+  box-shadow: 0 0 0 2px #fff;
+}
+.ex-cube__controls input[type='range']::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 50%;
+  background: #10796a;
+  box-shadow: 0 0 0 2px #fff;
+}
+/* Keyboard focus: a soft ring round the thumb, not a box round the track. */
+.ex-cube__controls input[type='range']:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 4px rgba(16, 121, 106, 0.3);
+}
+.ex-cube__controls input[type='range']:focus-visible::-moz-range-thumb {
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 4px rgba(16, 121, 106, 0.3);
+}
+.ex-cube__controls input[type='range']:focus-visible {
+  outline: none;
+}
+.ex-cube__slider.is-disabled {
+  opacity: 0.4;
+}
+.ex-cube__slider.is-disabled input[type='range'] {
+  cursor: default;
+}
+.ex-cube__slider.is-disabled input[type='range']::-webkit-slider-thumb {
+  background: #aab5b0;
+}
+.ex-cube__slider.is-disabled input[type='range']::-moz-range-thumb {
+  background: #aab5b0;
+}
+.ex-cube__slider output {
+  text-align: right;
+  color: #8b9993;
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ex-cube__note {
+  margin: 0.35rem 0 0;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  color: #47544e;
+}
+
+/* Why the window moved: always shown in full, a pale note. */
+.ex-cube__shift {
+  margin: 0.5rem 0 0;
+  padding: 0.3rem 0.55rem;
+  border: 1px solid #f5ecd3;
+  border-radius: 7px;
+  background: #fffcf4;
+  color: #5d6c66;
+  font-size: 0.66rem;
+  line-height: 1.4;
+}
+/* Overlays on the cube under its tool buttons: How to use, More options. */
+.ex-cube__float {
+  position: absolute;
+  z-index: 6;
+  top: 42px;
+  right: 8px;
+  width: min(310px, calc(100% - 16px));
+  max-height: calc(100% - 50px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  border: 1px solid #dfe6e2;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(16, 40, 32, 0.16);
+}
+/* The sidebar's numbered "Introduction" box, at the overlay's size. */
+.ex-intro--compact {
+  padding: 0.55rem 0.65rem 0.6rem;
+}
+.ex-intro--compact ol {
+  gap: 0.3rem;
+}
+.ex-intro--compact li {
+  padding-left: 1.35rem;
+  font-size: 0.68rem;
+}
+.ex-intro--compact li::before {
+  width: 0.95rem;
+  height: 0.95rem;
+  font-size: 0.56rem;
+}
+.ex-cube__options {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.5rem 0.65rem 0.6rem;
+  background: #fff;
+  font-size: 0.72rem;
+  color: #47544e;
+}
+.ex-cube__tools button.is-on {
+  border-color: #cfe0d9;
+  background: #ecf7f3;
+  color: #10796a;
+}
+/* The ground image's credit, in the cube's corner like a map attribution. */
+.ex-cube__attr {
+  position: absolute;
+  left: 8px;
+  bottom: 6px;
+  max-width: calc(100% - 16px);
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #6b7a74;
+  font-size: 0.6rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ex-cube--expanded .ex-cube__attr,
+.ex-cube--docked .ex-cube__attr {
+  max-width: 55%;
+}
+/* Profile section */
+.ex-reading--cube .ex-profile {
+  margin-top: 0;
+}
+/* Card: the two sections (3D datacube, profile at the pin) each start under a
+   rule with a darker title and a short accent bar, so they read as blocks. */
+.ex-reading--cube > .ex-profile,
+.ex-reading--cube > .ex-cube:not(.ex-cube--expanded) {
+  margin-top: 0.85rem;
+  border-top: 1px solid #e3e8e5;
+}
+.ex-reading--cube > .ex-profile > .ex-sec__head,
+.ex-reading--cube > .ex-cube:not(.ex-cube--expanded) > .ex-sec__head {
+  margin-top: 0.6rem;
+}
+.ex-reading--cube .ex-sec__head h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: #1f2d27;
+}
+.ex-reading--cube .ex-sec__head h3::before {
+  content: '';
+  width: 3px;
+  height: 0.85em;
+  border-radius: 2px;
+  background: #10796a;
+}
+.ex-profile__ymax {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.68rem;
+  color: #8b9993;
+}
+.ex-profile__ymax input {
+  width: 3.2em;
+  font: inherit;
+  padding: 0.05rem 0.25rem;
+  border: 1px solid #d5ddd9;
+  border-radius: 5px;
+  text-align: right;
+  color: #1f2d27;
+}
+.ex-reading--cube .ex-profile__charts figure {
+  padding: 0.35rem 0.4rem 0.15rem;
+  border: 1px solid #eef2f0;
+  border-radius: 8px;
+  background: #fbfcfc;
+}
+
+/* The card is its own stacking context (z-index 10), so the fixed overlay
+   inside it would stay under the map buttons; lift the card while enlarged. */
+.ex-reading:has(.ex-cube--expanded) {
+  z-index: 1000;
+}
+
+/* Enlarged: over the whole window, laid out like the saved page:
+   images and profile | cube | controls (cube and controls only on a phone). */
+.ex-cube--expanded {
+  position: fixed;
+  inset: 1rem;
+  z-index: 1000;
+  display: grid;
+  /* Image column as wide as lets images + profile fit the overlay's height
+     (measured: ~1.38 x its width + 460 px; overlay = 100vh - 2rem minus a
+     ~50 px title). Narrower windows scroll the column. */
+  grid-template-columns: clamp(300px, calc((100vh - 550px) / 1.38), 40vw) minmax(0, 1fr) 260px;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: 'head head head' 'side view controls';
+  gap: 0 1rem;
+  padding: 0.4rem 0.9rem 0.9rem;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.28);
+}
+.ex-cube--expanded .ex-sec__head {
+  grid-area: head;
+}
+.ex-cube--expanded .ex-cube__side {
+  min-height: 0;
+  overflow-y: auto;
+}
+/* The profile under the height maps: both charts side by side, as on the saved page. */
+.ex-cube--expanded .ex-cube__side .ex-profile__charts {
+  flex-wrap: nowrap;
+}
+.ex-cube--expanded .ex-cube__side .ex-profile__charts figure {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.ex-cube--expanded .ex-cube__view {
+  grid-area: view;
+  height: auto;
+  min-height: 0;
+}
+.ex-cube--expanded .ex-cube__controls {
+  grid-area: controls;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* Narrow control column (enlarged card, saved page): label above its switch. */
+.ex-cube--expanded .ex-cube__rows,
+.ex-cube--docked .ex-cube__rows {
+  margin-top: 0;
+}
+.ex-cube--expanded .ex-cube__panes,
+.ex-cube--docked .ex-cube__panes {
+  margin-top: 0;
+}
+
+@media (max-width: 1000px) {
+  .ex-cube--expanded {
+    grid-template-columns: minmax(0, 1fr) 260px;
+    grid-template-areas: 'head head' 'view controls';
+  }
+  .ex-cube--expanded .ex-cube__side {
+    display: none;
+  }
+}
+@media (max-width: 720px) {
+  .ex-cube--expanded {
+    inset: 0;
+    border-radius: 0;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas: 'head' 'view' 'controls';
+  }
+  .ex-cube--expanded .ex-cube__controls {
+    max-height: 40vh;
+  }
+  .ex-cube__view {
+    height: 260px;
+  }
+}
+
+/* The pin is draggable once the cube is loaded. */
+.maplibregl-marker[style*='cursor: grab']:active {
+  cursor: grabbing !important;
+}
+
+/* ------------------------------------------------------------ saved page ---- */
+
+/* A page written by "Save as page" (cube/standalone.tsx): the card's cube and
+   profile side by side, nothing else. */
+.ex-static {
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: 0.9rem clamp(0.8rem, 1.6vw, 1.6rem) 1.5rem;
+  background: #f4f7f6;
+  color: #1f2d27;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+.ex-static__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.ex-static__head h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 650;
+}
+.ex-static__head p {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  color: #6b7a74;
+  font-variant-numeric: tabular-nums;
+}
+.ex-static__open {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #10796a;
+  text-decoration: none;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid #cfe0d9;
+  border-radius: 8px;
+  background: #fff;
+}
+.ex-static__open:hover {
+  background: #ecf7f3;
+}
+/* Docked (saved page): images | cube | controls, as in the sketch of 2026-10-29. */
+.ex-cube--docked {
+  display: grid;
+  /* The image column grows until its content is as tall as the view (100vh -
+     130px): measured, its height is 1.38 x its width + 140 px of captions, bars
+     and profile labels. The cube takes what is left, so a taller window moves
+     it right. */
+  grid-template-columns: clamp(420px, calc((100vh - 270px) / 1.38), 44vw) minmax(0, 1fr) 260px;
+  grid-template-areas: 'head head head' 'side view controls';
+  gap: 0 1rem;
+}
+.ex-cube--docked .ex-sec__head {
+  grid-area: head;
+}
+.ex-cube--docked .ex-cube__view {
+  grid-area: view;
+  /* The whole screen below the title: on a large display the cube is the page. */
+  height: max(560px, calc(100vh - 130px));
+}
+.ex-cube--docked .ex-cube__controls {
+  grid-area: controls;
+}
+.ex-cube__side {
+  grid-area: side;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+  align-content: start;
+}
+.ex-cube__side .ex-cube__overview {
+  width: auto;
+  box-shadow: none;
+}
+.ex-cube__side .is-wide,
+.ex-cube__side-extra {
+  grid-column: 1 / -1;
+}
+/* Colour bar under an RH map: its own range (RH98 0–50 m, RH25 0–12 m). */
+.ex-cube__overview-bar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 0.6rem;
+  color: #6b7a74;
+  font-variant-numeric: tabular-nums;
+}
+.ex-cube__overview-bar div {
+  grid-column: 2;
+  grid-row: 1;
+  height: 6px;
+  border-radius: 2px;
+}
+.ex-cube__overview-bar span:first-of-type {
+  grid-column: 1;
+  grid-row: 1;
+}
+.ex-cube__overview-bar span:last-of-type {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+/* Saved page: the profile at the pin, under the height maps. */
+.ex-static__profile {
+  border: 1px solid #e3e8e5;
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem 0.5rem;
+}
+.ex-static__profile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.ex-static__profile-head .ex-reading__values {
+  margin-top: 0;
+}
+.ex-static__charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+.ex-static__charts figure {
+  margin: 0;
+}
+.ex-static__charts figcaption {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #47544e;
+}
+.ex-static__profile .ex-profile__metrics {
+  margin: 0.35rem 0 0.1rem;
+}
+
+.ex-cube__side .ex-cube__overview figcaption {
+  font-size: 0.66rem;
+}
+/* Legend in the bottom-right corner of the docked view. */
+.ex-cube__bottomright {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+}
+
+.ex-static__main {
+  background: #fff;
+  border: 1px solid #e3e8e5;
+  border-radius: 12px;
+  padding: 0 0.9rem 0.9rem;
+  box-shadow: 0 2px 10px rgba(16, 40, 32, 0.06);
+  margin-top: 0.6rem;
+}
+.ex-static__foot {
+  margin-top: 1rem;
+  font-size: 0.7rem;
+  color: #8b9993;
+  max-width: 70ch;
+}
+@media (max-width: 1200px) {
+  .ex-cube--docked {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'head' 'view' 'side' 'controls';
+  }
+  .ex-cube--docked .ex-cube__controls {
+    margin-top: 0.8rem;
+  }
+}
+@media (max-width: 760px) {
+  .ex-cube--docked {
+    grid-template-columns: 1fr;
+    grid-template-areas: 'head' 'view' 'side' 'controls';
+  }
+  .ex-cube--docked .ex-cube__view {
+    height: 55vh;
+  }
+  .ex-cube__side {
+    margin-top: 0.8rem;
+  }
 }

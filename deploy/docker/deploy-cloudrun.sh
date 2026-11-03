@@ -15,9 +15,13 @@ set -euo pipefail
 
 : "${PROJECT:?Set PROJECT=<gcp-project-id>}"
 SERVICE="${SERVICE:-map-explorer-api}"
-# source.coop is fronted by Cloudflare, so any European region is close enough;
-# europe-north1 is among the cheapest and is near Copenhagen.
-REGION="${REGION:-europe-north1}"
+# us-west1 (Oregon): the data lives in AWS us-west-2 (Oregon) behind
+# data.source.coop, which caches nothing (every response is cf-cache-status:
+# DYNAMIC), so the backend must sit next to the bucket. A point profile makes
+# ~300 range requests; measured 2026-10-28 from europe-north1 it took 6–160 s,
+# from us-west1 4–14 s. Users are one round trip away from the backend, the
+# backend is hundreds of round trips away from the data.
+REGION="${REGION:-us-west1}"
 DATA_URL_PREFIX="${DATA_URL_PREFIX:-https://data.source.coop/geoai-ucph/gvsm/}"
 STAGING="${STAGING:-}"
 
@@ -74,12 +78,23 @@ gcloud run deploy "$SERVICE" \
   --timeout 300 \
   --min-instances 0 \
   --max-instances 4 \
-  --set-env-vars "^|^PUBLIC_READONLY=1|ALLOWED_DATA_URL_PREFIXES=${DATA_URL_PREFIX}|PREDICTIONS_BASE_URL=https://data.source.coop/geoai-ucph/gvsm|PREDICTIONS_REMOTE_PATH_TEMPLATE={year}/{tile}/RH{rh}_Q{q}.tif|PREDICTIONS_MOSAIC_REMOTE_URL=https://data.source.coop/geoai-ucph/gvsm/mosaics/{year}/RH{rh}_Q{q}.tif|VERTICAL_PROFILE_WORKERS=48" \
+  --set-env-vars "^|^PUBLIC_READONLY=1|ALLOWED_DATA_URL_PREFIXES=${DATA_URL_PREFIX}|PREDICTIONS_BASE_URL=https://data.source.coop/geoai-ucph/gvsm|PREDICTIONS_REMOTE_PATH_TEMPLATE={year}/{tile}/RH{rh}_Q{q}.tif|PREDICTIONS_MOSAIC_REMOTE_URL=https://data.source.coop/geoai-ucph/gvsm/mosaics/{year}/RH{rh}_Q{q}.tif|VERTICAL_PROFILE_WORKERS=48|GDAL_HTTP_RETRY_CODES=ALL|GDAL_HTTP_MAX_RETRY=4|GDAL_HTTP_RETRY_DELAY=1|GDAL_HTTP_TIMEOUT=15" \
   ${SECRET_ARGS[@]+"${SECRET_ARGS[@]}"} ${TRAFFIC_ARGS[@]+"${TRAFFIC_ARGS[@]}"}
 
 # ^ One flag, not five: repeated --set-env-vars replace rather than accumulate.
 #   The leading ^|^ switches the pair delimiter from ',' to '|' so a value
 #   containing commas (e.g. several ALLOWED_DATA_URL_PREFIXES) survives intact.
+#
+#   GDAL_HTTP_RETRY_*: the source.coop proxy answers a few requests per thousand
+#   with HTTP 520. GDAL's default retry list (429/502/503/504) does not include
+#   it, so without RETRY_CODES=ALL one 520 among the ~300 reads of a point
+#   profile drops that RH level from the response, silently (seen in the
+#   us-west1 logs, 2026-10-28). Retries cost nothing when requests succeed.
+#   GDAL_HTTP_TIMEOUT=15: a few requests in a hundred stall for ~2 min
+#   (2026-10-29: 4 of 101 levels of one cube), and a cube or profile waits for
+#   its slowest level. Typical requests take 1-6 s; cut off + retry instead.
+#   backend/cube_window.py retries under a fresh URL, as GDAL caches the
+#   partial tile of a failed read for the rest of the process.
 #
 #   --set-env-vars REPLACES the whole environment, so every variable the service
 #   needs has to be listed here. Anything added out-of-band with

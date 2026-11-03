@@ -125,7 +125,7 @@ have.
 
 ```bash
 PROJECT=gvsm-481414 bash deploy/docker/deploy-cloudrun.sh
-bash deploy/docker/smoke-test.sh https://map-explorer-api-871539203434.europe-north1.run.app
+bash deploy/docker/smoke-test.sh https://map-explorer-api-vjl6m6tzcq-uw.a.run.app
 ```
 
 Builds with `deploy/docker/Dockerfile` via `deploy/docker/cloudbuild.yaml` and

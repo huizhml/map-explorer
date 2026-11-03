@@ -19,6 +19,7 @@ import io
 import os
 from PIL import Image
 
+import gdal_cache
 from deploy_guard import install_public_guard, readonly_enabled
 from tile_cache import install_tile_caching
 from routes.sentinel2 import router as sentinel2_router
@@ -80,6 +81,11 @@ class CustomCORSMiddleware(BaseHTTPMiddleware):
             import traceback
             print(f"[CORS middleware] unhandled exception on {request.method} {request.url.path}: {exc}")
             traceback.print_exc()
+            # A read cut short by source.coop stays in GDAL's cache and fails every
+            # later tile that needs the same block, until restart: drop it, so the
+            # next request for this tile reads it again.
+            if gdal_cache.clear_after_error(exc):
+                print("[gdal-cache] cleared the remote-read cache after a failed read")
             response = Response(
                 content=f"Internal Server Error: {exc}",
                 status_code=500,

@@ -7,7 +7,7 @@ import { MIN_ZOOM } from './vsmLayers';
 /**
  * Getting the data out, at the two granularities it is actually published in.
  *
- * The store is organised as a global ~1 km overview per RH level plus one 10 m
+ * The store is organised as a global ~1 km overview per RH plus one 10 m
  * COG per MGRS tile, so those are the two things offered here — no third,
  * invented granularity. In particular there is no clip-to-my-view download:
  * that would mean a windowed read and a re-encode on the backend, and 100 MB
@@ -183,7 +183,7 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
   const [zoom, setZoom] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Which RH levels to download. Follows the map's selection until the reader
+  // Which RH to download. Follows the map's selection until the reader
   // opens the picker and changes it — after that it is theirs, because the two
   // questions are different: the map shows what is worth looking at, a download
   // is whatever you need for the analysis you are going to run.

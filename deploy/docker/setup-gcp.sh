@@ -13,7 +13,7 @@
 set -euo pipefail
 
 : "${PROJECT:?Set PROJECT=<gcp-project-id>}"
-REGION="${REGION:-europe-north1}"
+REGION="${REGION:-us-west1}"   # must match deploy-cloudrun.sh: the image repo is per region
 
 echo "==> enabling APIs"
 gcloud services enable \

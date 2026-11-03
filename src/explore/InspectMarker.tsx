@@ -50,21 +50,57 @@ const PIN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="26" height="36" 
  * must still be findable. It ignores the pointer, so a click on the pin is a
  * click on the pixel under it.
  */
-export function InspectMarker({ lon, lat }: { lon?: number; lat?: number }) {
+export function InspectMarker({
+  lon,
+  lat,
+  onDrag,
+}: {
+  lon?: number;
+  lat?: number;
+  /**
+   * Set once the 3D cube's window is loaded: the pin can then be dragged
+   * inside it and the card re-reads the pixel under it from the cube. The
+   * parent answers by moving `lon`/`lat` to that pixel's centre, which snaps
+   * the pin pixel by pixel.
+   */
+  onDrag?: (lon: number, lat: number) => void;
+}) {
   const { map } = useExploreMap();
   const markerRef = useRef<Marker | null>(null);
+  const onMapRef = useRef(false);
+  const onDragRef = useRef(onDrag);
+  onDragRef.current = onDrag;
 
   useEffect(() => {
     if (!map) return;
     const el = document.createElement('div');
     el.innerHTML = PIN_SVG;
     el.style.pointerEvents = 'none';
-    markerRef.current = new Marker({ element: el, anchor: 'bottom' });
+    const marker = new Marker({ element: el, anchor: 'bottom' });
+    marker.on('drag', () => {
+      const p = marker.getLngLat();
+      onDragRef.current?.(p.lng, p.lat);
+    });
+    markerRef.current = marker;
     return () => {
-      markerRef.current?.remove();
+      marker.remove();
       markerRef.current = null;
+      onMapRef.current = false;
     };
   }, [map]);
+
+  // Draggable only while there is a cube to read from. Otherwise the pin
+  // ignores the pointer, so a click on it is a click on the pixel under it.
+  const draggable = !!onDrag;
+  useEffect(() => {
+    const marker = markerRef.current;
+    if (!marker) return;
+    marker.setDraggable(draggable);
+    const el = marker.getElement();
+    el.style.pointerEvents = draggable ? 'auto' : 'none';
+    el.style.cursor = draggable ? 'grab' : '';
+    el.title = draggable ? 'Drag inside the box to read another pixel' : '';
+  }, [map, draggable]);
 
   // `map` is in the deps as well as the coordinates: the effect above builds a
   // fresh marker whenever the map changes, and this is what puts it back.
@@ -73,9 +109,16 @@ export function InspectMarker({ lon, lat }: { lon?: number; lat?: number }) {
     if (!map || !marker) return;
     if (lon === undefined || lat === undefined) {
       marker.remove();
+      onMapRef.current = false;
       return;
     }
-    marker.setLngLat([lon, lat]).addTo(map);
+    marker.setLngLat([lon, lat]);
+    // addTo() on a marker already on the map removes it first, which would
+    // drop a drag in progress.
+    if (!onMapRef.current) {
+      marker.addTo(map);
+      onMapRef.current = true;
+    }
   }, [map, lon, lat]);
 
   return null;

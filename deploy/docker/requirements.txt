@@ -3,8 +3,11 @@
 # by the standalone scripts (create_stac_collection.py, stac_to_list.py), and
 # GDAL's osgeo bindings are no longer needed at import time.
 #
-# rasterio is pinned because its bundled GDAL is what decodes LERC_ZSTD;
-# 1.4.3 (GDAL 3.9.3) is verified against the source.coop COGs.
+# rasterio is pinned because its bundled GDAL is what decodes LERC_ZSTD and
+# reads tile-interleaved multi-band COGs efficiently (needs GDAL >= 3.11):
+# 1.5.2 (GDAL 3.12.2, Python >= 3.12) is verified against the source.coop COGs
+# and against the experimental 101-band stack (2026-10-28). titiler.core 2.4 /
+# rio-tiler 9.4 import and serve tiles with it.
 # After the first successful build, `pip freeze` inside the container and pin
 # the rest too, so a reviewer six months from now gets the same stack.
 
@@ -16,7 +19,7 @@ titiler.core
 titiler.mosaic
 titiler.extensions
 rio-tiler
-rasterio==1.4.3
+rasterio==1.5.2
 
 numpy
 pandas

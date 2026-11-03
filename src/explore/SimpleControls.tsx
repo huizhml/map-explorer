@@ -112,7 +112,7 @@ export function SimpleControls(props: Props) {
       </section>
 
       {/* A button here, a flyout over the map. Under the controls that seed it
-          — the download defaults to the RH levels on screen and the tiles under
+          — the download defaults to the RH on screen and the tiles under
           the view — but out of the column, because the panel it opens is taller
           than everything above it put together. */}
       <DownloadPanel rhIndexes={rhIndexes} year={props.year} />

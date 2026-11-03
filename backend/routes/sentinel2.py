@@ -438,3 +438,172 @@ async def load_sentinel2_image(request: Dict[str, Any]):
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Cloud-free true-colour image of a small window (the 3D cube's ground)
+# ---------------------------------------------------------------------------
+
+import base64 as _b64
+import json
+import io as _io
+import threading as _threading
+from collections import OrderedDict as _OrderedDict
+from concurrent.futures import ThreadPoolExecutor as _Pool
+
+_PC_STAC = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
+_PC_TOKEN = "https://planetarycomputer.microsoft.com/api/sas/v1/token/sentinel-2-l2a"
+_CLOUDY_SCL = (3, 8, 9, 10)  # cloud shadow, cloud medium / high, cirrus
+_MAX_WINDOW_M = 5000  # larger requests are not a cube window
+_window_cache: "_OrderedDict[tuple, dict]" = _OrderedDict()
+_window_lock = _threading.Lock()
+_token: Dict[str, Any] = {"value": None, "until": 0.0}
+
+
+_token_lock = _threading.Lock()
+
+
+def _pc_token() -> str:
+    """One SAS token for the whole collection, instead of one signing call per
+    file. Locked: the parallel scene checks would otherwise all ask at once and
+    be rate-limited (HTTP 429)."""
+    with _token_lock:
+        if _token["value"] and time.time() < _token["until"] - 120:
+            return _token["value"]
+        return _fetch_token()
+
+
+def _fetch_token() -> str:
+    # The token endpoint rate-limits (HTTP 429): back off rather than fail.
+    for attempt in range(5):
+        r = requests.get(_PC_TOKEN, timeout=30)
+        if r.status_code != 429:
+            break
+        time.sleep(float(r.headers.get("Retry-After", 2 ** attempt)))
+    r.raise_for_status()
+    body = r.json()
+    _token["value"] = body["token"]
+    try:
+        _token["until"] = datetime.fromisoformat(body["msft:expiry"].replace("Z", "+00:00")).timestamp()
+    except Exception:
+        _token["until"] = time.time() + 1800
+    return _token["value"]
+
+
+def _warp_window(href: str, crs: str, bounds, size: int, resampling):
+    """Any raster, read into the window (crs, bounds) at size x size px, north up."""
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+    from rasterio.warp import reproject, transform_bounds
+    from rasterio.windows import Window, from_bounds as win_from_bounds
+
+    with rasterio.open(f"{href}?{_pc_token()}") as src:
+        sb = transform_bounds(crs, src.crs, *bounds)
+        w = win_from_bounds(*sb, src.transform).round_offsets().round_lengths()
+        w = Window(max(w.col_off - 8, 0), max(w.row_off - 8, 0), w.width + 16, w.height + 16)
+        data = src.read(window=w)
+        src_tf = src.window_transform(w)
+        out = np.zeros((data.shape[0], size, size), data.dtype)
+        dst_tf = from_bounds(*bounds, size, size)
+        for b in range(data.shape[0]):
+            reproject(data[b], out[b], src_transform=src_tf, src_crs=src.crs,
+                      dst_transform=dst_tf, dst_crs=crs, resampling=resampling)
+    return out
+
+
+def _display_stretch(rgb):
+    """TCI maps reflectance 0-0.2 to 0-255, so a forest is near-black. For display
+    only: one plain gain for the three bands, x3, so windows of different places
+    are equally bright and comparable. Lowered where the window is bright
+    (bare soil, fields) so its 99th percentile stays at 200 and does not clip.
+    Percentile stretches looked over-bright and over-saturated on forest (user,
+    2026-10-29)."""
+    import numpy as np
+
+    gain = min(3.0, 200.0 / max(float(np.percentile(rgb, 99)), 1.0))
+    return np.clip(rgb * gain, 0, 255)
+
+
+@router.get("/window-image")
+def sentinel2_window_image(crs: str, bounds: str, year: int, size: int = 512):
+    """The least cloudy Sentinel-2 L2A scene of `year` that is cloud-free over the
+    window, as a true-colour JPEG warped onto the window (row 0 = north edge).
+
+    Used under the explorer's 3D cube: the same year as the VSM data, unlike the
+    undated high-resolution basemaps. Outside the tropics the leaf-on season
+    (around day 200) is preferred, so a deciduous forest is not shown bare.
+    Scenes are checked on their SCL (scene classification) band; if none is
+    entirely clear, the clearest one is returned and `cloud_fraction` says so.
+    """
+    import numpy as np
+    from PIL import Image
+    from rasterio.warp import Resampling, transform_bounds
+
+    try:
+        b = [float(v) for v in bounds.split(",")]
+        assert len(b) == 4 and b[2] > b[0] and b[3] > b[1]
+    except Exception:
+        return Response('{"error": "bounds must be left,bottom,right,top"}', status_code=400, media_type="application/json")
+    if b[2] - b[0] > _MAX_WINDOW_M or b[3] - b[1] > _MAX_WINDOW_M:
+        return Response('{"error": "window too large"}', status_code=400, media_type="application/json")
+    size = max(64, min(1024, int(size)))
+    key = (crs, tuple(round(v, 2) for v in b), year, size)
+    with _window_lock:
+        if key in _window_cache:
+            _window_cache.move_to_end(key)
+            return _window_cache[key]
+
+    lon0, lat0, lon1, lat1 = transform_bounds(crs, "EPSG:4326", *b)
+    r = requests.post(_PC_STAC, json={
+        "collections": ["sentinel-2-l2a"], "bbox": [lon0, lat0, lon1, lat1],
+        "datetime": f"{year}-01-01T00:00:00Z/{year}-12-31T23:59:59Z",
+        "query": {"eo:cloud_cover": {"lt": 60}}, "limit": 200,
+    }, headers={"User-Agent": "MapExplorer/1.0"}, timeout=60)
+    r.raise_for_status()
+    temperate = abs((lat0 + lat1) / 2) > 30
+
+    def order(f):
+        p = f["properties"]
+        doy = datetime.fromisoformat(p["datetime"][:10]).timetuple().tm_yday
+        return (abs(doy - 200) // 30, p["eo:cloud_cover"]) if temperate else (p["eo:cloud_cover"], 0)
+
+    items = sorted(r.json().get("features", []), key=order)[:24]
+    if not items:
+        return Response('{"error": "no Sentinel-2 scene in that year"}', status_code=404, media_type="application/json")
+
+    def check(item):
+        try:
+            scl = _warp_window(item["assets"]["SCL"]["href"], crs, b, 64, Resampling.nearest)[0]
+            return float(np.isin(scl, _CLOUDY_SCL).mean() + (scl == 0).mean())
+        except Exception as ex:
+            print(f"[s2-window] SCL read failed for {item.get('id')}: {ex}")
+            return 1.0
+
+    try:
+        _pc_token()  # once, before the parallel checks share it
+    except Exception as ex:
+        return Response(json.dumps({"error": f"Planetary Computer token unavailable: {ex}"}),
+                        status_code=503, media_type="application/json")
+
+    # Check in parallel, take the first clear scene in preference order.
+    with _Pool(max_workers=8) as pool:
+        bad = list(pool.map(check, items))
+    best = next((i for i, f in enumerate(bad) if f == 0), int(np.argmin(bad)))
+    item = items[best]
+    rgb = _warp_window(item["assets"]["visual"]["href"], crs, b, size, Resampling.bilinear)[:3].astype("float32")
+    rgb = _display_stretch(rgb)
+    buf = _io.BytesIO()
+    Image.fromarray(rgb.transpose(1, 2, 0).astype("uint8")).save(buf, format="JPEG", quality=88)
+    out = {
+        "image": "data:image/jpeg;base64," + _b64.b64encode(buf.getvalue()).decode(),
+        "date": item["properties"]["datetime"][:10],
+        "scene": item["id"],
+        "cloud_fraction": round(bad[best], 4),
+        "stretch": "gain x3 for all bands (less where the 99th percentile would pass 200)",
+    }
+    with _window_lock:
+        _window_cache[key] = out
+        while len(_window_cache) > 32:
+            _window_cache.popitem(last=False)
+    return out

@@ -22,6 +22,7 @@ import numpy as np
 import rasterio
 from rasterio.warp import transform as rw_transform
 
+import cube_window
 from utils import (
     HEATMAP_MAX_HEIGHT,
     MAX_HEIGHT_METERS,
@@ -231,6 +232,14 @@ def _path_for_rh(year: int, local_tpl: Optional[str], fmt_base: Dict[str, Union[
     return PREDICTIONS_BASE_URL.rstrip("/") + "/" + rel.lstrip("/")
 
 
+def _cube_around(year, version, q_index, tile, local_tpl, fmt_base, lon, lat, workers):
+    paths = [_path_for_rh(year, local_tpl, fmt_base, rh) for rh in range(cube_window.N_LEVELS)]
+    return cube_window.read_around(
+        (year, version, q_index, tile), paths, lon, lat,
+        local=year in PREDICTIONS_LOCAL_YEARS, workers=workers,
+    )
+
+
 def _compute_profile_at_point(
     lon: float,
     lat: float,
@@ -251,22 +260,35 @@ def _compute_profile_at_point(
     if setup_error:
         return {"success": False, "error": setup_error, "tile_name": tile}
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    def work(rh: int):
-        p = _path_for_rh(year, local_tpl, fmt_base, rh)
-        if not p:
-            return rh, None, True
-        if year in PREDICTIONS_LOCAL_YEARS and not os.path.isfile(p):
-            return rh, None, True
-        return rh, _sample_rh_geotiff(p, lon, lat), False
-
     rh_results: Dict[int, tuple] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [pool.submit(work, rh) for rh in range(0, 101)]
-        for fut in as_completed(futures):
-            rh, val, missing = fut.result()
-            rh_results[rh] = (val, missing)
+    try:
+        # Read through the cube window: same blocks, same bytes, and the 3D
+        # cube request for this click is then answered from its cache.
+        _, placed, stack = _cube_around(year, version, q_index, tile, local_tpl, fmt_base, lon, lat, max_workers)
+        r, c = placed.row - placed.row_off, placed.col - placed.col_off
+        missing_set = set(stack.missing)
+        for rh in range(0, 101):
+            v = int(stack.data[rh, r, c])
+            val = None if v == cube_window.NODATA else float(v)
+            rh_results[rh] = (val, rh in missing_set)
+    except Exception as ex:
+        # No grid (tile absent) or the point falls outside it: sample point by point as before.
+        print(f"[vertical-profile] window read unavailable, sampling the point: {ex}")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def work(rh: int):
+            p = _path_for_rh(year, local_tpl, fmt_base, rh)
+            if not p:
+                return rh, None, True
+            if year in PREDICTIONS_LOCAL_YEARS and not os.path.isfile(p):
+                return rh, None, True
+            return rh, _sample_rh_geotiff(p, lon, lat), False
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(work, rh) for rh in range(0, 101)]
+            for fut in as_completed(futures):
+                rh, val, missing = fut.result()
+                rh_results[rh] = (val, missing)
 
     profile, missing_files = [], 0
     for rh in range(0, 101):
@@ -645,6 +667,51 @@ async def predictions_vertical_profile(request: VerticalProfileRequest):
         request.fhd_interval,
     )
     return _to_jsonable(result)
+
+
+@router.get("/predictions/cube")
+async def predictions_cube(
+    lon: float,
+    lat: float,
+    year: int = 2020,
+    version: VersionLiteral = "original",
+    q_index: int = 1,
+    tile_name: Optional[str] = None,
+):
+    """RH0..RH100 in a 128 x 128 px window around the point, for the 3D cube.
+
+    Binary (see cube_window.encode_cube). The explorer requests it together
+    with /predictions/vertical-profile for the same click; both read the same
+    window, which is downloaded once."""
+    from fastapi import Response
+    from fastapi.responses import JSONResponse
+
+    def run():
+        tile = (tile_name or "").strip().upper() or _mgrs_tile_from_latlon(lat, lon)
+        if not tile:
+            return 400, "Could not determine MGRS tile."
+        local_tpl, fmt_base, setup_error = _build_profile_paths(year, version, q_index, tile)
+        if setup_error:
+            return 500, setup_error
+        try:
+            grid, placed, stack = _cube_around(
+                year, version, q_index, tile, local_tpl, fmt_base, lon, lat, VERTICAL_PROFILE_WORKERS
+            )
+        except cube_window.OutsideTile as ex:
+            return 404, str(ex)
+        except RuntimeError as ex:  # no readable file: tile not in the archive
+            return 404, f"No VSM data for tile {tile}: {ex}"
+        meta = {"tile": tile, "year": year, "version": version, "q_index": q_index, "lon": lon, "lat": lat}
+        return 200, cube_window.encode_cube(grid, placed, stack, meta)
+
+    status, body = await asyncio.to_thread(run)
+    if status != 200:
+        return JSONResponse({"success": False, "error": body}, status_code=status)
+    return Response(
+        content=body,
+        media_type="application/octet-stream",
+        headers={"Content-Encoding": "gzip", "Cache-Control": "public, max-age=86400"},
+    )
 
 
 @router.options("/predictions/vertical-profile")

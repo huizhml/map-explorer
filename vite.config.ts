@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { extname, resolve } from 'node:path'
+import { build as esbuild } from 'esbuild'
 
 // One site under one base, a directory per page rather than one app with routes.
 //
@@ -90,9 +91,63 @@ function directoryTrailingSlash(): Plugin {
   }
 }
 
+/**
+ * `virtual:cube-viewer-bundle`: the saved-page viewer (src/explore/cube/standalone.tsx)
+ * with React and three.js, as ONE minified script, exported as a string.
+ *
+ * "Save as page" inlines it into a single HTML file that must open from disk,
+ * with no server and no network, so it cannot point at the site's chunks. Built
+ * with esbuild here because Vite's own output is split into hashed chunks.
+ * Imported only by exportPage.ts, which the explorer loads on demand.
+ */
+function cubeViewerBundle(): Plugin {
+  const id = 'virtual:cube-viewer-bundle'
+  const resolved = '\0' + id
+  // Source files of the last bundle. The dev server caches the module, and
+  // addWatchFile alone does not invalidate a virtual one: do it by hand.
+  const inputs = new Set<string>()
+  return {
+    name: 'cube-viewer-bundle',
+    configureServer(server) {
+      server.watcher.on('change', (file) => {
+        if (!inputs.has(file)) return
+        const mod = server.moduleGraph.getModuleById(resolved)
+        if (mod) server.moduleGraph.invalidateModule(mod)
+      })
+    },
+    resolveId(source) {
+      return source === id ? resolved : null
+    },
+    async load(loadId) {
+      if (loadId !== resolved) return null
+      const result = await esbuild({
+        entryPoints: [resolve(__dirname, 'src/explore/cube/standalone.tsx')],
+        bundle: true,
+        format: 'iife',
+        minify: true,
+        write: false,
+        metafile: true,
+        jsx: 'automatic',
+        target: 'es2020',
+        legalComments: 'none',
+        define: { 'import.meta.env': '{}', 'process.env.NODE_ENV': '"production"' },
+        logLevel: 'warning',
+      })
+      for (const file of Object.keys(result.metafile.inputs)) {
+        // Real source files only: the metafile also lists esbuild's own
+        // "<define:...>" entries, which Vite would then try to resolve.
+        if (file.includes('node_modules') || file.startsWith('<')) continue
+        inputs.add(resolve(__dirname, file))
+        this.addWatchFile(resolve(__dirname, file))
+      }
+      return `export default ${JSON.stringify(result.outputFiles[0].text)}`
+    },
+  }
+}
+
 export default defineConfig({
   base: '/vsm/',
-  plugins: [react(), stripUnpublishedStoryArt(), directoryTrailingSlash()],
+  plugins: [react(), stripUnpublishedStoryArt(), directoryTrailingSlash(), cubeViewerBundle()],
   build: {
     rollupOptions: {
       input: {

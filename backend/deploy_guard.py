@@ -59,6 +59,20 @@ def _allowed_prefixes() -> tuple[str, ...]:
     return tuple(p.strip() for p in raw.split(",") if p.strip())
 
 
+# A dataset URL may also be wrapped in GDAL's vrt:// connection string to select bands before
+# titiler warps the dataset: `vrt:///vsicurl/<url>?bands=99`. Without that, a WarpedVRT over the
+# 101-band stack COG reads all 101 bands for every tile (measured: ~300 requests, 60 MB per
+# tile). Only the `bands` option is accepted, and the inner URL must itself be allowed.
+_VRT_WRAPPED = re.compile(r"^vrt:///vsicurl/(?P<inner>[^?]+)(?:\?bands=\d+(?:,\d+)*)?$")
+
+
+def _url_allowed(value: str, allowed_prefixes: tuple[str, ...]) -> bool:
+    if value.startswith(allowed_prefixes):
+        return True
+    m = _VRT_WRAPPED.match(value)
+    return bool(m) and m.group("inner").startswith(allowed_prefixes)
+
+
 def _deny(detail: str, status: int = 403) -> JSONResponse:
     # Carry CORS headers explicitly: this response short-circuits the stack, so
     # the CORS middleware never sees it and the browser would otherwise report a
@@ -99,10 +113,11 @@ class PublicReadOnlyMiddleware:
                 value = params.get(key)
                 if value is None:
                     continue
-                if not value.startswith(self.allowed_prefixes):
+                if not _url_allowed(value, self.allowed_prefixes):
                     return _deny(
                         f"'{key}' must start with one of: "
                         + ", ".join(self.allowed_prefixes)
+                        + " (optionally wrapped as vrt:///vsicurl/<url>?bands=N)"
                     )
         return None
 
