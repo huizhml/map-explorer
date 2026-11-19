@@ -1,3 +1,4 @@
+import { CitationRef, CopyBibtex } from '../components/Citation';
 import { PartnerLogos } from '../components/PartnerLogos';
 import { DownloadPanel } from './DownloadPanel';
 import './explore.css';
@@ -34,88 +35,95 @@ type Props = {
   onToggleRh: (rh: number) => void;
   year: (typeof YEARS)[number];
   onYear: (y: (typeof YEARS)[number]) => void;
+  /** Starts the guided tour. */
+  onTour: () => void;
+  /** Folded away to the left: out of view, and out of the tab order. */
+  collapsed?: boolean;
 };
 
 export function SimpleControls(props: Props) {
   const { rhIndexes } = props;
 
   return (
-    <aside className="ex-panel">
+    <aside className={props.collapsed ? 'ex-panel is-collapsed' : 'ex-panel'} inert={props.collapsed}>
+      {/* The name is in the top bar (TopBar.tsx); the panel opens on what the
+          dataset is. */}
       <header className="ex-panel__head">
-        <h1>Vertical Vegetation Structure</h1>
         <p>A 10-metre dataset of Earth's vertical vegetation structure, derived from NASA's GEDI LiDAR data and Sentinel-2 imagery.</p>
       </header>
 
-      {/* Ahead of the controls, since it explains what they are for. Numbered
-          rather than bulleted: this is the order the page is meant to be used
-          in, not a list of unrelated features. */}
-      <section className="ex-intro">
-        <h2>Introduction</h2>
-        <ol>
-          <li>Select different relative height (RH) maps to visualize.</li>
-          <li>Zoom into a local area to load high-resolution data.</li>
-          <li>Click “Visit a random site” to check precomputed vertical profiles.</li>
-          <li>Click on the map to visualize the full vertical profile at that location.</li>
-        </ol>
+      {/* Ahead of the controls, since it explains what they are for. A tour
+          rather than the numbered list of steps that used to be here: readers
+          skipped the list, and with it the step that opens the full profile.
+          The tour does each step for them (Tour.tsx). */}
+      <section className="ex-intro ex-intro--tour">
+        <p>New here? A one-minute tour shows how to read the maps and open the full vertical profile of any point.</p>
+        <button type="button" className="ex-tour-start" onClick={props.onTour}>
+          Take the tour
+        </button>
       </section>
 
-      {/* Buttons rather than a <select>: seven choices all visible at once, and
-          a multi-select, so several RHs can be stacked and compared. Each is a
-          checkbox, not a radio — turning one off is what removes its layer.
-          RH98 is on by default, set by SimpleApp's initial layer. */}
-      <section className="ex-field">
-        <span className="ex-field__label" id="ex-rh-label">
-          Relative height
-          <span className="ex-hint">
-            RH<i>n</i> — height below which <i>n</i>% of returned energy falls.
+      {/* The map's controls together: what to show, for which year, and the
+          way out to the files. */}
+      <div className="ex-controls">
+        {/* Buttons rather than a <select>: seven choices all visible at once, and
+            a multi-select, so several RHs can be stacked and compared. Each is a
+            checkbox, not a radio — turning one off is what removes its layer.
+            RH98 is on by default, set by SimpleApp's initial layer. */}
+        <section className="ex-field" data-tour="rh">
+          <span className="ex-field__label" id="ex-rh-label">
+            Relative height
+            <span className="ex-hint">
+              RH<i>n</i> — height below which <i>n</i>% of returned energy falls.
+            </span>
           </span>
-        </span>
-        <div className="ex-choices" role="group" aria-labelledby="ex-rh-label">
-          {RH_CHOICES.map((rh) => {
-            const on = rhIndexes.includes(rh);
-            return (
-              <button
-                key={rh}
-                type="button"
-                role="checkbox"
-                aria-checked={on}
-                className={on ? 'ex-choice is-active' : 'ex-choice'}
-                onClick={() => props.onToggleRh(rh)}
-                title={rh === 98 ? 'Canopy top' : undefined}
-              >
-                RH{rh}
-              </button>
-            );
-          })}
-        </div>
-        {rhIndexes.length === 0 && (
-          <span className="ex-hint">No layer selected — the map shows the basemap only.</span>
-        )}
-      </section>
+          <div className="ex-choices" role="group" aria-labelledby="ex-rh-label">
+            {RH_CHOICES.map((rh) => {
+              const on = rhIndexes.includes(rh);
+              return (
+                <button
+                  key={rh}
+                  type="button"
+                  role="checkbox"
+                  aria-checked={on}
+                  className={on ? 'ex-choice is-active' : 'ex-choice'}
+                  onClick={() => props.onToggleRh(rh)}
+                  title={rh === 98 ? 'Canopy top' : undefined}
+                >
+                  RH{rh}
+                </button>
+              );
+            })}
+          </div>
+          {rhIndexes.length === 0 && (
+            <span className="ex-hint">No layer selected — the map shows the basemap only.</span>
+          )}
+        </section>
 
-      <section className="ex-field">
-        <label htmlFor="ex-year">Year</label>
-        <select
-          id="ex-year"
-          value={props.year}
-          onChange={(e) => props.onYear(Number(e.target.value) as (typeof YEARS)[number])}
-        >
-          {YEARS.map((y) => (
-            <option key={y} value={y}>
-              {y}
-            </option>
-          ))}
-        </select>
-        {/* A one-entry dropdown otherwise reads as a broken control. This says
-            it is a control with one value so far, not a control that failed. */}
-        <span className="ex-hint">More years in preparation.</span>
-      </section>
+        <section className="ex-field">
+          <label htmlFor="ex-year">Year</label>
+          <select
+            id="ex-year"
+            value={props.year}
+            onChange={(e) => props.onYear(Number(e.target.value) as (typeof YEARS)[number])}
+          >
+            {YEARS.map((y) => (
+              <option key={y} value={y}>
+                {y}
+              </option>
+            ))}
+          </select>
+          {/* A one-entry dropdown otherwise reads as a broken control. This says
+              it is a control with one value so far, not a control that failed. */}
+          <span className="ex-hint">More years in preparation.</span>
+        </section>
 
-      {/* A button here, a flyout over the map. Under the controls that seed it
-          — the download defaults to the RH on screen and the tiles under
-          the view — but out of the column, because the panel it opens is taller
-          than everything above it put together. */}
-      <DownloadPanel rhIndexes={rhIndexes} year={props.year} />
+        {/* A button here, a flyout over the map. Under the controls that seed it
+            — the download defaults to the RH on screen and the tiles under
+            the view — but out of the column, because the panel it opens is taller
+            than everything above it put together. */}
+        <DownloadPanel rhIndexes={rhIndexes} year={props.year} />
+      </div>
 
       {/* After the controls, not before: these are caveats about what you get
           once you have used them, and read as warnings-not-to-bother if they
@@ -143,6 +151,17 @@ export function SimpleControls(props: Props) {
             {' '}— free to use and adapt, including commercially, with attribution.
           </li>
         </ul>
+      </section>
+
+      {/* Under the caveats: the licence above asks for attribution, and this
+          is what that attribution is. The reference is shared with the
+          landing page (components/citationData.ts). */}
+      <section className="ex-notes ex-cite">
+        <h2>Citation</h2>
+        <p className="ex-cite__text">
+          <CitationRef />
+        </p>
+        <CopyBibtex className="ex-cite__copy" />
       </section>
 
       {/* The layer id that used to head this block — vsm_2020_rh98_median_v1

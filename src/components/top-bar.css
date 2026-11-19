@@ -1,0 +1,132 @@
+/* The site's top bar (TopBar.tsx), shared by the explorer and the docs page.
+   Its own file: the explorer's stylesheet resets the whole page, which the
+   docs page must not inherit. White like the panel, with a thin
+   stripe of the inferno ramp the height maps are drawn in along its foot:
+   the site's colour is the data's. */
+.tb {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  height: 48px;
+  padding: 0 0.75rem 0 1.25rem;
+  background: #fff;
+  color: #13201b;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+.tb::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #1b0c41 0%, #4a0c6b 15%, #781c6d 30%, #a52c60 45%, #cf4446 60%, #ed6925 72%, #fb9b06 85%, #f7d13d 100%);
+}
+.tb__home {
+  flex: none;
+  display: flex;
+  padding-right: 0.85rem;
+  border-right: 1px solid #e5ebe8;
+}
+.tb__home img {
+  display: block;
+  width: 30px;
+  height: 30px;
+}
+.tb__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #13201b;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+.tb__links {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.tb__links a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  border-radius: 999px;
+  color: #45524c;
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+.tb__links a:hover {
+  background: #f2f6f4;
+  color: #13201b;
+}
+.tb__icon {
+  width: 36px;
+}
+/* Docs carries its label; the underline marks it as the current page. */
+.tb__docs {
+  position: relative;
+  gap: 0.4rem;
+  margin-right: 0.35rem;
+  padding: 0 0.75rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+.tb__docs.is-current {
+  color: var(--accent-text, #0d6459);
+}
+.tb__docs.is-current::after {
+  content: '';
+  position: absolute;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: 3px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent, #10796a);
+}
+.tb a:focus-visible {
+  outline: 2px solid var(--accent, #10796a);
+  outline-offset: 2px;
+}
+
+/* Phones: the name wraps onto two smaller lines instead of being cut to
+   "Vertic…", and Docs shows only its icon; the label stays in the page for
+   screen readers. */
+@media (max-width: 480px) {
+  .tb {
+    padding-left: 0.75rem;
+  }
+  .tb__home {
+    padding-right: 0.6rem;
+  }
+  .tb__title {
+    white-space: normal;
+    font-size: 0.82rem;
+    line-height: 1.15;
+  }
+  .tb__docs {
+    width: 36px;
+    margin-right: 0;
+    padding: 0;
+  }
+  .tb__docs span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .tb__docs.is-current::after {
+    left: 0.5rem;
+    right: 0.5rem;
+  }
+}

@@ -3,9 +3,10 @@ import { shiftNote, type Cube, type ZMode } from './cubeData';
 import { CubeScene, type Axis, type CameraState, type Display, type Snapshot, type TopMode } from './CubeScene';
 import { esriGround, groundCaption, sentinel2Ground, type Ground, type GroundSource } from './groundImagery';
 import { INFERNO } from './inferno';
+import { withLegend } from './figureLegend';
 import { Overview } from './Overview';
 import { cssGradient, ENERGY_LUT } from './colormaps';
-import { BlockIcon, CollapseIcon, ExpandIcon, HelpIcon, ResetViewIcon, SlidersIcon } from '../icons';
+import { BlockIcon, CollapseIcon, DownloadIcon, ExpandIcon, HelpIcon, ResetViewIcon, SlidersIcon } from '../icons';
 
 /**
  * The 3D datacube of the clicked place, inside the reading card. Loaded with
@@ -463,6 +464,26 @@ export default function CubePanel({
           </button>
           <button title="Reset view (R)" aria-label="Reset view" onClick={() => scene?.resetView()}>
             <ResetViewIcon size={15} />
+          </button>
+          <button
+            title="Download this view (PNG)"
+            aria-label="Download this view as PNG"
+            onClick={async () => {
+              if (!scene) return;
+              const m = cube.meta;
+              const a = document.createElement('a');
+              const png = scene.snapshot();
+              a.href = snap ? await withLegend(png, snap, canvasRef.current?.clientWidth ?? 0) : png;
+              // Z axis, then Display and Top slice where they apply (same rules as the option rows).
+              const opts: string[] = snap ? [{ energy: 'energy', rh: 'rh', surfaces: 'rh-surfaces' }[snap.mode]] : [];
+              if (snap && snap.mode !== 'surfaces') opts.push(snap.display === 'planes' ? 'slices' : 'cutaway');
+              if (snap?.mode === 'energy') opts.push(snap.topMode === 'canopy' ? 'top-canopy' : 'top-energy');
+              const name = ['vsm-cube-' + m.year, m.lat.toFixed(4), m.lon.toFixed(4), ...opts].join('_');
+              a.download = `${name}.png`;
+              a.click();
+            }}
+          >
+            <DownloadIcon size={15} />
           </button>
           <button
             title={expanded ? 'Back to the card (Esc)' : 'Enlarge'}

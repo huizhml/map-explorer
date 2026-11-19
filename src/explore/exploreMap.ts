@@ -121,3 +121,34 @@ export function setSelectingTiles(on: boolean): void {
 export function isSelectingTiles(): boolean {
   return selectingTiles;
 }
+
+/**
+ * Open one curated site by id — what "Visit a random site" does, minus the
+ * random. The guided tour tells its story at one fixed site; RandomSite
+ * registers the opener while its bundle is loaded. Returns false if nothing
+ * is registered or the id is not in the bundle.
+ */
+let siteOpener: ((id: number) => boolean) | null = null;
+
+export function setSiteOpener(fn: ((id: number) => boolean) | null): void {
+  siteOpener = fn;
+}
+
+export function openSite(id: number): boolean {
+  return siteOpener?.(id) ?? false;
+}
+
+/**
+ * Preselect 10 m tiles in the download panel, as clicking them on the map
+ * would. Registered by DownloadPanel; the tour uses it to pick the tile under
+ * the forest it has been showing.
+ */
+let tilePicker: ((names: string[]) => void) | null = null;
+
+export function setTilePicker(fn: ((names: string[]) => void) | null): void {
+  tilePicker = fn;
+}
+
+export function pickTiles(names: string[]): void {
+  tilePicker?.(names);
+}

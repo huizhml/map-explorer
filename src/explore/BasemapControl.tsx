@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { BasemapId } from './SimpleControls';
 import { BASEMAPS } from './SimpleControls';
 
@@ -18,16 +18,26 @@ export function BasemapControl({
   onChange: (id: BasemapId) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const listId = useId();
   const ref = useRef<HTMLDivElement | null>(null);
 
-  // Close on outside click and on Escape, the way a menu is expected to behave.
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+
+  // A disclosure, not an ARIA menu: role="menu" promises arrow-key navigation,
+  // which a three-item list does not need. Not a popover either: the list sits
+  // above its trigger by plain layout, and in the top layer it would need JS
+  // positioning (CSS anchor positioning is not available everywhere yet).
+  // Close on outside click and on Escape; Escape hands focus back to the trigger
+  // so it is not stranded on a button that just disappeared.
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key !== 'Escape') return;
+      if (ref.current?.contains(document.activeElement)) triggerRef.current?.focus();
+      setOpen(false);
     };
     document.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('keydown', onKey);
@@ -42,17 +52,17 @@ export function BasemapControl({
   return (
     <div className="ex-basemap" ref={ref}>
       {open && (
-        <ul className="ex-basemap__menu" role="menu">
+        <ul className="ex-basemap__menu" id={listId} aria-label="Base map">
           {BASEMAPS.map((b) => (
             <li key={b.id}>
               <button
                 type="button"
-                role="menuitemradio"
-                aria-checked={b.id === value}
+                aria-pressed={b.id === value}
                 className={b.id === value ? 'is-active' : undefined}
                 onClick={() => {
                   onChange(b.id);
                   setOpen(false);
+                  triggerRef.current?.focus();
                 }}
               >
                 {b.label}
@@ -65,9 +75,10 @@ export function BasemapControl({
       <button
         type="button"
         className="ex-basemap__trigger"
+        ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls={open ? listId : undefined}
         title="Select base map"
       >
         <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">

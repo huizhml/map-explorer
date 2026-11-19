@@ -221,10 +221,16 @@ export class CubeScene {
     this.dirty = true;
   }
 
-  /** PNG of the current view, e.g. for a figure. */
+  /** PNG of the current view, e.g. for a figure. The green line through the clicked pixel is left out. */
   snapshot(): string {
+    const line = this.clickLine;
+    const shown = line?.visible ?? false;
+    if (line) line.visible = false;
     this.renderer.render(this.scene, this.camera);
-    return this.canvas.toDataURL('image/png');
+    const url = this.canvas.toDataURL('image/png');
+    if (line) line.visible = shown;
+    this.dirty = true;
+    return url;
   }
 
   // ------------------------------------------------------------ setters ----

@@ -36,10 +36,11 @@ const LOGOS = [
 
 /**
  * `hero` is the wide band under the title page's call to action; `panel` is the
- * narrow two-per-row grid in the explore sidebar's foot. Same markup, different
+ * narrow two-per-row grid in the explore sidebar's foot; `strip` is the
+ * centred row at the foot of the docs page. Same markup, different
  * height and wrapping — see partner-logos.css.
  */
-export function PartnerLogos({ variant }: { variant: 'hero' | 'panel' }) {
+export function PartnerLogos({ variant }: { variant: 'hero' | 'panel' | 'strip' }) {
   return (
     <ul className={`pl pl--${variant}`}>
       {LOGOS.map((l) => (

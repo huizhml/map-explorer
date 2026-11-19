@@ -128,12 +128,11 @@ function Page({ s }: { s: PageSnapshot }) {
                     <figcaption>RH profile</figcaption>
                     <RhProfileChart profile={profile.profile} yMax={yMax} />
                   </figure>
-                  {profile.vertical_profile_curve && profile.vertical_profile_curve.length > 1 && (
-                    <figure>
-                      <figcaption>Vertical profile</figcaption>
-                      <VerticalProfileChart curve={profile.vertical_profile_curve} yMax={yMax} />
-                    </figure>
-                  )}
+                  {/* Always drawn, empty when there is no curve: see LineChart. */}
+                  <figure>
+                    <figcaption>Vertical profile</figcaption>
+                    <VerticalProfileChart curve={profile.vertical_profile_curve ?? []} yMax={yMax} />
+                  </figure>
                 </div>
               </section>
             )

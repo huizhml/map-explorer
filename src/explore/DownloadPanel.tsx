@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ExpressionSpecification, Map as MlMap, MapMouseEvent } from 'maplibre-gl';
 import { apiUrl } from '../utils/apiBase';
-import { setSelectingTiles, tilesInView, useExploreMap, type Grid } from './exploreMap';
+import { setSelectingTiles, setTilePicker, tilesInView, useExploreMap, type Grid } from './exploreMap';
 import { MIN_ZOOM } from './vsmLayers';
+import { ACCENT } from './theme';
 
 /**
  * Getting the data out, at the two granularities it is actually published in.
@@ -94,7 +96,6 @@ const GRID_SOURCE = 'mgrs-grid';
 const LABEL_SOURCE = `${GRID_SOURCE}-labels`;
 const GRID_FILL = `${GRID_SOURCE}-fill`;
 const GRID_LAYERS = [GRID_FILL, `${GRID_SOURCE}-line`, `${GRID_SOURCE}-label`];
-const GREEN = '#10796a';
 
 function ensureGrid(map: MlMap, grid: Grid) {
   if (map.getSource(GRID_SOURCE)) return;
@@ -116,12 +117,12 @@ function ensureGrid(map: MlMap, grid: Grid) {
   map.addLayer({
     id: GRID_FILL, type: 'fill', source: GRID_SOURCE, minzoom: GRID_ZOOM,
     layout: { visibility: 'none' },
-    paint: { 'fill-color': GREEN, 'fill-opacity': 0 },
+    paint: { 'fill-color': ACCENT, 'fill-opacity': 0 },
   });
   map.addLayer({
     id: `${GRID_SOURCE}-line`, type: 'line', source: GRID_SOURCE, minzoom: GRID_ZOOM,
     layout: { visibility: 'none' },
-    paint: { 'line-color': GREEN, 'line-width': 1 },
+    paint: { 'line-color': ACCENT, 'line-width': 1 },
   });
   map.addLayer({
     id: `${GRID_SOURCE}-label`, type: 'symbol', source: LABEL_SOURCE, minzoom: TILE_ZOOM,
@@ -207,6 +208,25 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
    */
   const [picked, setPicked] = useState<string[] | null>([]);
 
+  /**
+   * Which resolution to download: the global ~1 km overview (one file per RH)
+   * or the 10 m tiles. Its own step, because it decides whether there is a
+   * tile step at all — the overview covers the world in one file, so there is
+   * nothing to pick. 10 m by default: it is the dataset; the overview is the
+   * shortcut. Without a published overview, tiles are the only choice.
+   */
+  const [res, setRes] = useState<'mosaic' | 'tiles'>('tiles');
+  const tilesMode = res === 'tiles' || !info?.mosaic_url_template;
+
+  // For the guided tour: 10 m, with these tiles chosen, as if clicked.
+  useEffect(() => {
+    setTilePicker((names) => {
+      setRes('tiles');
+      setPicked([...names].sort());
+    });
+    return () => setTilePicker(null);
+  }, []);
+
   // The flyout, and where it sits. Position is measured rather than expressed
   // in CSS: the panel is 320 px wide on a desktop and full width on a phone,
   // and `position: fixed` cannot read either without help. Anchoring to the
@@ -224,7 +244,8 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
   const [pinned, setPinned] = useState(false);
   const [pos, setPos] = useState({ left: 0, top: 0 });
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDialogElement | null>(null);
+  const titleId = useId();
 
   /**
    * The batch in flight, if any. One at a time and one row at a time: these are
@@ -235,6 +256,9 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
     null,
   );
   const abortRef = useRef<AbortController | null>(null);
+  const running = batch !== null;
+  /** What the last batch came to, for screen readers; the button text says it for the eye. */
+  const [batchNote, setBatchNote] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -260,11 +284,10 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
    * phone, where the sidebar is a full-width bar across the top, the first
    * fallback is what puts it back inside the screen.
    *
-   * Measured off the *sidebar's* right edge, not the trigger's. The trigger is
-   * `align-self: flex-start`, so it is only as wide as its label — a little
-   * over 140 px inside a 320 px column — and clearing it left the flyout lying
-   * across the right half of the sidebar, over the "Please note" caveats
-   * underneath. What the panel has to clear is the column, not the button.
+   * Measured off the *sidebar's* right edge, not the trigger's: what the
+   * panel has to clear is the column, not the button. (When the trigger was
+   * only as wide as its label, clearing it left the flyout lying across the
+   * right half of the sidebar.)
    *
    * Recomputed on scroll and resize rather than only on open: the sidebar
    * scrolls under a fixed panel, and a flyout that stays behind while its
@@ -310,13 +333,46 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
     // forced three layouts — measurably starving the transfer it was reporting
     // on. If a running batch ever changes the layout, re-place it from there
     // rather than by depending on the ticks.
-  }, [open, chosen, rhIndexes, tiles]);
+    // Whether a batch is running does count, once at each end: the progress
+    // bar appears under the buttons and makes the panel taller.
+  }, [open, chosen, rhIndexes, tiles, res, running]);
+
+  /**
+   * A native <dialog>, opened with show() rather than as a popover: the guided
+   * tour draws its spotlight and card over this panel, and the top layer would
+   * put the panel above them. show() is non-modal, so the map stays usable.
+   *
+   * Focus moves into the panel, so a keyboard reader lands where the controls
+   * are — except when the tour opened it, where focus belongs on the tour card.
+   */
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!open || !panel) return;
+    const before = document.activeElement as HTMLElement | null;
+    const byTour = !!document.querySelector('.ex-tour');
+    if (!panel.open) panel.show();
+    if (!byTour) {
+      panel.focus({ preventScroll: true });
+      return;
+    }
+    // show() has put focus on the first button; give it back. If it was on
+    // nothing (or on the tour's Next, disabled mid-flight), leave it on nothing:
+    // the tour refocuses its own button when it is ready.
+    before?.focus({ preventScroll: true });
+    if (document.activeElement !== before) (document.activeElement as HTMLElement | null)?.blur();
+  }, [open]);
+
+  /** Close from the keyboard or the close button: focus goes back to the trigger. */
+  const closeToTrigger = useCallback(() => {
+    if (panelRef.current?.contains(document.activeElement)) triggerRef.current?.focus();
+    setOpen(false);
+  }, []);
 
   // Escape and click-outside, the two ways every popup is expected to close —
   // except that a pinned one only answers to Escape and its own close button.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && closeToTrigger();
     document.addEventListener('keydown', onKey);
 
     const onDown = (e: MouseEvent) => {
@@ -327,6 +383,9 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
       // would close the panel on the very gesture it exists to support — which
       // is what the pin was asked for, and this fixes it whether pinned or not.
       if (map?.getContainer().contains(t)) return;
+      // The guided tour opens this panel and explains it from a card beside
+      // it; pressing that card's Next must not close what it is describing.
+      if (t instanceof Element && t.closest('.ex-tour')) return;
       setOpen(false);
     };
     if (!pinned) document.addEventListener('mousedown', onDown);
@@ -335,7 +394,7 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onDown);
     };
-  }, [open, pinned, map]);
+  }, [open, pinned, map, closeToTrigger]);
 
   // Which MGRS tiles the view covers — the same question, asked the same way,
   // as the prediction layers ask before fetching them. Recomputed on moveend
@@ -388,19 +447,20 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
    * subject. The layers' own minzooms keep it, and its labels, off at the
    * zooms where they would be noise even here.
    */
+  // Only while 10 m is chosen: for the overview there are no tiles to show.
   useEffect(() => {
-    if (!map || !grid || !open) return;
+    if (!map || !grid || !open || !tilesMode) return;
     ensureGrid(map, grid);
     for (const id of GRID_LAYERS) map.setLayoutProperty(id, 'visibility', 'visible');
     return () => {
       if (!map.style) return;
       for (const id of GRID_LAYERS) map.setLayoutProperty(id, 'visibility', 'none');
     };
-  }, [open, map, grid]);
+  }, [open, map, grid, tilesMode]);
 
   useEffect(() => {
-    if (map && open && map.getLayer(GRID_FILL)) styleGrid(map, activeSet);
-  }, [open, map, activeSet]);
+    if (map && open && tilesMode && map.getLayer(GRID_FILL)) styleGrid(map, activeSet);
+  }, [open, map, activeSet, tilesMode]);
 
   /**
    * Click the map to pick a tile, while the flyout is open.
@@ -409,8 +469,10 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
    * both would fire. The selecting-tiles flag is how it knows to stand aside
    * — set here, honoured there, and cleared when the flyout closes.
    */
+  // Likewise only for 10 m: with the overview chosen, a map click reads the
+  // profile at the point as it does with the panel closed.
   useEffect(() => {
-    if (!open || !map || !grid) return;
+    if (!open || !map || !grid || !tilesMode) return;
     setSelectingTiles(true);
 
     const onClick = (e: MapMouseEvent) => {
@@ -425,7 +487,7 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
       map.off('click', onClick);
       setSelectingTiles(false);
     };
-  }, [open, map, grid, toggleTile]);
+  }, [open, map, grid, toggleTile, tilesMode]);
 
   const allRhs = useMemo(() => {
     if (!info) return [];
@@ -518,6 +580,8 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
       const controller = new AbortController();
       abortRef.current = controller;
       setBatch({ key, done: 0, total: targets.length, frac: 0 });
+      setBatchNote(`Downloading ${targets.length} file${targets.length === 1 ? '' : 's'}`);
+      let saved = 0;
 
       for (let i = 0; i < targets.length; i++) {
         if (controller.signal.aborted) break;
@@ -533,11 +597,17 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
           console.warn('[download] streaming failed, falling back to a direct link', err);
           window.open(targets[i].url, '_blank', 'noopener');
         }
+        saved = i + 1;
         setBatch((b) => (b && b.key === key ? { ...b, done: i + 1, frac: 0 } : b));
       }
 
       abortRef.current = null;
       setBatch(null);
+      setBatchNote(
+        controller.signal.aborted
+          ? `Stopped after ${saved} of ${targets.length} files`
+          : `Downloaded ${saved} file${saved === 1 ? '' : 's'}`,
+      );
     },
     [saveOne],
   );
@@ -562,7 +632,7 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
         '#!/bin/sh',
         '# Vertical Vegetation Structure Model — CC BY 4.0',
         '# https://source.coop/geoai-ucph/gvsm',
-        `# ${targets.length} files, roughly 100-170 MB each.`,
+        `# ${targets.length} files, roughly 85-170 MB each.`,
         'set -e',
         ...targets.map((t) => `curl -L --fail -C - -o "${t.name}" "${t.url}"`),
       ];
@@ -600,21 +670,21 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
         ? `all ${rhs.length}`
         : rhs.length <= 3
           ? rhs.map((r) => `RH${r}`).join(', ')
-          : `${rhs.length} levels`;
+          : `${rhs.length} RHs`;
 
   /**
-   * One button per row. Below the threshold it fetches the files itself, named;
-   * above it, it writes the script that does the same thing outside the browser.
-   * Either way the reader clicks once — the selection was already made in the
-   * picker, and asking for it again per file is asking twice.
+   * The last step's buttons. Below the threshold it fetches the files itself,
+   * named; above it, it writes the script that does the same thing outside the
+   * browser. Copy URLs sits beside either, for anyone with their own tooling.
    */
   const targetControls = (targets: Target[], key: string, label: string) => {
     const mine = batch?.key === key ? batch : null;
     const busy = batch !== null;
+    const direct = targets.length <= MAX_DIRECT_FILES;
 
-    if (targets.length <= MAX_DIRECT_FILES) {
-      return (
-        <div className="ex-download__links">
+    return (
+      <div className="ex-download__links">
+        {direct ? (
           <button
             type="button"
             className={mine ? 'ex-download__go is-running' : 'ex-download__go'}
@@ -626,30 +696,49 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
               ? `${mine.done + 1} of ${mine.total} · ${Math.round(mine.frac * 100)}%`
               : `Download ${targets.length} file${targets.length === 1 ? '' : 's'}`}
           </button>
-          {mine && (
-            <button type="button" onClick={() => abortRef.current?.abort()}>
-              Stop
-            </button>
-          )}
-        </div>
-      );
-    }
-
-    return (
-      <div className="ex-download__links">
-        <button
-          type="button"
-          className="ex-download__go"
-          onClick={() => downloadScript(targets, label)}
-        >
-          Download script · {targets.length} files
-        </button>
-        <button type="button" onClick={() => copyUrls(targets)}>
-          {copied ? 'Copied' : 'Copy URLs'}
-        </button>
+        ) : (
+          <button type="button" className="ex-download__go" onClick={() => downloadScript(targets, label)}>
+            Download script · {targets.length} files
+          </button>
+        )}
+        {mine ? (
+          <button type="button" onClick={() => abortRef.current?.abort()}>
+            Stop
+          </button>
+        ) : (
+          <button type="button" onClick={() => copyUrls(targets)}>
+            {copied ? 'Copied' : 'Copy URLs'}
+          </button>
+        )}
+        {/* The button text says "2 of 5 · 40%" for the eye; <progress> says it
+            to assistive tech, as one bar over the whole batch. */}
+        {mine && (
+          <progress
+            className="ex-download__progress"
+            value={mine.done + mine.frac}
+            max={mine.total}
+            aria-label={`Downloading file ${mine.done + 1} of ${mine.total}`}
+          />
+        )}
       </div>
     );
   };
+
+  /** A numbered step heading; the number follows whether the tile step is there. */
+  const stepHead = (n: number, text: string, count?: React.ReactNode) => (
+    <span className="ex-download__label">
+      <span className="ex-download__step">
+        <span className="ex-download__step-n" aria-hidden="true">
+          {n}
+        </span>
+        {text}
+      </span>
+      {count != null && <span className="ex-download__count">{count}</span>}
+    </span>
+  );
+
+  const targets = tilesMode ? tileScripted : mosaicTargets;
+  const lastStep = tilesMode ? 4 : 3;
 
   return (
     <>
@@ -673,180 +762,164 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
         Download data
       </button>
 
-      {open && (
-        <div
-          ref={panelRef}
-          className="ex-flyout"
-          style={{ left: pos.left, top: pos.top }}
-          role="dialog"
-          aria-label="Download the data"
-        >
-          <header className="ex-flyout__head">
-            <h2>Download</h2>
-            {/* Before the close button, in the order they are reached for: pin
-                while working, close when done. */}
-            <button
-              type="button"
-              className={pinned ? 'ex-flyout__pin is-on' : 'ex-flyout__pin'}
-              onClick={() => setPinned((p) => !p)}
-              aria-pressed={pinned}
-              aria-label={pinned ? 'Unpin' : 'Pin'}
-              title={
-                pinned
-                  ? 'Pinned — stays open while you pan and click the map'
-                  : 'Pin so it stays open while you pan and click the map'
-              }
-            >
-              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                <path
-                  fill="currentColor"
-                  d="M16 9V4h1a1 1 0 0 0 0-2H7a1 1 0 0 0 0 2h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3Z"
-                />
-              </svg>
-            </button>
-            <button type="button" onClick={() => setOpen(false)} aria-label="Close">
-              ×
-            </button>
-          </header>
-
-          {/* Its own RH control, not the map's. Every level from 0 to 100 is
-              published, and the seven buttons in the sidebar are a viewing
-              choice — there is no reason a download should inherit it beyond a
-              sensible default. Open on the page rather than behind a second
-              disclosure: the flyout has the room the sidebar did not, and a
-              dropdown inside a popup is one lid too many. */}
-          <div className="ex-download__row">
-            <span className="ex-download__label">
-              <span className="ex-download__step">
-                <span className="ex-download__step-n" aria-hidden="true">
-                  1
-                </span>
-                Choose relative heights
-              </span>
-              <span className="ex-download__count">{summary}</span>
-            </span>
-            <div className="ex-download__picker">
-              <div className="ex-download__picker-actions">
-              <button type="button" onClick={() => setChosen(allRhs)}>
-                All {allRhs.length}
+      {/* Portalled out of the sidebar into the page's <main>. The sidebar has a
+          backdrop-filter, which makes it the containing block of its fixed
+          children and clips them to its scroll box: rendered inside it, this
+          panel was offset by the sidebar's position and cut off entirely. */}
+      {open &&
+        createPortal(
+          <dialog
+            ref={panelRef}
+            className="ex-flyout"
+            style={{ left: pos.left, top: pos.top }}
+            aria-labelledby={titleId}
+            tabIndex={-1}
+          >
+            <header className="ex-flyout__head">
+              <h2 id={titleId}>Download</h2>
+              {/* Before the close button, in the order they are reached for: pin
+                  while working, close when done. */}
+              <button
+                type="button"
+                className={pinned ? 'ex-flyout__pin is-on' : 'ex-flyout__pin'}
+                onClick={() => setPinned((p) => !p)}
+                aria-pressed={pinned}
+                aria-label="Pin"
+                title={
+                  pinned
+                    ? 'Pinned — stays open while you pan and click the map'
+                    : 'Pin so it stays open while you pan and click the map'
+                }
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path
+                    fill="currentColor"
+                    d="M16 9V4h1a1 1 0 0 0 0-2H7a1 1 0 0 0 0 2h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3Z"
+                  />
+                </svg>
               </button>
-                <button type="button" onClick={() => setChosen([...rhIndexes])}>
-                  On the map
-                </button>
-                <button type="button" onClick={() => setChosen([])}>
-                  None
-                </button>
-              </div>
-              {/* Every level, highest first — RH100 at the top reads as the top
-                  of the canopy, which is what it is. */}
-              <div className="ex-download__grid" role="group" aria-label="Relative height levels">
-                {allRhs.map((rh) => {
-                  const on = rhs.includes(rh);
-                  return (
-                    <button
-                      key={rh}
-                      type="button"
-                      role="checkbox"
-                      aria-checked={on}
-                      className={on ? 'is-active' : undefined}
-                      onClick={() => setChosen(on ? rhs.filter((r) => r !== rh) : [...rhs, rh])}
-                    >
-                      {rh}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+              <button type="button" onClick={closeToTrigger} aria-label="Close">
+                ×
+              </button>
+            </header>
 
-          {/* Both rows below download the levels chosen above, at the two
-              granularities the store is published in — so they are one step
-              with a choice inside it, not two more steps. Saying so here is
-              the whole reason for the numbering: without it the levels read
-              as belonging only to the row they sit next to. */}
-          <div className="ex-download__group">
-            <span className="ex-download__label">
-              <span className="ex-download__step">
-                <span className="ex-download__step-n" aria-hidden="true">
-                  2
-                </span>
-                Download those RHs
-              </span>
-            </span>
-            <span className="ex-hint">At either resolution — both use the levels above.</span>
-            <div className="ex-download__group-body">
-              {/* The whole-world file first: it is one click, it always works, and
-                  it is the right answer for anyone who does not care about a
-                  specific place. The per-tile machinery below is for people who
-                  do. */}
+            {/* Its own RH control, not the map's. Every level from 0 to 100 is
+                published, and the seven buttons in the sidebar are a viewing
+                choice — there is no reason a download should inherit it beyond a
+                sensible default. Open on the page rather than behind a second
+                disclosure: the flyout has the room the sidebar did not, and a
+                dropdown inside a popup is one lid too many. */}
+            {/* The numbered steps, as one stepper: discs down a rail on the left. */}
+            <div className="ex-download__stages">
+              <div className="ex-download__row">
+                {stepHead(1, 'Choose RH metrics', summary)}
+                <div className="ex-download__picker">
+                  <div className="ex-download__picker-actions">
+                    <button type="button" onClick={() => setChosen(allRhs)}>
+                      All {allRhs.length}
+                    </button>
+                    <button type="button" onClick={() => setChosen([])}>
+                      None
+                    </button>
+                  </div>
+                  {/* Every level, highest first — RH100 at the top reads as the top
+                      of the canopy, which is what it is. */}
+                  <div className="ex-download__grid" role="group" aria-label="RH metrics">
+                    {allRhs.map((rh) => {
+                      const on = rhs.includes(rh);
+                      return (
+                        <button
+                          key={rh}
+                          type="button"
+                          role="checkbox"
+                          aria-checked={on}
+                          className={on ? 'is-active' : undefined}
+                          onClick={() => setChosen(on ? rhs.filter((r) => r !== rh) : [...rhs, rh])}
+                        >
+                          {rh}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Resolution before place: it decides whether there is a place to
+                  choose. Two cards rather than a switch, so each can say what it
+                  gives you. */}
               {info.mosaic_url_template && (
                 <div className="ex-download__row">
-                  <span className="ex-download__label">
-                    Global overview, ~1 km
-                    {mosaicTargets.length > 0 && (
-                      <span className="ex-download__count">
-                        {mosaicTargets.length} file{mosaicTargets.length === 1 ? '' : 's'}
-                      </span>
-                    )}
-                  </span>
-                  {mosaicTargets.length === 0 ? (
-                    <span className="ex-hint">Choose at least one relative height.</span>
-                  ) : (
-                    targetControls(mosaicTargets, 'mosaic', 'global_mosaic_1km')
+                  {stepHead(2, 'Choose resolution')}
+                  <div className="ex-download__res" role="radiogroup" aria-label="Resolution">
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={res === 'tiles'}
+                      className={res === 'tiles' ? 'is-on' : undefined}
+                      onClick={() => setRes('tiles')}
+                    >
+                      <b>10 m tiles</b>
+                      <span>Full resolution, per Sentinel-2 tile, ~100 MB each</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={res === 'mosaic'}
+                      className={res === 'mosaic' ? 'is-on' : undefined}
+                      onClick={() => setRes('mosaic')}
+                    >
+                      <b>~1 km global</b>
+                      <span>Overview of the whole world, one file per RH</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* The map is the tile picker; this is only the instruction, the
+                  count and the two bulk shortcuts. No list of names: "47QPB" says
+                  neither where it is nor whether it is the one you wanted. */}
+              {tilesMode && (
+                <div className="ex-download__row">
+                  {stepHead(
+                    info.mosaic_url_template ? 3 : 2,
+                    'Choose tiles',
+                    `${activeTiles.length} tile${activeTiles.length === 1 ? '' : 's'}`,
                   )}
+                  <span className="ex-hint">
+                    {zoom !== null && zoom < GRID_ZOOM
+                      ? 'Zoom in to see the tile grid — the 10 m data is published per Sentinel-2 (MGRS) tile.'
+                      : zoom !== null && zoom >= TILE_ZOOM && tiles.length === 0 && activeTiles.length === 0
+                        ? 'No tiles here — the view is off the data.'
+                        : 'Click tiles on the map to choose them.'}
+                  </span>
+                  <div className="ex-download__picker-actions">
+                    <button type="button" onClick={() => setPicked(null)}>
+                      All in view
+                    </button>
+                    <button type="button" onClick={() => setPicked([])}>
+                      None
+                    </button>
+                  </div>
                 </div>
               )}
 
               <div className="ex-download__row">
-                <span className="ex-download__label">
-                  Full resolution, 10 m
-                  {tileTargets.length > 0 && (
-                    <span className="ex-download__count">
-                      {activeTiles.length} tile{activeTiles.length === 1 ? '' : 's'} × {rhs.length}
-                    </span>
-                  )}
-                </span>
-
-                {/* The map is the tile picker; this is only the instruction and the
-                    two bulk shortcuts.
-
-                    The list of tile names that used to sit here is gone. It was a
-                    second copy of the selection with no advantage over the first:
-                    the names mean nothing without the geography, so reading
-                    "47QPB" told you neither where it was nor whether it was the one
-                    you wanted — you had to look at the map anyway. The count in the
-                    label above says how many are chosen, which is the part the list
-                    was actually carrying. */}
-                <span className="ex-hint">
-                  {zoom !== null && zoom < GRID_ZOOM
-                    ? 'Zoom in to see the tile grid — the 10 m data is published per Sentinel-2 (MGRS) tile.'
-                    : 'Click tiles on the map to choose them.'}
-                </span>
-                <div className="ex-download__picker-actions">
-                  <button type="button" onClick={() => setPicked(null)}>
-                    All in view
-                  </button>
-                  <button type="button" onClick={() => setPicked([])}>
-                    None
-                  </button>
-                </div>
-
-                {/* Nothing to download is the normal starting state now, and the
-                    line above already says what to do about it — so the only cases
-                    worth their own words are the two the reader cannot act on: no
-                    levels chosen, and a view with no data under it. */}
+                {stepHead(
+                  info.mosaic_url_template ? lastStep : lastStep - 1,
+                  'Download',
+                  targets.length > 0 ? `${targets.length} file${targets.length === 1 ? '' : 's'}` : undefined,
+                )}
                 {rhs.length === 0 ? (
-                  <span className="ex-hint">Choose at least one relative height.</span>
-                ) : zoom !== null && zoom >= TILE_ZOOM && tiles.length === 0 && activeTiles.length === 0 ? (
-                  <span className="ex-hint">No tiles here — the view is off the data.</span>
-                ) : tileTargets.length === 0 ? null : (
+                  <span className="ex-hint">Choose at least one RH metric first.</span>
+                ) : tilesMode && activeTiles.length === 0 ? (
+                  <span className="ex-hint">Choose at least one tile on the map first.</span>
+                ) : (
                   <>
-                    {targetControls(tileScripted, 'tiles', 'tiles_10m')}
-                    {tileTargets.length > MAX_DIRECT_FILES && (
+                    {targetControls(targets, res, tilesMode ? 'tiles_10m' : 'global_mosaic_1km')}
+                    {tilesMode && tileTargets.length > MAX_DIRECT_FILES && (
                       <span className="ex-hint">
-                        Roughly 100 MB each.{' '}
                         {tilesCapped &&
-                          `Capped at ${MAX_SCRIPT_FILES} of ${tileTargets.length} files — zoom in, choose fewer levels, or take the whole repository instead. `}
+                          `Capped at ${MAX_SCRIPT_FILES} of ${tileTargets.length} files — choose fewer tiles or RH metrics. `}
                         Run it with <code>sh</code>; it names each file and resumes a broken transfer.
                       </span>
                     )}
@@ -854,28 +927,31 @@ export function DownloadPanel({ rhIndexes, year }: { rhIndexes: number[]; year: 
                 )}
               </div>
             </div>
-          </div>
 
-          {/* The one thing this panel cannot do, and where to go for it. The
-              note that used to sit here — that a COG can be subset in place
-              with gdal_translate over /vsicurl/ — was the reasoning behind not
-              building an area-of-interest download, not something the reader
-              needs at the moment of downloading. Anyone who would act on it
-              already knows it. */}
-          {/* A real address, not the `huzh,nila,igel@di.ku.dk` shorthand: that
-              is one address as far as a mail client is concerned, and it does
-              not exist. One visible recipient with the others on cc — three
-              addresses in a row wrap to three lines here and make the sentence
-              hard to read, while a bare "contact us" hides the thing a reader
-              may want to copy rather than click.
+            {/* The one thing this panel cannot do, and where to go for it. The
+                note that used to sit here — that a COG can be subset in place
+                with gdal_translate over /vsicurl/ — was the reasoning behind not
+                building an area-of-interest download, not something the reader
+                needs at the moment of downloading. Anyone who would act on it
+                already knows it. */}
+            {/* A real address, not the `huzh,nila,igel@di.ku.dk` shorthand: that
+                is one address as far as a mail client is concerned, and it does
+                not exist. One visible recipient with the others on cc — three
+                addresses in a row wrap to three lines here and make the sentence
+                hard to read, while a bare "contact us" hides the thing a reader
+                may want to copy rather than click.
 
-              No target="_blank": mailto opens a mail client, not a tab. */}
-          <span className="ex-hint">
-            For everything at once, contact us at{' '}
-            <a href="mailto:huzh@di.ku.dk?cc=nila@di.ku.dk,igel@di.ku.dk">{"{huzh,nila,igel}@di.ku.dk"}</a>.
-          </span>
-        </div>
-      )}
+                No target="_blank": mailto opens a mail client, not a tab. */}
+            <span className="ex-hint ex-download__foot">
+              For bulk access to the full dataset, contact us at{' '}
+              <a href="mailto:huzh@di.ku.dk?cc=nila@di.ku.dk,igel@di.ku.dk">{"{huzh,nila,igel}@di.ku.dk"}</a>.
+            </span>
+            <span className="ex-visually-hidden" role="status">
+              {batchNote}
+            </span>
+          </dialog>,
+          triggerRef.current?.closest('main') ?? document.body,
+        )}
     </>
   );
 }

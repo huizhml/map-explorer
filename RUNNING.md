@@ -19,7 +19,7 @@ same paths locally and published:
 | `/vsm/dev/` | Full app — the working tool | ✅ | ❌ | ~746 KB |
 | `/vsm/story/` | Story deck — drafts | ✅ | only with `PUBLISH_STORY=1` | ~64 KB |
 
-Locally that is `http://localhost:9030/vsm/…` with `npm run dev`, or
+Locally that is `http://localhost:5173/vsm/…` with `npm run dev`, or
 `http://localhost:9036/vsm/…` through `scripts/launch.sh` on hendrix. Published,
 it is `https://huizhml.github.io/vsm/…`. The links that went out before the
 move forward there: `huizhml.github.io/map-explorer/` to the title page and
@@ -78,7 +78,14 @@ One-time:
 bash scripts/setup-local-backend.sh      # conda env `gis_app`, python 3.11
 ```
 
-Every time:
+Every time, in one terminal (Ctrl-C stops both):
+
+```bash
+bash scripts/launch.sh local             # http://localhost:5173/vsm/explorer/
+```
+
+It finds the `gis_app` python and a node ≥ 20 from nvm by itself (override
+with `GIS_APP_PYTHON` / `NODE_BIN`). By hand, the same thing is:
 
 ```bash
 # terminal 1 — backend
@@ -87,7 +94,7 @@ source scripts/env.local.sh
 cd backend && uvicorn app:app --reload --port 8006
 
 # terminal 2 — frontend
-npm run dev                              # http://localhost:9030/vsm/dev
+npm run dev                              # http://localhost:5173/vsm/dev
 ```
 
 All rasters come over HTTP from source.coop, so no cluster access and no local

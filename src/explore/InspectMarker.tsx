@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Marker } from 'maplibre-gl';
 import { useExploreMap } from './exploreMap';
+import { ACCENT } from './theme';
 
 /**
  * Where the reading card is reading.
@@ -32,9 +33,9 @@ import { useExploreMap } from './exploreMap';
  */
 const PIN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="26" height="36" viewBox="0 0 26 36">
   <path d="M13 1.6C7.3 1.6 2.9 6 2.9 11.4c0 7.4 10.1 22 10.1 22s10.1-14.6 10.1-22C23.1 6 18.7 1.6 13 1.6Z"
-        fill="#10796a" stroke="rgba(0,0,0,0.5)" stroke-width="4" stroke-linejoin="round"/>
+        fill="${ACCENT}" stroke="rgba(0,0,0,0.5)" stroke-width="4" stroke-linejoin="round"/>
   <path d="M13 1.6C7.3 1.6 2.9 6 2.9 11.4c0 7.4 10.1 22 10.1 22s10.1-14.6 10.1-22C23.1 6 18.7 1.6 13 1.6Z"
-        fill="#10796a" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/>
+        fill="${ACCENT}" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/>
   <circle cx="13" cy="11.3" r="3.9" fill="#fff"/>
 </svg>`;
 
@@ -70,6 +71,9 @@ export function InspectMarker({
   const onMapRef = useRef(false);
   const onDragRef = useRef(onDrag);
   onDragRef.current = onDrag;
+  // Where the parent says the pin is: the centre of the pixel being read.
+  const posRef = useRef<[number, number] | null>(null);
+  posRef.current = lon !== undefined && lat !== undefined ? [lon, lat] : null;
 
   useEffect(() => {
     if (!map) return;
@@ -80,6 +84,14 @@ export function InspectMarker({
     marker.on('drag', () => {
       const p = marker.getLngLat();
       onDragRef.current?.(p.lng, p.lat);
+      // Hold the pin where the parent has it. The parent snaps to a pixel
+      // centre, clamped to the box, but answers only when the pixel changes:
+      // within one pixel, or dragged past the edge (where the clamp keeps the
+      // same edge pixel), it leaves lon/lat alone and nothing moved the pin
+      // back, so it followed the pointer out of the box. A new pixel arrives
+      // through the lon/lat effect below. MapLibre recomputes the drag from
+      // the pointer on every move, so resetting here does not break it.
+      if (posRef.current) marker.setLngLat(posRef.current);
     });
     markerRef.current = marker;
     return () => {

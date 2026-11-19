@@ -8,6 +8,7 @@ import { build as esbuild } from 'esbuild'
 //
 //   /vsm/            index.html           title page — what the dataset is
 //   /vsm/explorer/   explorer/index.html  the map
+//   /vsm/documentation/ documentation/index.html  how to read, use and download the data
 //   /vsm/dev/        dev/index.html       full app — the working tool, local only
 //   /vsm/story/      story/index.html     narrative deck — drafts, local only
 //
@@ -153,6 +154,8 @@ export default defineConfig({
       input: {
         landing: resolve(__dirname, 'index.html'),
         explorer: resolve(__dirname, 'explorer/index.html'),
+        // At documentation/, not docs/: docs/ is for documents, never page code.
+        documentation: resolve(__dirname, 'documentation/index.html'),
         // dev/ is deliberately absent: the full app is for local use only. On
         // the public read-only backend most of it (upload, saving, auxiliary
         // layers) meets 403s and 503s. The dev server serves it regardless.
@@ -161,7 +164,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 9030,
+    port: 5173,
     watch: {
       // Use polling so Vite detects SFTP file changes (no inotify events)
       usePolling: true,

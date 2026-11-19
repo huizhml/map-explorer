@@ -62,6 +62,6 @@ Done. To run the backend:
 
 And the frontend, in another terminal:
 
-    npm run dev     # http://localhost:9030/vsm/dev
+    npm run dev     # http://localhost:5173/vsm/dev
 
 EOF

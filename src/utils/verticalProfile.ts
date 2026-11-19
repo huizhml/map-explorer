@@ -67,8 +67,10 @@ export async function fetchVerticalProfile(
   year: number,
   fhdInterval: number = DEFAULT_DIVERSITY_HEIGHT_BIN_M,
   version: VsmVersion = DEFAULT_VSM_VERSION,
+  signal?: AbortSignal,
 ): Promise<VerticalProfileResponse> {
   const res = await fetch(apiUrl('/predictions/vertical-profile'), {
+    signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

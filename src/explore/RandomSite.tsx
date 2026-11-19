@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GeoJSONSource } from 'maplibre-gl';
 import { TransectHeatmap, type Transect } from './TransectHeatmap';
 import { placeLabel, reverseGeocode, type Place } from '../utils/reverseGeocode';
-import { setIntroCancel, takeCamera, useExploreMap } from './exploreMap';
+import { setIntroCancel, setSiteOpener, takeCamera, useExploreMap } from './exploreMap';
 
 /**
  * "Visit a random site" — jumps to one of the curated sites, draws its transect
- * on the map, and shows the profile measured along it.
+ * on the map, and shows the predicted profile along it.
  *
  * Reads a static bundle (public/sites/), not the API: the profiles are already
  * stored, so there is nothing to compute and the jump is instant. The bundle is
@@ -32,6 +32,13 @@ const BUNDLE_URL = `${import.meta.env.BASE_URL}sites/sites.json`;
 const IMAGE_BASE = `${import.meta.env.BASE_URL}sites/`;
 
 const LINE_SOURCE = 'site-transect';
+
+/**
+ * How long the move to a site takes. Sites are continents apart, and at 0.9 s
+ * the jump read as a cut rather than travel: you could not tell where on Earth
+ * you had landed (user, 2026-11-12).
+ */
+const SITE_FLIGHT_MS = 3500;
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 
 /**
@@ -113,14 +120,34 @@ export function RandomSite({ intro = true }: { intro?: boolean }) {
         // visible whatever its length — these run from under 1 km to several.
         const xs = coords.map((c) => c[0]);
         const ys = coords.map((c) => c[1]);
-        map.fitBounds([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], {
-          padding: { top: 90, right: 90, bottom: 260, left: 90 },
-          duration: 900,
-          maxZoom: 14,
-        });
+        const bounds: [number, number, number, number] = [
+          Math.min(...xs),
+          Math.min(...ys),
+          Math.max(...xs),
+          Math.max(...ys),
+        ];
+        // Into the map left below the site card, which hangs from the top and
+        // is most of the map's height: a fixed 90 px top padding put the line
+        // under the card, out of sight. The card mounts with this visit, so it
+        // is measured a couple of frames later. Bottom clears the button bar.
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const box = map.getContainer().getBoundingClientRect();
+            const card = document.querySelector('.ex-site')?.getBoundingClientRect();
+            const bottom = 90;
+            const below = card ? card.bottom - box.top + 24 : 90;
+            // Keep at least 80 px of map for the line, even if the card is taller.
+            const top = Math.max(40, Math.min(below, box.height - bottom - 80));
+            map.fitBounds(bounds, {
+              padding: { top, right: 90, bottom, left: 90 },
+              duration: SITE_FLIGHT_MS,
+              maxZoom: 14,
+            });
+          }),
+        );
       } else {
         source?.setData(EMPTY);
-        if (site.center) map.easeTo({ center: site.center, zoom: 12, duration: 900 });
+        if (site.center) map.easeTo({ center: site.center, zoom: 12, duration: SITE_FLIGHT_MS });
       }
     },
     [map],
@@ -137,6 +164,20 @@ export function RandomSite({ intro = true }: { intro?: boolean }) {
     setPos(pos + 1);
     show(site);
   }, [sites, map, current, pos, show]);
+
+  // A given site rather than a random one, for the guided tour. Added to the
+  // trail like any visit, so the back arrow works the same afterwards.
+  useEffect(() => {
+    setSiteOpener((id) => {
+      const site = sites?.find((s) => s.id === id);
+      if (!site || !map) return false;
+      setVisited((prev) => [...prev.slice(0, pos + 1), site]);
+      setPos(pos + 1);
+      show(site);
+      return true;
+    });
+    return () => setSiteOpener(null);
+  }, [sites, map, pos, show]);
 
   /**
    * The opening move: hold the global view, then fly into one of the curated

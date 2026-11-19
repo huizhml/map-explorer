@@ -37,7 +37,11 @@ export const HERO_LEDE =
  */
 export const HERO_IMAGE = `${import.meta.env.BASE_URL}story/hero.webp`;
 
-export function Hero({ actions, hidden }: { actions: ReactNode; hidden?: boolean }) {
+/**
+ * `foot` goes under the partner logos, in the band along the bottom of the
+ * slide: the landing page puts the citation there; the story deck leaves it out.
+ */
+export function Hero({ actions, hidden, foot }: { actions: ReactNode; hidden?: boolean; foot?: ReactNode }) {
   return (
     <section
       className="story-slide story-slide--hero"
@@ -62,7 +66,10 @@ export function Hero({ actions, hidden }: { actions: ReactNode; hidden?: boolean
           In the story deck the same corners carry the chapter dots (left) and
           the controls (right); the strip is centred and width-capped to stay
           out of both. */}
-      <PartnerLogos variant="hero" />
+      <div className="story-hero__foot">
+        <PartnerLogos variant="hero" />
+        {foot}
+      </div>
     </section>
   );
 }

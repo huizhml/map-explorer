@@ -36,11 +36,8 @@
    sits at the same height in the two bottom corners of a story slide. */
 .pl--hero {
   --pl-h: clamp(22px, 2.2vw, 34px);
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: max(3vw, 2rem);
-  z-index: 2;
+  /* Placed by its wrapper, .story-hero__foot (story.css), which also holds
+     the citation under it on the landing page. */
   /* One row, always — the six read as a single credit line, and wrapping the
      last two onto a second row makes them look like a different group. Narrow
      viewports shrink the logos instead (see the min-width below). */
@@ -51,14 +48,20 @@
   /* Not fully opaque: the hero image stays faintly visible through it, which
      keeps the band part of the slide rather than a card dropped onto it. */
   background: rgba(255, 255, 255, 0.92);
-  /* Clear of the chapter dots on the left and the controls on the right. */
-  max-width: min(58rem, 62%);
+  max-width: 100%;
 }
 /* Lets the row shrink below its natural width rather than overflowing: with
    min-width at its default (auto) a nowrap flex item refuses to go below its
    content, and the band would run under the deck's controls. */
 .pl--hero li {
   min-width: 0;
+}
+/* A set height rather than a cap: pcai.svg has a viewBox but no width or
+   height, so with height:auto in a shrinkable item its size depends on the
+   item's and the item's on it — it resolved to 0 and the logo vanished. A
+   definite height gives it a width from its aspect ratio. */
+.pl--hero img {
+  height: calc(var(--pl-h) * var(--pl-scale, 1));
 }
 
 /* --- explore sidebar: a quiet block in the panel foot -------------------- */
@@ -87,6 +90,22 @@
   display: flex;
   justify-content: center;
   min-width: 0;
+}
+
+/* --- docs page foot: one centred row on white ---------------------------- */
+
+/* The page is already white, so no band. Wraps onto a second row on narrow
+   screens rather than shrinking: here the logos are the only thing in the
+   footer and can take the room. */
+.pl--strip {
+  --pl-h: 30px;
+  justify-content: center;
+  gap: 1.25rem 2.25rem;
+}
+/* A set height, as in the hero band: pcai.svg has no intrinsic size and
+   collapses to nothing under height:auto. */
+.pl--strip img {
+  height: calc(var(--pl-h) * var(--pl-scale, 1));
 }
 
 @media (max-width: 720px) {

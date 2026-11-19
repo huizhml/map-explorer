@@ -16,6 +16,8 @@ import { LayerControl, type ExploreLayer } from './LayerControl';
 import { buildRamps } from './Colorbar';
 import { ProfileMetrics, RhProfileChart, VerticalProfileChart } from './ProfileCharts';
 import { RandomSite } from './RandomSite';
+import { Tour, tourSeen } from './Tour';
+import { TopBar } from '../components/TopBar';
 import { LocationSearch } from './LocationSearch';
 import { LocateMe } from './LocateMe';
 import { InspectMarker } from './InspectMarker';
@@ -57,6 +59,10 @@ const DATA_BOUNDS: [[number, number], [number, number]] = [[-179.999, -56.0371],
  * it rewrites the URL to its own view on the way — so by the time the second
  * map looks, the link it was opened with is gone.
  */
+const PANEL_KEY = 'vsm-explorer-panel';
+/** What the open panel covers of the map: 12 px gap + 320 px panel + 12 px gap (explore.css). */
+const PANEL_CLEAR = 344;
+
 const INITIAL_VIEW = (() => {
   const [z, lat, lon] = location.hash.slice(1).split('/').map(Number);
   return [z, lat, lon].every(Number.isFinite) ? { zoom: z, center: [lon, lat] as [number, number] } : null;
@@ -230,12 +236,11 @@ function ProfileBody({
           <figcaption>RH profile</figcaption>
           <RhProfileChart profile={profile.profile!} yMax={yMax} />
         </figure>
-        {profile.vertical_profile_curve && profile.vertical_profile_curve.length > 1 && (
-          <figure>
-            <figcaption>Vertical profile</figcaption>
-            <VerticalProfileChart curve={profile.vertical_profile_curve} yMax={yMax} />
-          </figure>
-        )}
+        {/* Always drawn, empty when there is no curve: see LineChart. */}
+        <figure>
+          <figcaption>Vertical profile</figcaption>
+          <VerticalProfileChart curve={profile.vertical_profile_curve ?? []} yMax={yMax} />
+        </figure>
       </div>
     </>
   );
@@ -312,7 +317,7 @@ export default function SimpleApp() {
       </span>
     </label>
   );
-  const cubeAbort = useRef<AbortController | null>(null);
+  const clickAbort = useRef<AbortController | null>(null);
   const clickId = useRef(0);
 
   /**
@@ -443,14 +448,24 @@ export default function SimpleApp() {
       // profile opens 101 COGs and takes ~5-20 s. The cube is sent at the same
       // time as the profile on purpose: the backend reads one 128 px window of
       // all 101 levels for both, once.
-      cubeAbort.current?.abort();
-      const abort = (cubeAbort.current = new AbortController());
+      //
+      // Whichever lands first fills the card's profile. They still need not
+      // land together: the profile POST can wait in the browser behind tile
+      // requests, and a read with a failed level is not cached, so a late
+      // profile request reads all 101 levels again. The cube holds the clicked
+      // pixel's column from the same unfilled bytes the backend profile reads
+      // (columnRh drops the cube's interpolated levels), so it gives the same profile.
+      clickAbort.current?.abort();
+      const abort = (clickAbort.current = new AbortController());
       fetchCube(lon, lat, year, abort.signal)
         .then((cube) =>
           setReading((p) => {
             if (!same(p)) return p;
             const next = { ...p, cube, cubeLoading: false };
-            return pin ? withProbe(next, pin[1], pin[0]) : next;
+            if (pin) return withProbe(next, pin[1], pin[0]);
+            if (!next.profileLoading && next.profile) return next;
+            const { row, col } = cube.meta.click;
+            return { ...next, profile: profileAt(cube, row, col), profileLoading: false, profileError: undefined };
           }),
         )
         .catch((err) => {
@@ -477,11 +492,11 @@ export default function SimpleApp() {
 
       reverseGeocode(lon, lat).then((place) => setReading((p) => (same(p) ? { ...p, place } : p)));
 
-      fetchVerticalProfile(lon, lat, year)
+      fetchVerticalProfile(lon, lat, year, undefined, undefined, abort.signal)
         .then((profile) =>
           setReading((p) =>
-            // Once the pin was dragged the card shows that pixel, computed from the cube.
-            same(p) && !p.probe
+            // Already filled from the cube (the clicked pixel, or the dragged pin's).
+            same(p) && p.profileLoading
               ? {
                   ...p,
                   profileLoading: false,
@@ -492,12 +507,15 @@ export default function SimpleApp() {
           ),
         )
         .catch((err) =>
-          setReading((p) => (same(p) && !p.probe ? { ...p, profileLoading: false, profileError: String(err) } : p)),
+          setReading((p) => (same(p) && p.profileLoading ? { ...p, profileLoading: false, profileError: String(err) } : p)),
         );
       return id;
     };
+    // With `pin` (even null) it is a shared link's card, whose cube opens on the
+    // link's view; without, a plain read like a click (the guided tour's).
     readAtRef.current = (lon, lat, pin) => {
-      sharedId.current = pin === undefined ? null : readAt(lon, lat, pin);
+      const id = readAt(lon, lat, pin);
+      sharedId.current = pin === undefined ? null : id;
     };
 
     const onClick = (e: MapMouseEvent) => {
@@ -607,179 +625,278 @@ export default function SimpleApp() {
     return () => clearTimeout(t);
   }, [share]);
 
+  /**
+   * The guided tour opens by itself on a first visit — but not on a linked
+   * view or a shared card, where the reader came for a particular place.
+   */
+  const [touring, setTouring] = useState(false);
+  useEffect(() => {
+    if (map && !INITIAL_VIEW && !SHARED && !tourSeen()) setTouring(true);
+  }, [map]);
+  const endTour = useCallback(() => setTouring(false), []);
+
+  /**
+   * The panel floats over the map and folds away to the left. Remembered per
+   * browser; opened again for the tour, whose steps point into it.
+   */
+  const [panelOpen, setPanelOpen] = useState(() => {
+    try {
+      return localStorage.getItem(PANEL_KEY) !== 'closed';
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(PANEL_KEY, panelOpen ? 'open' : 'closed');
+    } catch {
+      /* nowhere to remember it */
+    }
+  }, [panelOpen]);
+  useEffect(() => {
+    if (touring) setPanelOpen(true);
+  }, [touring]);
+  const togglePanel = useCallback(() => {
+    // The download flyout hangs off the panel; it goes with it.
+    document.querySelector<HTMLElement>('.ex-flyout [aria-label="Close"]')?.click();
+    setPanelOpen((o) => !o);
+  }, []);
+
+  // The map's camera works in the part of the map the panel leaves free, so a
+  // flight or a fit lands beside the panel rather than under it. Floating
+  // only from 721 px; below that the panel sits above the map instead.
+  const paddedOnce = useRef(false);
+  useEffect(() => {
+    if (!map) return;
+    const floating = matchMedia('(min-width: 721px)').matches;
+    const padding = { top: 0, right: 0, bottom: 0, left: floating && panelOpen ? PANEL_CLEAR : 0 };
+    if (!paddedOnce.current) {
+      paddedOnce.current = true;
+      map.setPadding(padding);
+    } else map.easeTo({ padding, duration: 250 });
+  }, [map, panelOpen]);
+  const tourReadAt = useCallback((lon: number, lat: number) => readAtRef.current?.(lon, lat), []);
+
   const ramps = useMemo(() => buildRamps(layers, qChoice), [layers, qChoice]);
   const shared = useMemo(() => ({ map, grid }), [map, grid]);
 
   return (
     <ExploreMapContext.Provider value={shared}>
       <div className="ex-root">
-        <SimpleControls rhIndexes={rhIndexes} onToggleRh={toggleRh} year={year} onYear={setYear} />
+        <TopBar />
+        {/* The landmark screen-reader users jump to past the site bar; the h1 names
+            the page for them, the map says it for everyone else. */}
+        <main className={panelOpen ? 'ex-body' : 'ex-body is-collapsed'}>
+          <h1 className="ex-visually-hidden">Explore the Global Vegetation Structure Map</h1>
+          <SimpleControls
+            rhIndexes={rhIndexes}
+            onToggleRh={toggleRh}
+            year={year}
+            onYear={setYear}
+            onTour={() => setTouring(true)}
+            collapsed={!panelOpen}
+          />
+          <button
+            type="button"
+            className="ex-panel-toggle"
+            onClick={togglePanel}
+            aria-expanded={panelOpen}
+            aria-label={panelOpen ? 'Hide the panel' : 'Show the panel'}
+            title={panelOpen ? 'Hide the panel' : 'Show the panel'}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d={panelOpen ? 'M15 5l-7 7 7 7' : 'M9 5l7 7-7 7'}
+              />
+            </svg>
+          </button>
 
-        <div className="ex-map">
-          <div className="ex-map__canvas" ref={containerRef} />
+          <div className="ex-map">
+            <div className="ex-map__canvas" ref={containerRef} />
 
-          <LayerControl layers={layers} year={year} ramps={ramps} onToggleVisible={toggleVisible} />
-          <BasemapControl value={basemap} onChange={setBasemap} />
-          {/* One column, so the search card pushes the locate button down when
-              it expands instead of opening over it. */}
-          <div className="ex-topleft">
-            <LocationSearch />
-            <LocateMe />
-          </div>
-          {/* Renders nothing itself — it owns a marker on the map. Mounted here
-              so the mark and the card that explains it come and go together. */}
-          <InspectMarker lon={reading?.lon} lat={reading?.lat} onDrag={reading?.cube ? onPinDrag : undefined} />
-          <CubeFootprint meta={reading?.cube?.meta} snapshot={cubeSnap} />
-          <MiniMap />
-          <RandomSite intro={!INITIAL_VIEW} />
-
-          {/* The grid gates every tile request, so its state is worth surfacing
-              rather than leaving the user staring at an empty map. */}
-          {!grid && !setupError && <div className="ex-status">Loading tile index…</div>}
-          {setupError && (
-            <div className="ex-status ex-status--error">Tile index unavailable — layers cannot load</div>
-          )}
-
-          {reading && (
-            <div className="ex-reading ex-reading--cube">
-              <header className="ex-reading__head">
-                {/* Place above coordinates: "Alto Paraíso, Brazil" answers where
-                    this is, and the numbers are what you copy afterwards. */}
-                <div className="ex-reading__where">
-                  <div className="ex-reading__place" title={reading.place?.address}>
-                    {reading.place ? placeLabel(reading.place) : reading.place === null ? 'Unnamed place' : '…'}
-                  </div>
-                  <div className="ex-reading__coords">
-                    {reading.lat.toFixed(5)}, {reading.lon.toFixed(5)}
-                    {(reading.cube?.meta.tile ?? reading.profile?.tile_name) &&
-                      ` · tile ${reading.cube?.meta.tile ?? reading.profile?.tile_name}`}
-                    {reading.probe && <span className="ex-reading__moved"> · pin moved</span>}
-                  </div>
-                </div>
-                <div className="ex-reading__actions">
-                  <button
-                    className="ex-icon-btn"
-                    onClick={onSavePage}
-                    disabled={!reading.cube || saving === 'busy'}
-                    title={
-                      reading.cube
-                        ? 'Save as a page: one HTML file that opens instantly, offline, with this cube and profile'
-                        : 'Available once the cube has loaded'
-                    }
-                    aria-label="Save as a page"
-                  >
-                    {saving === 'busy' ? <span className="ex-spinner ex-spinner--solo" /> : <PageDownloadIcon />}
-                  </button>
-                  <button
-                    className="ex-icon-btn"
-                    onClick={onShare}
-                    title="Copy a link to this place and view"
-                    aria-label="Share a link to this view"
-                  >
-                    <ShareIcon />
-                  </button>
-                  <button
-                    className="ex-icon-btn"
-                    onClick={() => {
-                      cubeAbort.current?.abort();
-                      setReading(null);
-                      setCubeSnap(null);
-                      setShare(null);
-                    }}
-                    title="Close"
-                    aria-label="Close"
-                  >
-                    <CloseIcon />
-                  </button>
-                </div>
-              </header>
-
-              {saving !== 'idle' && saving !== 'busy' && (
-                <div className="ex-share" role="alert">
-                  Could not save the page: {saving}
-                </div>
-              )}
-              {share && (
-                <div className={`ex-share${share.copied ? ' is-copied' : ''}`} role="status">
-                  {share.copied ? (
-                    <span className="ex-share__msg">
-                      <CheckIcon size={14} /> Link copied — it reopens this place, the pin and the cube view.
-                    </span>
-                  ) : (
-                    <span className="ex-share__msg">Copy this link:</span>
-                  )}
-                  <input
-                    readOnly
-                    value={share.url}
-                    onFocus={(e) => e.currentTarget.select()}
-                    aria-label="Link to this view"
-                  />
-                </div>
-              )}
-
-              <div className="ex-reading__values">
-                {/* Once the cube is in, its pixel is the reading: the same 10 m tile,
-                    and it follows the pin. Before that, the per-layer point reads. */}
-                {(reading.cube
-                  ? cubeRows(reading.cube, reading.probe ?? reading.cube.meta.click, rhIndexes)
-                  : reading.rows
-                ).map((row) => (
-                  <span key={row.rh} className="ex-chip">
-                    {row.text}
-                  </span>
-                ))}
-                {!reading.cube && reading.loading && <span className="ex-chip ex-chip--muted">Reading…</span>}
-                {!reading.cube && !reading.loading && reading.rows.length === 0 && (
-                  <span className="ex-chip ex-chip--muted">No layer to sample</span>
-                )}
-              </div>
-
-              <Suspense fallback={<div className="ex-cube ex-cube--placeholder">Loading 3D view…</div>}>
-                <CubePanel
-                  cube={reading.cube ?? null}
-                  probe={reading.probe ?? null}
-                  loading={reading.cubeLoading}
-                  error={reading.cubeError}
-                  ground={ground}
-                  onGround={setGround}
-                  initialView={reading.id === sharedId.current ? SHARED?.view : null}
-                  onSnapshot={setCubeSnap}
-                  exportRef={cubeExport}
-                  sideExtra={
-                    reading.profile?.profile && reading.profile.profile.length > 0 ? (
-                      <section className="ex-static__profile" aria-label="Profile at the pin">
-                        <ProfileBody profile={reading.profile} yMax={profileYMax} yMaxControl={yMaxControl} />
-                      </section>
-                    ) : null
-                  }
-                  onPick={(row, col, opts) => {
-                    if (!reading.cube) return;
-                    const [lon, lat] = pixelCentre(reading.cube.meta, row, col);
-                    onPinDrag(lon, lat);
-                    // Picked on the cube: zoom the map in on that pixel (10 m pixels ~8 px wide at z17).
-                    if (opts?.focus && map) map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 17) });
-                  }}
-                />
-              </Suspense>
-
-              <section className="ex-profile" aria-label="Profile at the pin">
-                <div className="ex-sec__head">
-                  <h3>Profile at the pin</h3>
-                </div>
-                {reading.profileLoading && (
-                  <p className="ex-profile__note">
-                    <span className="ex-spinner" /> Building the profile… reads RH0–RH100, this may take a while.
-                  </p>
-                )}
-                {reading.profileError && <p className="ex-profile__note">{reading.profileError}</p>}
-
-                {reading.profile?.profile && reading.profile.profile.length > 0 && (
-                  <ProfileBody profile={reading.profile} yMax={profileYMax} yMaxControl={yMaxControl} />
-                )}
-              </section>
+            <LayerControl layers={layers} year={year} ramps={ramps} onToggleVisible={toggleVisible} />
+            <BasemapControl value={basemap} onChange={setBasemap} />
+            {/* One column, so the search card pushes the locate button down when
+                it expands instead of opening over it. */}
+            <div className="ex-topleft">
+              <LocationSearch />
+              <LocateMe />
             </div>
-          )}
-        </div>
+            {/* Renders nothing itself — it owns a marker on the map. Mounted here
+                so the mark and the card that explains it come and go together. */}
+            <InspectMarker lon={reading?.lon} lat={reading?.lat} onDrag={reading?.cube ? onPinDrag : undefined} />
+            <CubeFootprint meta={reading?.cube?.meta} snapshot={cubeSnap} />
+            <MiniMap />
+            <RandomSite intro={!INITIAL_VIEW} />
+            <Tour open={touring} onClose={endTour} readAt={tourReadAt} rhIndexes={rhIndexes} />
+
+            {/* The grid gates every tile request, so its state is worth surfacing
+                rather than leaving the user staring at an empty map. */}
+            {!grid && !setupError && <div className="ex-status">Loading tile index…</div>}
+            {setupError && (
+              <div className="ex-status ex-status--error">Tile index unavailable — layers cannot load</div>
+            )}
+
+            {reading && (
+              <div className="ex-reading ex-reading--cube">
+                <header className="ex-reading__head">
+                  {/* Place above coordinates: "Alto Paraíso, Brazil" answers where
+                      this is, and the numbers are what you copy afterwards. */}
+                  <div className="ex-reading__where">
+                    <div className="ex-reading__place" title={reading.place?.address}>
+                      {reading.place ? placeLabel(reading.place) : reading.place === null ? 'Unnamed place' : '…'}
+                    </div>
+                    <div className="ex-reading__coords">
+                      {reading.lat.toFixed(5)}, {reading.lon.toFixed(5)}
+                      {(reading.cube?.meta.tile ?? reading.profile?.tile_name) &&
+                        ` · tile ${reading.cube?.meta.tile ?? reading.profile?.tile_name}`}
+                      {reading.probe && <span className="ex-reading__moved"> · pin moved</span>}
+                    </div>
+                  </div>
+                  <div className="ex-reading__actions">
+                    <button
+                      className="ex-icon-btn"
+                      onClick={onSavePage}
+                      disabled={!reading.cube || saving === 'busy'}
+                      title={
+                        reading.cube
+                          ? 'Save as a page: one HTML file that opens instantly, offline, with this cube and profile'
+                          : 'Available once the cube has loaded'
+                      }
+                      aria-label="Save as a page"
+                    >
+                      {saving === 'busy' ? (
+                        <span className="ex-spinner ex-spinner--solo" aria-hidden="true" />
+                      ) : (
+                        <PageDownloadIcon />
+                      )}
+                    </button>
+                    {/* The spinner is drawn for the eye; this says it for screen readers.
+                        Always mounted: a live region that arrives with its text is often
+                        not read. */}
+                    <span className="ex-visually-hidden" role="status">
+                      {saving === 'busy' ? 'Saving the page…' : ''}
+                    </span>
+                    <button
+                      className="ex-icon-btn"
+                      onClick={onShare}
+                      title="Copy a link to this place and view"
+                      aria-label="Share a link to this view"
+                    >
+                      <ShareIcon />
+                    </button>
+                    <button
+                      className="ex-icon-btn"
+                      onClick={() => {
+                        clickAbort.current?.abort();
+                        setReading(null);
+                        setCubeSnap(null);
+                        setShare(null);
+                      }}
+                      title="Close"
+                      aria-label="Close"
+                    >
+                      <CloseIcon />
+                    </button>
+                  </div>
+                </header>
+
+                {saving !== 'idle' && saving !== 'busy' && (
+                  <div className="ex-share" role="alert">
+                    Could not save the page: {saving}
+                  </div>
+                )}
+                {share && (
+                  <div className={`ex-share${share.copied ? ' is-copied' : ''}`} role="status">
+                    {share.copied ? (
+                      <span className="ex-share__msg">
+                        <CheckIcon size={14} /> Link copied — it reopens this place, the pin and the cube view.
+                      </span>
+                    ) : (
+                      <span className="ex-share__msg">Copy this link:</span>
+                    )}
+                    <input
+                      readOnly
+                      value={share.url}
+                      onFocus={(e) => e.currentTarget.select()}
+                      aria-label="Link to this view"
+                    />
+                  </div>
+                )}
+
+                <div className="ex-reading__values">
+                  {/* Once the cube is in, its pixel is the reading: the same 10 m tile,
+                      and it follows the pin. Before that, the per-layer point reads. */}
+                  {(reading.cube
+                    ? cubeRows(reading.cube, reading.probe ?? reading.cube.meta.click, rhIndexes)
+                    : reading.rows
+                  ).map((row) => (
+                    <span key={row.rh} className="ex-chip">
+                      {row.text}
+                    </span>
+                  ))}
+                  {!reading.cube && reading.loading && <span className="ex-chip ex-chip--muted">Reading…</span>}
+                  {!reading.cube && !reading.loading && reading.rows.length === 0 && (
+                    <span className="ex-chip ex-chip--muted">No layer to sample</span>
+                  )}
+                </div>
+
+                <Suspense fallback={<div className="ex-cube ex-cube--placeholder">Loading 3D view…</div>}>
+                  <CubePanel
+                    cube={reading.cube ?? null}
+                    probe={reading.probe ?? null}
+                    loading={reading.cubeLoading}
+                    error={reading.cubeError}
+                    ground={ground}
+                    onGround={setGround}
+                    initialView={reading.id === sharedId.current ? SHARED?.view : null}
+                    onSnapshot={setCubeSnap}
+                    exportRef={cubeExport}
+                    sideExtra={
+                      reading.profile?.profile && reading.profile.profile.length > 0 ? (
+                        <section className="ex-static__profile" aria-label="Profile at the pin">
+                          <ProfileBody profile={reading.profile} yMax={profileYMax} yMaxControl={yMaxControl} />
+                        </section>
+                      ) : null
+                    }
+                    onPick={(row, col, opts) => {
+                      if (!reading.cube) return;
+                      const [lon, lat] = pixelCentre(reading.cube.meta, row, col);
+                      onPinDrag(lon, lat);
+                      // Picked on the cube: zoom the map in on that pixel (10 m pixels ~8 px wide at z17).
+                      if (opts?.focus && map) map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 17) });
+                    }}
+                  />
+                </Suspense>
+
+                <section className="ex-profile" aria-label="Profile at the pin">
+                  <div className="ex-sec__head">
+                    <h3>Profile at the pin</h3>
+                  </div>
+                  {/* Always mounted, for the same reason as the save status above. */}
+                  <div role="status">
+                    {reading.profileLoading && (
+                      <p className="ex-profile__note">
+                        <span className="ex-spinner" aria-hidden="true" /> Building the profile… reads RH0–RH100, this
+                        may take a while.
+                      </p>
+                    )}
+                  </div>
+                  {reading.profileError && <p className="ex-profile__note">{reading.profileError}</p>}
+
+                  {reading.profile?.profile && reading.profile.profile.length > 0 && (
+                    <ProfileBody profile={reading.profile} yMax={profileYMax} yMaxControl={yMaxControl} />
+                  )}
+                </section>
+              </div>
+            )}
+          </div>
+        </main>
       </div>
     </ExploreMapContext.Provider>
   );

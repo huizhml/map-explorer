@@ -9,6 +9,7 @@
  */
 
 import { useId } from 'react';
+import { ACCENT } from './theme';
 
 type Pt = { x: number; y: number };
 
@@ -43,7 +44,7 @@ function LineChart({
   points,
   xLabel,
   yLabel,
-  colour = '#10796a',
+  colour = ACCENT,
   /** Draw a horizontal rule at this y value — the ground, for profiles. */
   yRule,
   yMax,
@@ -57,7 +58,25 @@ function LineChart({
   yMax?: number;
 }) {
   const clipId = useId();
-  if (points.length < 2) return <div className="ex-chart__empty">Not enough data</div>;
+  // Same frame and size as a drawn chart, so a pixel without data does not
+  // change the height of the card: dragging the pin across gaps would make the
+  // card (anchored at the bottom) jump up and down.
+  if (points.length < 2)
+    return (
+      <svg className="ex-chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Not enough data">
+        <line x1={PAD.left} y1={PAD.top} x2={PAD.left} y2={H - PAD.bottom} stroke="#cbd6d1" />
+        <line x1={PAD.left} y1={H - PAD.bottom} x2={W - PAD.right} y2={H - PAD.bottom} stroke="#cbd6d1" />
+        <text
+          className="ex-chart__nodata"
+          x={(PAD.left + W - PAD.right) / 2}
+          y={(PAD.top + H - PAD.bottom) / 2}
+          textAnchor="middle"
+          dominantBaseline="middle"
+        >
+          Not enough data
+        </text>
+      </svg>
+    );
 
   const s = scale(points, yMax);
   const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${s.x(p.x).toFixed(1)},${s.y(p.y).toFixed(1)}`).join(' ');
@@ -159,14 +178,24 @@ export function ProfileMetrics({
     { k: 'ENL 1D', title: 'Effective number of layers, order 1: exp(FHD)', v: enl1d },
     { k: 'ENL 2D', title: 'Effective number of layers, order 2: 1 / Σp² over 5 m bins', v: enl2d },
     { k: 'CR', title: 'Canopy ratio: (RH98 − RH25) / RH98', v: cr },
-  ].filter((m) => m.v != null && Number.isFinite(m.v));
-  if (!items.length) return null;
+  ];
+  // All four slots always, a dash where there is no value: the row keeps its
+  // height and its columns as the pin moves over pixels with and without data.
   return (
     <dl className="ex-profile__metrics">
       {items.map((m) => (
         <div key={m.k}>
           <dt title={m.title}>{m.k}</dt>
-          <dd>{m.v!.toFixed(2)}</dd>
+          <dd>
+            {m.v != null && Number.isFinite(m.v) ? (
+              m.v.toFixed(2)
+            ) : (
+              <>
+                <span aria-hidden="true">–</span>
+                <span className="ex-visually-hidden">no value</span>
+              </>
+            )}
+          </dd>
         </div>
       ))}
     </dl>

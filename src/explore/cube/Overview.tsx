@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { NODATA, type Cube } from './cubeData';
 import type { Snapshot } from './CubeScene';
 import { INFERNO } from './inferno';
+import { ACCENT } from '../theme';
 
 /**
  * The window seen from above: a ground image, or the canopy height (RH98 on
@@ -53,7 +54,7 @@ function drawPin(ctx: CanvasRenderingContext2D, x: number, y: number, s: number)
   ctx.arc(0, -16, 8, Math.PI, 0);
   ctx.bezierCurveTo(8, -10, 3, -6, 0, 0);
   ctx.closePath();
-  ctx.fillStyle = '#10796a';
+  ctx.fillStyle = ACCENT;
   ctx.fill();
   ctx.lineWidth = 2 / s;
   ctx.strokeStyle = '#fff';

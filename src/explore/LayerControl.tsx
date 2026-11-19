@@ -53,6 +53,10 @@ export function LayerControl({
               className={`ex-layers__icon${l.visible ? ' is-on' : ''}`}
               onClick={() => onToggleVisible(l.id)}
               title={l.visible ? 'Hide' : 'Show'}
+              // A fixed name that says which layer; the on/off state is aria-pressed's
+              // job. A label that flips Hide/Show would contradict it, and a bare
+              // title is not a name assistive tech can rely on.
+              aria-label={`Show RH${l.rhIndex}`}
               aria-pressed={l.visible}
             >
               {l.visible ? (

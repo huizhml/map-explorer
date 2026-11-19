@@ -329,6 +329,65 @@ body {
   margin: 0 0 2.5rem;
 }
 
+/* Along the foot of the slide: the logo strip, and on the landing page the
+   citation under it. Centred and width-capped to stay clear of the chapter
+   dots on the left and the controls on the right in the story deck. */
+.story-hero__foot {
+  position: absolute;
+  left: 50%;
+  bottom: max(3vw, 2rem);
+  z-index: 2;
+  transform: translateX(-50%);
+  /* A definite width, not max-content: an SVG logo without an intrinsic width
+     measures 0 in a max-content box and vanished from the strip. */
+  width: min(58rem, 62%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+.story-hero__cite {
+  /* Selectable, unlike the rest of the slide (see .story-slide--hero): a
+     reference is there to be copied. Only the landing page shows it, and it
+     has no swipe for a selection to get in the way of. */
+  user-select: text;
+  -webkit-user-select: text;
+  margin: 0;
+  max-width: 52rem;
+  font-size: clamp(0.72rem, 0.75vw, 0.85rem);
+  line-height: 1.5;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.78);
+  text-wrap: balance;
+}
+.story-hero__cite a {
+  color: #fff;
+  text-underline-offset: 2px;
+}
+.story-hero__cite-copy {
+  margin-left: 0.4rem;
+  padding: 0.12rem 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 999px;
+  background: none;
+  color: #fff;
+  font: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+  vertical-align: 0.05em;
+}
+.story-hero__cite-copy:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+/* Dropped on phones with the logo strip (partner-logos.css), and for the same
+   reason: the title and the way into the map have to fit above the fold. The
+   explorer's sidebar carries the citation there. */
+@media (max-width: 720px) {
+  .story-hero__cite {
+    display: none;
+  }
+}
+
 /* Start reading, and the shortcut straight to the map. Wraps rather than
    shrinks: at phone width the two sit on separate lines at full size. */
 .story-hero__actions {

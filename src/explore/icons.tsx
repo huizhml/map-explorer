@@ -84,4 +84,7 @@ export const PageDownloadIcon = ({ size = 16 }: P) =>
     </>,
   );
 
+export const DownloadIcon = ({ size = 16 }: P) =>
+  svg(size, <path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14" />);
+
 export const CheckIcon = ({ size = 16 }: P) => svg(size, <path d="M5 12.5l4.5 4.5L19 7" />);

@@ -2,7 +2,7 @@
    a UI framework to a page with six controls — and no index.css either, so the
    reset lives here.
    Without it the UA's default `body { margin: 8px }` both draws a white gutter
-   and pushes the 100vw/100vh layout past the viewport, producing scrollbars. */
+   and pushes the 100vw/100dvh layout past the viewport, producing scrollbars. */
 
 html,
 body {
@@ -17,13 +17,132 @@ body {
   box-sizing: border-box;
 }
 
+/* ---------------------------------------------------------- colours ---- */
+
+/* Every colour in this file is one of these tokens, so the look is set here:
+   light cards over the map, quiet grey type, one accent. */
+:root {
+  --ui-bg: #ffffff;
+  /* Cards over the map: white glass. */
+  --ui-surface: rgba(255, 255, 255, 0.96);
+  /* A step off the surface: inputs, chips, hover, quiet tints. */
+  --ui-raised: #f2f6f4;
+  --ui-line: #e5ebe8;
+  --ui-line-strong: #d3ddd9;
+  --ui-text: #13201b;
+  --ui-text-2: #45524c;
+  --ui-muted: #6b7a74;
+  --accent: #10796a;
+  --accent-hover: #0d6459;
+  /* The accent as text or a rule. */
+  --accent-text: #0d6459;
+  /* Text on an accent fill. */
+  --on-accent: #ffffff;
+}
+html,
+body {
+  background: var(--ui-bg);
+}
+/* The cards that float over the map blur what is under them, so the map
+   still shows through the glass without competing with the text. */
+.ex-panel,
+.ex-reading,
+.ex-site,
+.ex-tour,
+.ex-flyout {
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+/* Except a card holding the 3D cube. backdrop-filter makes an element the
+   containing block of its position: fixed descendants, and the cube has two —
+   its hover tip and its enlarged view — which would then be placed relative to
+   this card and clipped by its scroll box (the enlarged cube filled the card,
+   not the window). At 96 % opacity the blur barely shows here anyway. The
+   download flyout had the same problem in .ex-panel and is portalled out. */
+.ex-reading:has(.ex-cube) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .ex-root {
   display: flex;
-  height: 100vh;
+  flex-direction: column;
+  height: 100dvh;
   width: 100vw;
   overflow: hidden;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: #0f1512;
+  color: var(--ui-text);
+}
+
+/* Under the bar: the map, full width, with the panel floating over its left
+   side (stacked above it on a phone). --ex-panel-clear is how much of the map
+   the open panel covers — 12 px + 320 px + 12 px, as PANEL_CLEAR in
+   SimpleApp — and everything anchored to the map's left edge steps over it. */
+.ex-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  --ex-panel-clear: 344px;
+}
+.ex-body.is-collapsed {
+  --ex-panel-clear: 0px;
+  /* No flyout without the panel it hangs from. */
+  --ex-flyout-clear: 0px;
+}
+@media (min-width: 721px) {
+  .ex-panel {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    bottom: 12px;
+    z-index: 20;
+    border-radius: 16px;
+    box-shadow:
+      0 1px 3px rgba(16, 40, 32, 0.12),
+      0 12px 32px -6px rgba(16, 40, 32, 0.3);
+    transition: transform 0.25s cubic-bezier(0.2, 0, 0, 1), opacity 0.25s;
+  }
+  .ex-panel.is-collapsed {
+    transform: translateX(calc(-100% - 24px));
+    opacity: 0;
+  }
+}
+
+/* The fold: a tab on the panel's right edge, at the map's left edge when the
+   panel is away. */
+.ex-panel-toggle {
+  position: absolute;
+  top: 50%;
+  left: max(0px, calc(var(--ex-panel-clear) - 12px));
+  z-index: 21;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 52px;
+  margin-top: -26px;
+  padding: 0;
+  border: 1px solid var(--ui-line);
+  border-left: 0;
+  border-radius: 0 10px 10px 0;
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
+  box-shadow: 3px 2px 8px rgba(16, 40, 32, 0.12);
+  cursor: pointer;
+  transition: left 0.25s cubic-bezier(0.2, 0, 0, 1), color 0.15s;
+}
+.ex-panel-toggle:hover {
+  color: var(--accent-text);
+}
+.ex-panel-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The scale bar, bottom-left, steps over the panel like the rest. */
+.ex-map .maplibregl-ctrl-bottom-left {
+  left: var(--ex-panel-clear);
+  transition: left 0.25s cubic-bezier(0.2, 0, 0, 1);
 }
 
 /* --------------------------------------------------------------- panel ---- */
@@ -31,24 +150,28 @@ body {
 .ex-panel {
   width: 320px;
   flex: none;
-  background: #ffffff;
-  border-right: 1px solid #e3e8e5;
-  padding: 1.25rem;
+  background: var(--ui-surface);
+  padding: 1.4rem 1.25rem 1.2rem;
   display: flex;
   flex-direction: column;
-  gap: 1.1rem;
+  gap: 1.3rem;
   overflow-y: auto;
 }
 
-.ex-panel__head h1 {
-  font-size: 1.05rem;
-  margin: 0 0 0.35rem;
-  letter-spacing: -0.01em;
-}
 .ex-panel__head p {
   margin: 0;
-  color: #6b7a74;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--ui-muted);
+}
+
+/* The map's controls (RH, year, download) as one group. Everything below
+   it — notes, citation, footer — is set off by a hairline rule instead of a
+   card: the header band and the tour callout are the panel's only boxes. */
+.ex-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
 }
 
 .ex-field {
@@ -64,75 +187,84 @@ body {
 
 .ex-field label,
 .ex-field__label {
-  font-size: 0.82rem;
-  font-weight: 600;
+  font-size: 0.7rem;
+  font-weight: 700;
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0.3rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ui-muted);
 }
 
 .ex-hint {
   font-weight: 400;
-  color: #6b7a74;
+  color: var(--ui-muted);
   font-size: 0.74rem;
   line-height: 1.4;
 }
-
-.ex-field select {
-  padding: 0.5rem 0.6rem;
-  border: 1px solid #d6ded9;
-  border-radius: 7px;
-  background: #fff;
-  font: inherit;
-  font-size: 0.88rem;
+/* Inside the uppercase field labels, the hints stay in sentence case. */
+.ex-field .ex-hint {
+  text-transform: none;
+  letter-spacing: normal;
 }
 
-/* Wrapping row of pills, replacing the RH / year selects. auto-fill rather than
-   a fixed column count so the group still reads as a grid if the panel narrows. */
+.ex-field select {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: 9px;
+  background: var(--ui-surface);
+  font: inherit;
+  font-size: 0.84rem;
+}
+
+/* The seven RHs as an even 4-column grid of pills, replacing the old selects:
+   all visible at once, and a multi-select. */
 .ex-choices {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: 0.35rem;
 }
 
 .ex-choice {
-  flex: 1 1 auto;
-  min-width: 3.6rem;
-  padding: 0.42rem 0.5rem;
-  border: 1px solid #d6ded9;
-  border-radius: 7px;
-  background: #fff;
-  color: #2c3a34;
+  min-width: 0;
+  padding: 0.45rem 0;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: 9px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
   font: inherit;
   font-size: 0.82rem;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
+  font-weight: 550;
 }
 .ex-choice:hover {
-  background: #f2f7f5;
-  border-color: #b9c8c1;
+  background: var(--ui-raised);
+  border-color: var(--ui-line-strong);
 }
 .ex-choice:focus-visible {
-  outline: 2px solid #10796a;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 .ex-choice.is-active {
-  background: #10796a;
-  border-color: #10796a;
-  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
   font-weight: 600;
+  box-shadow: 0 1px 3px rgba(16, 121, 106, 0.35);
 }
 .ex-choice.is-active:hover {
-  background: #0d6459;
-  border-color: #0d6459;
+  background: var(--accent-hover);
+  border-color: var(--accent);
 }
 
-/* How to use the page, above the controls it describes. Replaces the old
-   single-line tip, whose "click the map to read the profile" is step 4. */
+/* A tinted how-to box: the tour invitation in the panel (.ex-intro--tour) and
+   the cube's help popover (.ex-intro--compact). */
 .ex-intro {
   padding: 0.7rem 0.8rem 0.75rem;
-  background: #f2f7f5;
+  background: var(--ui-raised);
   border-radius: 7px;
 }
 
@@ -142,45 +274,68 @@ body {
    above it rather than like a call to action: it opens a panel, and the page's
    one emphatic button is "Visit a random site" on the map. */
 .ex-download-trigger {
-  align-self: flex-start;
+  align-self: stretch;
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.45rem 0.7rem;
-  border: 1px solid #cfdad5;
-  border-radius: 6px;
-  background: #fff;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: 11px;
+  background: var(--ui-raised);
   font: inherit;
-  font-size: 0.78rem;
-  color: #2c3a34;
+  font-size: 0.82rem;
+  color: var(--accent-text);
   cursor: pointer;
+  justify-content: center;
+  font-weight: 600;
+  transition: background 0.15s, border-color 0.15s;
 }
 .ex-download-trigger:hover,
 .ex-download-trigger.is-open {
-  border-color: #10796a;
-  color: #10796a;
-  background: #f2f7f5;
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--ui-raised);
 }
 
 /* The panel itself, out over the map.
    Fixed rather than absolute: the sidebar scrolls and clips its overflow, so a
    child positioned inside it would be cut off at the first edge it crossed. The
    position comes from JS, which measures the trigger — see DownloadPanel. */
+/* A native <dialog> opened with show(): its UA box (centred by inset and auto
+   margins, bordered, in CanvasText) is reset so the JS-placed left/top hold.
+   Rendered outside the sidebar (see DownloadPanel), so the sidebar's text
+   settings are restated here rather than inherited. */
 .ex-flyout {
   position: fixed;
+  inset: auto;
+  margin: 0;
+  border: 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--ui-muted);
   z-index: 30;
   width: 320px;
   max-width: calc(100vw - 1rem);
-  max-height: calc(100vh - 1rem);
+  max-height: calc(100dvh - 1rem);
   overflow-y: auto;
-  padding: 0.9rem 1rem 1rem;
-  background: #fff;
-  border: 1px solid #e3e8e5;
-  border-radius: 9px;
-  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.16);
-  display: flex;
+  padding: 1rem 1.1rem 1.05rem;
+  background: var(--ui-surface);
+  border-radius: 16px;
+  /* Same elevation as the tour card: a tight key shadow and a wide ambient one. */
+  box-shadow:
+    0 1px 3px rgba(16, 40, 32, 0.12),
+    0 12px 32px -4px rgba(16, 40, 32, 0.28);
   flex-direction: column;
-  gap: 0.7rem;
+  gap: 0.9rem;
+}
+/* Only while open: an unscoped display would override the closed dialog's
+   display: none. */
+.ex-flyout[open] {
+  display: flex;
+}
+.ex-flyout:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .ex-flyout__head {
   display: flex;
@@ -194,7 +349,7 @@ body {
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: #6b7a74;
+  color: var(--ui-muted);
 }
 .ex-flyout__head button {
   border: 0;
@@ -202,11 +357,11 @@ body {
   padding: 0 0.15rem;
   font-size: 1.1rem;
   line-height: 1;
-  color: #9aa8a2;
+  color: var(--ui-muted);
   cursor: pointer;
 }
 .ex-flyout__head button:hover {
-  color: #47544e;
+  color: var(--ui-text-2);
 }
 /* The title takes the slack so the two icons sit together at the right edge. */
 .ex-flyout__head h2 {
@@ -224,110 +379,156 @@ body {
 }
 .ex-flyout__pin.is-on {
   transform: none;
-  color: #10796a;
-  background: #e7efec;
+  color: var(--accent-text);
+  background: var(--ui-raised);
+}
+/* The download is a sequence — RH metrics, resolution, tiles (10 m only),
+   download — shown as a stepper like the tour card's: a disc per step on a
+   rail down the left, the step's content in the column beside it. Numbers say
+   the order, and that the RH metrics belong to every step after them. */
+.ex-download__stages {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 .ex-download__row {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+  padding-left: 2rem;
+}
+/* The rail, from under one disc to the next. */
+.ex-download__stages > .ex-download__row:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: calc(0.675rem - 1px);
+  top: 1.45rem;
+  bottom: -0.85rem;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--ui-raised);
 }
 .ex-download__label {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #2c3a34;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 0.5rem;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--ui-text);
 }
-/* The two numbered steps. A download here is a sentence with two halves —
-   which levels, then at which resolution — and the second half was being read
-   as a fresh start, as though each granularity carried its own idea of what to
-   download. Numbers say the order and, more importantly, say there are only
-   two of them: the levels are not a setting that belongs to whichever row
-   happens to sit next to them. */
 .ex-download__step {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
 }
-/* A filled disc rather than "Step 1": at this size the word costs more width
-   than the number is worth, and two discs down the left edge are countable at
-   a glance in a way a repeated word is not. Tabular figures and a fixed
-   width so 1 and 2 sit on the same centre. */
+/* A disc rather than "Step 1": at this size the word costs more width than
+   the number is worth. Tabular figures so every number sits on one centre. */
 .ex-download__step-n {
-  flex: none;
-  width: 1.05rem;
-  height: 1.05rem;
+  position: absolute;
+  left: 0;
+  top: -0.12rem;
+  width: 1.35rem;
+  height: 1.35rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  background: #10796a;
-  color: #fff;
-  font-size: 0.66rem;
+  border-radius: 999px;
+  background: var(--ui-raised);
+  color: var(--accent-text);
+  font-size: 0.72rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
-.ex-download__group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-/* One rule down the left for both granularities. It is what makes step 2 look
-   like a choice inside a step rather than two more steps, and it has to run
-   unbroken past the gap between the rows — hence a wrapper around the pair
-   rather than a border on each. Indented to the number's text, so the rows
-   hang off the "2" the way the sentence reads. */
-.ex-download__group-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
-  padding-left: 0.75rem;
-  margin-left: 0.5rem;
-  border-left: 2px solid #e7efec;
-}
-
 /* How many files the row is about, next to the label rather than in the hint
    below it: it is the number the reader is deciding on. */
 .ex-download__count {
   font-weight: 400;
   font-size: 0.72rem;
-  color: #8b9993;
+  color: var(--ui-muted);
   white-space: nowrap;
+}
+/* Resolution: two cards side by side, each saying what it gives you. */
+.ex-download__res {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+}
+.ex-download__res button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: 10px;
+  background: var(--ui-surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.ex-download__res button:hover {
+  border-color: var(--ui-line-strong);
+}
+.ex-download__res b {
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--ui-text);
+}
+.ex-download__res span {
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: var(--ui-muted);
+}
+.ex-download__res button.is-on {
+  border-color: var(--accent);
+  background: var(--ui-raised);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.ex-download__res button.is-on b {
+  color: var(--accent-text);
 }
 .ex-download__links {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 0.4rem;
+  margin-top: 0.1rem;
+}
+/* The native bar, recoloured only: anything beyond accent-color and size
+   switches off the platform rendering. */
+.ex-download__progress {
+  flex-basis: 100%;
+  width: 100%;
+  accent-color: var(--accent);
 }
 /* Links and buttons share one look: both start a download, and which is which
    is an implementation detail — one is a URL, the other builds a file. */
 .ex-download__links a,
 .ex-download__links button {
-  padding: 0.28rem 0.55rem;
-  border: 1px solid #cfdad5;
-  border-radius: 5px;
-  background: #fff;
-  color: #10796a;
+  padding: 0.38rem 0.85rem;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: 999px;
+  background: var(--ui-surface);
+  color: var(--accent-text);
   font: inherit;
-  font-size: 0.74rem;
+  font-size: 0.76rem;
   text-decoration: none;
   cursor: pointer;
   white-space: nowrap;
+  font-weight: 600;
 }
 .ex-download__links a:hover,
 .ex-download__links button:hover {
-  background: #f2f7f5;
-  border-color: #10796a;
+  background: var(--ui-raised);
+  border-color: var(--accent);
 }
 .ex-download__picker {
-  padding: 0.5rem;
-  border: 1px solid #e3e8e5;
-  border-radius: 6px;
-  background: #fbfdfc;
+  padding: 0.55rem;
+  border: 1px solid var(--ui-line);
+  border-radius: 10px;
+  background: var(--ui-raised);
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -335,21 +536,23 @@ body {
 .ex-download__picker-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.3rem;
+  gap: 0.35rem;
 }
 .ex-download__picker-actions button {
-  padding: 0.2rem 0.45rem;
-  border: 1px solid #cfdad5;
-  border-radius: 4px;
-  background: #fff;
+  padding: 0.22rem 0.7rem;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: 999px;
+  background: var(--ui-surface);
   font: inherit;
-  font-size: 0.7rem;
-  color: #47544e;
+  font-size: 0.72rem;
+  color: var(--ui-text);
   cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 .ex-download__picker-actions button:hover {
-  border-color: #10796a;
-  color: #10796a;
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--ui-raised);
 }
 /* 101 levels: a fixed grid of bare numbers, scrolling. Anything wordier —
    "RH98" on every cell — halves the columns and doubles the scrolling for a
@@ -357,82 +560,94 @@ body {
 .ex-download__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(2.1rem, 1fr));
-  gap: 2px;
+  gap: 3px;
   max-height: 9.5rem;
   overflow-y: auto;
 }
 .ex-download__grid button {
   padding: 0.2rem 0;
   border: 1px solid transparent;
-  border-radius: 3px;
-  background: #eef2f0;
+  border-radius: 5px;
+  background: var(--ui-raised);
   font: inherit;
   font-size: 0.68rem;
   font-variant-numeric: tabular-nums;
-  color: #6b7a74;
+  color: var(--ui-muted);
   cursor: pointer;
 }
 .ex-download__grid button:hover {
-  border-color: #b3c0ba;
+  border-color: var(--ui-muted);
 }
 .ex-download__grid button.is-active {
-  background: #10796a;
-  border-color: #10796a;
-  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
 }
 /* The row's one action, weighted as such: the reader has already chosen the
    levels, so this is the thing left to do. Anything beside it (Stop, Copy URLs)
    stays in the outline style. */
-.ex-download__go {
-  background: #10796a;
-  border-color: #10796a;
-  color: #fff;
+/* Two classes, to outrank the outline style of `.ex-download__links button`. */
+.ex-download__links .ex-download__go {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
   font-variant-numeric: tabular-nums;
+  padding: 0.42rem 1.05rem;
+  box-shadow: 0 1px 2px rgba(16, 40, 32, 0.25);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.ex-tour-start::after {
+  content: '→';
+  font-weight: 600;
 }
 .ex-download__links .ex-download__go:hover {
-  background: #0d6255;
-  border-color: #0d6255;
+  background: var(--accent-hover);
+  border-color: var(--accent);
+  box-shadow: 0 3px 8px rgba(16, 121, 106, 0.35);
 }
 .ex-download__links button:disabled {
-  color: #8b9993;
-  border-color: #e3e8e5;
-  background: #f7faf9;
+  color: var(--ui-muted);
+  border-color: var(--ui-line);
+  background: var(--ui-raised);
   cursor: default;
   font-variant-numeric: tabular-nums;
 }
 /* The one that is actually working keeps its colour while every other button
    greys out — otherwise a running batch looks exactly like a blocked one. */
 .ex-download__links button.is-running:disabled {
-  background: #10796a;
-  border-color: #10796a;
-  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
 }
 .ex-flyout code {
   font-size: 0.9em;
   padding: 0.05rem 0.25rem;
   border-radius: 3px;
-  background: #f2f5f4;
-  color: #47544e;
+  background: var(--ui-raised);
+  color: var(--ui-text-2);
 }
 .ex-flyout a:not([class]) {
-  color: #10796a;
+  color: var(--accent-text);
+}
+/* The contact line, set apart from the steps it is not one of. */
+.ex-download__foot {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--ui-line);
 }
 
-/* Caveats, in the panel's quietest register: no tinted card like .ex-intro,
-   which would give them the same weight as the instructions. A rule and small
-   grey text is enough to make them findable without making them the first
-   thing read. */
+/* Caveats, in the panel's quietest register: a rule and small grey text —
+   findable, but after the controls, not the first thing read. */
 .ex-notes {
-  padding-top: 0.85rem;
-  border-top: 1px solid #eef2f0;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--ui-line);
 }
 .ex-notes h2 {
-  margin: 0 0 0.45rem;
-  font-size: 0.72rem;
+  margin: 0 0 0.55rem;
+  font-size: 0.7rem;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #8b9993;
+  color: var(--ui-muted);
 }
 .ex-notes ul {
   list-style: none;
@@ -447,10 +662,10 @@ body {
   padding-left: 0.85rem;
   font-size: 0.74rem;
   line-height: 1.45;
-  color: #6b7a74;
+  color: var(--ui-muted);
 }
 .ex-notes a {
-  color: #10796a;
+  color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -459,10 +674,33 @@ body {
   position: absolute;
   left: 0;
   top: 0.5em;
-  width: 4px;
-  height: 4px;
+  width: 5px;
+  height: 5px;
   border-radius: 999px;
-  background: #b3c0ba;
+  background: var(--ui-line-strong);
+}
+/* The citation reuses the notes' rule and heading; the text sits flush, with
+   no bullet, since it is one reference rather than a list. */
+.ex-cite__text {
+  margin: 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--ui-muted);
+}
+.ex-cite__copy {
+  margin-top: 0.5rem;
+  padding: 0.28rem 0.75rem;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: 999px;
+  background: var(--ui-surface);
+  color: var(--accent-text);
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ex-cite__copy:hover {
+  border-color: var(--accent);
+  background: var(--ui-raised);
 }
 .ex-intro h2 {
   margin: 0 0 0.5rem;
@@ -470,7 +708,7 @@ body {
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: #6b7a74;
+  color: var(--ui-muted);
 }
 .ex-intro ol {
   counter-reset: ex-step;
@@ -487,7 +725,7 @@ body {
   padding-left: 1.6rem;
   font-size: 0.78rem;
   line-height: 1.4;
-  color: #47544e;
+  color: var(--ui-text-2);
 }
 /* Numbered badges rather than plain digits: at this size a bare "1." is lost
    against the text it is meant to be indexing. */
@@ -502,8 +740,8 @@ body {
   width: 1.1rem;
   height: 1.1rem;
   border-radius: 999px;
-  background: #10796a;
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-accent);
   font-size: 0.64rem;
   font-weight: 700;
   line-height: 1;
@@ -513,8 +751,8 @@ body {
    things side by side. */
 .ex-panel__foot {
   margin-top: auto;
-  padding-top: 0.9rem;
-  border-top: 1px solid #eef2f0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--ui-line);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -522,9 +760,13 @@ body {
   font-size: 0.72rem;
 }
 .ex-panel__foot a {
-  color: #10796a;
+  color: var(--accent-text);
   text-decoration: none;
   flex: none;
+  font-weight: 600;
+}
+.ex-panel__foot a::after {
+  content: ' →';
 }
 
 /* ----------------------------------------------------------------- map ---- */
@@ -560,7 +802,8 @@ body {
 .ex-topleft {
   position: absolute;
   top: 1rem;
-  left: 1rem;
+  left: calc(var(--ex-panel-clear) + 1rem);
+  transition: left 0.25s cubic-bezier(0.2, 0, 0, 1);
   z-index: 12;
   display: flex;
   flex-direction: column;
@@ -575,31 +818,37 @@ body {
   width: 32px;
   height: 32px;
   padding: 0;
-  border: 1px solid #e3e8e5;
+  border: 1px solid var(--ui-line);
   border-radius: 7px;
-  background: #fff;
-  color: #47544e;
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
   cursor: pointer;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
 }
 .ex-search__open:hover,
 .ex-locate__btn:hover:not(:disabled) {
-  color: #10796a;
-  border-color: #10796a;
+  color: var(--accent-text);
+  border-color: var(--accent);
 }
 .ex-search {
   width: 268px;
   padding: 0.4rem 0.5rem;
-  border: 1px solid #e3e8e5;
+  border: 1px solid var(--ui-line);
   border-radius: 7px;
-  background: #fff;
+  background: var(--ui-surface);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+}
+/* The input inside drops its own outline (it would draw a box inside the box),
+   so the whole field shows keyboard focus instead. */
+.ex-search:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .ex-search__row {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  color: #8b9993;
+  color: var(--ui-muted);
 }
 .ex-search__row input {
   flex: 1;
@@ -609,7 +858,7 @@ body {
   background: none;
   font: inherit;
   font-size: 0.78rem;
-  color: #2c3a34;
+  color: var(--ui-text);
 }
 .ex-search__row button {
   border: 0;
@@ -617,11 +866,11 @@ body {
   padding: 0 0.15rem;
   font-size: 1.05rem;
   line-height: 1;
-  color: #9aa8a2;
+  color: var(--ui-muted);
   cursor: pointer;
 }
 .ex-search__row button:hover {
-  color: #47544e;
+  color: var(--ui-text-2);
 }
 /* Both lines occupy the same slot, so the card does not change height as an
    error replaces the hint under the reader's pointer. */
@@ -633,13 +882,13 @@ body {
   line-height: 1.35;
 }
 .ex-search__hint {
-  color: #8b9993;
+  color: var(--ui-muted);
 }
 /* The full address a name resolved to. One line, clipped — the title attribute
    carries the rest, and a wrapping address would push the card down over the
    map every time a search succeeded. */
 .ex-search__found {
-  color: #47544e;
+  color: var(--ui-text-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -672,7 +921,7 @@ body {
   margin: 0;
   padding: 0.3rem 0.5rem;
   border-radius: 6px;
-  background: #fff;
+  background: var(--ui-surface);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
   font-size: 0.7rem;
   color: #b4453a;
@@ -692,7 +941,7 @@ body {
   height: 185px;
   border-radius: 7px;
   overflow: hidden;
-  background: #eef3f7;
+  background: var(--ui-raised);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
   transition: opacity 0.25s;
 }
@@ -716,7 +965,7 @@ body {
   margin: -5.5px 0 0 -5.5px;
   border-radius: 999px;
   background: #ff3d7f;
-  box-shadow: 0 0 0 2px #fff, 0 1px 3px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 0 2px var(--ui-surface), 0 1px 3px rgba(0, 0, 0, 0.5);
   pointer-events: none;
   z-index: 1;
 }
@@ -746,17 +995,17 @@ body {
   padding: 0.42rem 0.7rem;
   border: 0;
   border-radius: 4px;
-  background: #fff;
+  background: var(--ui-surface);
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.2);
   font: inherit;
   font-size: 0.75rem;
   font-weight: 500;
-  color: #10796a;
+  color: var(--accent-text);
   cursor: pointer;
   white-space: nowrap;
 }
 .ex-basemap__trigger:hover {
-  background: #f4f8f6;
+  background: var(--ui-raised);
 }
 
 .ex-basemap__menu {
@@ -764,7 +1013,7 @@ body {
   margin: 0;
   padding: 4px;
   border-radius: 4px;
-  background: #fff;
+  background: var(--ui-surface);
   box-shadow: 0 3px 14px rgba(0, 0, 0, 0.22);
   min-width: 132px;
 }
@@ -778,15 +1027,15 @@ body {
   background: none;
   font: inherit;
   font-size: 0.78rem;
-  color: #2c3a34;
+  color: var(--ui-text);
   cursor: pointer;
 }
 .ex-basemap__menu button:hover {
-  background: #f0f5f3;
+  background: var(--ui-raised);
 }
 .ex-basemap__menu button.is-active {
-  background: #10796a;
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
 .ex-status {
@@ -795,12 +1044,12 @@ body {
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid #e3e8e5;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-line);
   border-radius: 999px;
   padding: 0.4rem 0.95rem;
   font-size: 0.78rem;
-  color: #47544e;
+  color: var(--ui-text-2);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
 }
 .ex-status--error {
@@ -813,8 +1062,8 @@ body {
   left: 1rem;
   bottom: 1rem;
   z-index: 10;
-  background: rgba(255, 255, 255, 0.97);
-  border: 1px solid #e3e8e5;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-line);
   border-radius: 9px;
   padding: 0.75rem 2rem 0.75rem 0.9rem;
   box-shadow: 0 6px 22px rgba(0, 0, 0, 0.12);
@@ -822,7 +1071,8 @@ body {
   /* Two charts make this much taller than a bare reading — cap it against the
      viewport rather than letting it run off the top of the map. */
   max-width: min(560px, calc(100vw - 360px));
-  max-height: calc(100vh - 2rem);
+  /* Against the map, not the viewport: the top bar takes part of the height. */
+  max-height: calc(100% - 2rem);
   overflow-y: auto;
 }
 
@@ -839,8 +1089,8 @@ body {
  * for one running off the right. So it stays in the corner there. */
 @media (min-width: 900px) {
   .ex-reading {
-    left: calc(var(--ex-flyout-clear) + 1rem);
-    max-width: min(560px, calc(100vw - 360px - var(--ex-flyout-clear)));
+    left: calc(var(--ex-panel-clear) + var(--ex-flyout-clear) + 1rem);
+    max-width: min(560px, calc(100vw - var(--ex-panel-clear) - var(--ex-flyout-clear) - 2rem));
   }
 }
 
@@ -853,7 +1103,7 @@ body {
   font-size: 1.1rem;
   line-height: 1;
   cursor: pointer;
-  color: #9aa8a2;
+  color: var(--ui-muted);
 }
 /* The reverse-geocoded name, above the raw coordinates. Clamped to two lines:
    Nominatim's display_name can run to a dozen components, and the full string
@@ -861,7 +1111,7 @@ body {
 .ex-reading__place {
   font-size: 0.8rem;
   font-weight: 600;
-  color: #2c3a34;
+  color: var(--ui-text);
   margin-bottom: 0.1rem;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -871,7 +1121,7 @@ body {
 }
 .ex-reading__coords {
   font-size: 0.72rem;
-  color: #6b7a74;
+  color: var(--ui-muted);
   font-variant-numeric: tabular-nums;
 }
 .ex-reading__value {
@@ -883,14 +1133,18 @@ body {
 /* ---------------------------------------------------------- responsive ---- */
 
 @media (max-width: 720px) {
-  .ex-root {
+  /* No floating on a phone: the panel sits above the map, always open. */
+  .ex-body {
     flex-direction: column;
+    --ex-panel-clear: 0px;
   }
   .ex-panel {
     width: auto;
     max-height: 45vh;
-    border-right: 0;
-    border-bottom: 1px solid #e3e8e5;
+    border-bottom: 1px solid var(--ui-line);
+  }
+  .ex-panel-toggle {
+    display: none;
   }
   /* A 260 px locator on a phone-width map is a third of the map. The reading
      card and the random-site button need that space more. */
@@ -908,7 +1162,7 @@ body {
 .ex-profile__note {
   margin: 0;
   font-size: 0.75rem;
-  color: #6b7a74;
+  color: var(--ui-muted);
 }
 
 .ex-profile__charts {
@@ -923,7 +1177,7 @@ body {
 .ex-profile__charts figcaption {
   font-size: 0.7rem;
   font-weight: 600;
-  color: #47544e;
+  color: var(--ui-text-2);
   margin-bottom: 0.15rem;
 }
 
@@ -934,16 +1188,15 @@ body {
 }
 .ex-chart__tick {
   font-size: 8px;
-  fill: #8b9993;
+  fill: var(--ui-muted);
 }
 .ex-chart__axis {
   font-size: 8.5px;
-  fill: #6b7a74;
+  fill: var(--ui-muted);
 }
-.ex-chart__empty {
-  font-size: 0.72rem;
-  color: #9aa8a2;
-  padding: 1rem 0;
+.ex-chart__nodata {
+  font-size: 10px;
+  fill: var(--ui-muted);
 }
 
 /* The indices: small stats, label above value, no box. Height max beside
@@ -965,7 +1218,7 @@ body {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #8b9993;
+  color: var(--ui-muted);
   line-height: 1;
 }
 .ex-profile__metrics dt {
@@ -976,7 +1229,7 @@ body {
   font-size: 0.8rem;
   font-weight: 600;
   line-height: 1.1;
-  color: #1f2d27;
+  color: var(--ui-text);
   font-variant-numeric: tabular-nums;
 }
 /* Indices left, Height max right: one line right above the charts. */
@@ -1000,7 +1253,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
-  color: #6b7a74;
+  color: var(--ui-muted);
 }
 
 /* ---------------------------------------------------------- random site ---- */
@@ -1027,8 +1280,8 @@ body {
   padding: 0.72rem 1.5rem;
   border: 0;
   border-radius: 999px;
-  background: #10796a;
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-accent);
   font: inherit;
   font-size: 0.92rem;
   font-weight: 600;
@@ -1038,7 +1291,7 @@ body {
   transition: transform 0.12s, background 0.12s;
 }
 .ex-random:hover {
-  background: #0d6558;
+  background: var(--accent-hover);
   transform: translateY(-1px);
 }
 
@@ -1057,18 +1310,18 @@ body {
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: #fff;
-  color: #10796a;
+  background: var(--ui-surface);
+  color: var(--accent-text);
   cursor: pointer;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
   transition: background 0.12s, color 0.12s;
 }
 .ex-random__back:hover {
-  background: #e7efec;
-  color: #0d6558;
+  background: var(--ui-raised);
+  color: var(--accent-text);
 }
 .ex-random__back:focus-visible {
-  outline: 2px solid #10796a;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -1085,10 +1338,10 @@ body {
   transform: translateX(-50%);
   z-index: 11;
   width: min(clamp(616px, 39.6vw, 990px), calc(100% - 15rem));
-  max-height: calc(100vh - 7rem);
+  max-height: calc(100% - 7rem);
   overflow-y: auto;
-  background: rgba(255, 255, 255, 0.98);
-  border: 1px solid #e3e8e5;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-line);
   border-radius: 10px;
   padding: 1rem 2.1rem 1rem 1.2rem;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
@@ -1102,7 +1355,7 @@ body {
   font-size: 1.2rem;
   line-height: 1;
   cursor: pointer;
-  color: #9aa8a2;
+  color: var(--ui-muted);
 }
 .ex-site h2 {
   /* The place line sits under this, and at 0.3rem the two ran together as one
@@ -1119,7 +1372,7 @@ body {
   margin: 0 0 0.6rem;
   font-size: clamp(0.72rem, 0.6vw, 0.88rem);
   font-weight: 600;
-  color: #2c3a34;
+  color: var(--ui-text);
   min-height: 1.2em;
   white-space: nowrap;
   overflow: hidden;
@@ -1127,25 +1380,25 @@ body {
 }
 .ex-site__place svg {
   flex: none;
-  color: #10796a;
+  color: var(--accent-text);
 }
 .ex-site__place-wait {
   font-weight: 400;
-  color: #9aa8a2;
+  color: var(--ui-muted);
 }
 .ex-site__coords {
   /* Extra room on top of the flex gap: the name runs straight into the numbers
      otherwise, and they are two different things. */
   margin-left: 0.35rem;
   font-weight: 400;
-  color: #8b9993;
+  color: var(--ui-muted);
   font-variant-numeric: tabular-nums;
   font-size: 0.92em;
 }
 .ex-site__desc {
   margin: 0 0 0.6rem;
   font-size: clamp(0.8rem, 0.7vw, 0.98rem);
-  color: #6b7a74;
+  color: var(--ui-muted);
   line-height: 1.45;
 }
 .ex-site__figure {
@@ -1159,7 +1412,7 @@ body {
 }
 .ex-site__figure figcaption {
   font-size: 0.72rem;
-  color: #8b9993;
+  color: var(--ui-muted);
   margin-top: 0.35rem;
 }
 .ex-site__tags {
@@ -1174,8 +1427,8 @@ body {
   font-size: 0.68rem;
   padding: 0.15rem 0.45rem;
   border-radius: 999px;
-  background: #eef4f2;
-  color: #47544e;
+  background: var(--ui-raised);
+  color: var(--ui-text-2);
 }
 
 /* ------------------------------------------------------ transect heatmap ---- */
@@ -1200,7 +1453,7 @@ body {
   flex-direction: column;
   justify-content: space-between;
   font-size: clamp(0.62rem, 0.55vw, 0.8rem);
-  color: #8b9993;
+  color: var(--ui-muted);
   font-variant-numeric: tabular-nums;
   flex: none;
 }
@@ -1240,7 +1493,7 @@ body {
   flex-direction: column;
   justify-content: space-between;
   font-size: clamp(0.62rem, 0.55vw, 0.8rem);
-  color: #8b9993;
+  color: var(--ui-muted);
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -1250,7 +1503,7 @@ body {
   transform: rotate(180deg);
   align-self: center;
   font-size: clamp(0.6rem, 0.5vw, 0.75rem);
-  color: #8b9993;
+  color: var(--ui-muted);
   white-space: nowrap;
 }
 
@@ -1268,7 +1521,7 @@ body {
   content: '';
   flex: 1;
   height: 1px;
-  background: #b3c0ba;
+  background: var(--ui-line-strong);
 }
 /* Border triangle rather than an SVG marker: it cannot be stretched out of
    shape by the row it sits in, however wide the card gets. */
@@ -1277,7 +1530,7 @@ body {
   flex: none;
   width: 0;
   height: 0;
-  border-left: 5px solid #b3c0ba;
+  border-left: 5px solid var(--ui-muted);
   border-top: 3.5px solid transparent;
   border-bottom: 3.5px solid transparent;
 }
@@ -1285,7 +1538,7 @@ body {
   display: flex;
   justify-content: space-between;
   font-size: clamp(0.62rem, 0.55vw, 0.8rem);
-  color: #8b9993;
+  color: var(--ui-muted);
   margin-top: 0.2rem;
   padding-left: 1.6rem;
   /* Plus the plot's column gap, so "0" and the total length sit under the ends
@@ -1295,7 +1548,7 @@ body {
 .ex-heat__metrics {
   margin-top: 0.45rem;
   padding-top: 0.45rem;
-  border-top: 1px solid #eef2f0;
+  border-top: 1px solid var(--ui-line);
 }
 /* Quieter than the axis labels: it is a credit, not part of the reading. */
 .ex-heat__cite {
@@ -1304,7 +1557,7 @@ body {
   margin: 1.1rem 0 0;
   font-size: clamp(0.6rem, 0.5vw, 0.75rem);
   font-style: italic;
-  color: #97a49e;
+  color: var(--ui-muted);
   text-align: left;
 }
 .ex-heat__lines {
@@ -1327,9 +1580,9 @@ body {
   padding: 0.1rem 0.35rem;
   border-radius: 4px;
   /* Translucent so a trace running underneath is dimmed, not hidden. */
-  background: rgba(255, 255, 255, 0.82);
+  background: var(--ui-surface);
   font-size: clamp(0.63rem, 0.55vw, 0.8rem);
-  color: #6b7a74;
+  color: var(--ui-muted);
   pointer-events: none;
 }
 .ex-heat__legend li {
@@ -1353,14 +1606,14 @@ body {
   min-width: 190px;
   border-radius: 6px;
   overflow: hidden;
-  background: #fff;
+  background: var(--ui-surface);
   box-shadow: 0 3px 14px rgba(0, 0, 0, 0.22);
 }
 .ex-layers__head {
   margin: 0;
   padding: 0.45rem 0.7rem;
-  background: #10796a;
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-accent);
   font-size: 0.76rem;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -1378,10 +1631,10 @@ body {
   gap: 0.3rem;
   padding: 0.4rem 0.5rem 0.45rem;
   font-size: 0.76rem;
-  color: #2c3a34;
+  color: var(--ui-text);
 }
 .ex-layers__list li + li {
-  border-top: 1px solid #f0f4f2;
+  border-top: 1px solid var(--ui-line);
 }
 .ex-layers__name {
   flex: 1;
@@ -1394,17 +1647,17 @@ body {
   padding: 0.2rem;
   border: 0;
   background: none;
-  color: #b3c0ba;
+  color: var(--ui-muted);
   cursor: pointer;
   border-radius: 3px;
   flex: none;
 }
 .ex-layers__icon:hover {
-  background: #e7efec;
-  color: #47544e;
+  background: var(--ui-raised);
+  color: var(--ui-text-2);
 }
 .ex-layers__icon.is-on {
-  color: #10796a;
+  color: var(--accent-text);
 }
 
 /* A quiet tag, not a button: it reports where the stack is, it does not change
@@ -1413,8 +1666,8 @@ body {
   flex: none;
   padding: 0.05rem 0.3rem;
   border-radius: 3px;
-  background: #e7efec;
-  color: #10796a;
+  background: var(--ui-raised);
+  color: var(--accent-text);
   font-size: 0.66rem;
   letter-spacing: 0.02em;
   white-space: nowrap;
@@ -1426,7 +1679,7 @@ body {
 /* Sits in the foot of the layer card. Separated by a rule rather than a gap,
    so it reads as part of the same card and not a second floating widget. */
 .ex-colorbar {
-  border-top: 1px solid #e3e8e5;
+  border-top: 1px solid var(--ui-line);
   padding: 0.5rem 0.6rem 0.55rem;
   display: flex;
   flex-direction: column;
@@ -1436,7 +1689,7 @@ body {
 .ex-colorbar__caption {
   font-size: 0.68rem;
   font-weight: 600;
-  color: #47544e;
+  color: var(--ui-text-2);
   letter-spacing: 0.01em;
   white-space: nowrap;
   overflow: hidden;
@@ -1444,7 +1697,7 @@ body {
 }
 .ex-colorbar__unit {
   font-weight: 400;
-  color: #8a9791;
+  color: var(--ui-muted);
 }
 
 .ex-colorbar__ramp {
@@ -1462,7 +1715,7 @@ body {
   margin-top: 0.15rem;
   font-size: 0.64rem;
   font-variant-numeric: tabular-nums;
-  color: #6b7a74;
+  color: var(--ui-muted);
 }
 /* The end labels sit under the ends of the ramp; the middle one is centred on
    it, so it needs no alignment of its own. */
@@ -1486,7 +1739,7 @@ body {
 }
 @media (min-width: 900px) {
   .ex-reading--cube {
-    width: min(540px, calc(100vw - 360px - var(--ex-flyout-clear)));
+    width: min(540px, calc(100vw - var(--ex-panel-clear) - var(--ex-flyout-clear) - 2rem));
   }
 }
 
@@ -1502,13 +1755,13 @@ body {
 .ex-reading--cube .ex-reading__place {
   font-size: 0.95rem;
   font-weight: 650;
-  color: #1f2d27;
+  color: var(--ui-text);
 }
 .ex-reading--cube .ex-reading__coords {
   margin-top: 0.1rem;
 }
 .ex-reading__moved {
-  color: #10796a;
+  color: var(--accent-text);
 }
 .ex-reading__actions {
   display: flex;
@@ -1521,10 +1774,10 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e3e8e5;
+  border: 1px solid var(--ui-line);
   border-radius: 8px;
-  background: #fff;
-  color: #47544e;
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
@@ -1536,14 +1789,14 @@ body {
   margin: 0;
 }
 .ex-icon-btn:hover {
-  background: #f1f6f4;
-  border-color: #cfe0d9;
-  color: #10796a;
+  background: var(--ui-raised);
+  border-color: var(--ui-line-strong);
+  color: var(--accent-text);
 }
 .ex-icon-btn:focus-visible,
 .ex-seg button:focus-visible,
 .ex-cube__tools button:focus-visible {
-  outline: 2px solid #10796a;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
@@ -1551,14 +1804,14 @@ body {
   margin-top: 0.6rem;
   padding: 0.45rem 0.55rem;
   border-radius: 8px;
-  background: #f4f7f6;
-  border: 1px solid #e3e8e5;
+  background: var(--ui-raised);
+  border: 1px solid var(--ui-line);
   font-size: 0.72rem;
-  color: #47544e;
+  color: var(--ui-text-2);
 }
 .ex-share.is-copied {
-  background: #ecf7f3;
-  border-color: #cbe6dc;
+  background: var(--ui-raised);
+  border-color: var(--ui-line-strong);
 }
 .ex-share__msg {
   display: flex;
@@ -1567,18 +1820,18 @@ body {
   margin-bottom: 0.3rem;
 }
 .ex-share.is-copied .ex-share__msg {
-  color: #10796a;
+  color: var(--accent-text);
   font-weight: 600;
 }
 .ex-share input {
   width: 100%;
   box-sizing: border-box;
   font: 0.68rem ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #47544e;
+  color: var(--ui-text-2);
   padding: 0.25rem 0.4rem;
-  border: 1px solid #d5ddd9;
+  border: 1px solid var(--ui-line-strong);
   border-radius: 5px;
-  background: #fff;
+  background: var(--ui-surface);
 }
 
 .ex-reading__values {
@@ -1591,16 +1844,16 @@ body {
   display: inline-block;
   padding: 0.18rem 0.6rem;
   border-radius: 999px;
-  background: #f1f5f3;
-  border: 1px solid #e3e8e5;
+  background: var(--ui-raised);
+  border: 1px solid var(--ui-line);
   font-size: 0.8rem;
   font-weight: 650;
-  color: #1f2d27;
+  color: var(--ui-text);
   font-variant-numeric: tabular-nums;
 }
 .ex-chip--muted {
   font-weight: 500;
-  color: #8b9993;
+  color: var(--ui-muted);
 }
 
 /* Section titles inside the card. */
@@ -1617,11 +1870,11 @@ body {
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: #5d6c66;
+  color: var(--ui-text-2);
 }
 .ex-sec__head > span {
   font-size: 0.68rem;
-  color: #8b9993;
+  color: var(--ui-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1631,8 +1884,8 @@ body {
   height: 11px;
   margin-right: 0.4rem;
   vertical-align: -1px;
-  border: 2px solid #cfe7e1;
-  border-top-color: #10796a;
+  border: 2px solid var(--ui-line-strong);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: ex-spin 0.8s linear infinite;
 }
@@ -1648,17 +1901,17 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e3e8e5;
+  border: 1px solid var(--ui-line);
   border-radius: 10px;
-  color: #8b9993;
+  color: var(--ui-muted);
   font-size: 0.75rem;
 }
 
 .ex-cube__view {
   position: relative;
   height: 310px;
-  background: #fff;
-  border: 1px solid #e3e8e5;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-line);
   border-radius: 10px;
   overflow: hidden;
 }
@@ -1670,7 +1923,7 @@ body {
   outline: none;
 }
 .ex-cube__view canvas:focus-visible {
-  box-shadow: inset 0 0 0 2px #10796a;
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 .ex-cube__tip {
   position: fixed;
@@ -1687,7 +1940,7 @@ body {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
 }
 .ex-cube__tip b {
-  color: #fff;
+  color: var(--ui-text);
 }
 .ex-cube__tip-hint {
   color: #9fb3ab;
@@ -1706,15 +1959,15 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e3e8e5;
+  border: 1px solid var(--ui-line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.92);
-  color: #47544e;
+  background: var(--ui-surface);
+  color: var(--ui-text-2);
   cursor: pointer;
 }
 .ex-cube__tools button:hover {
-  color: #10796a;
-  background: #f1f6f4;
+  color: var(--accent-text);
+  background: var(--ui-raised);
 }
 .ex-cube__status {
   position: absolute;
@@ -1724,7 +1977,7 @@ body {
   justify-content: center;
   padding: 1rem;
   text-align: center;
-  color: #6b7a74;
+  color: var(--ui-muted);
   font-size: 0.75rem;
   pointer-events: none;
 }
@@ -1748,8 +2001,8 @@ body {
   width: 180px;
   padding: 4px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid #e3e8e5;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-line);
   box-shadow: 0 2px 8px rgba(16, 40, 32, 0.08);
 }
 .ex-cube__overview canvas {
@@ -1765,7 +2018,7 @@ body {
 .ex-cube__overview figcaption {
   margin-top: 3px;
   font-size: 0.6rem;
-  color: #6b7a74;
+  color: var(--ui-muted);
   text-align: center;
 }
 .ex-cube__legend {
@@ -1775,10 +2028,10 @@ body {
   min-width: 150px;
   padding: 5px 8px 4px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid #e3e8e5;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-line);
   font-size: 0.62rem;
-  color: #5d6c66;
+  color: var(--ui-text-2);
   backdrop-filter: blur(4px);
 }
 .ex-cube__legend-title {
@@ -1788,7 +2041,7 @@ body {
 }
 .ex-cube__legend-note {
   margin-top: 2px;
-  color: #8b9993;
+  color: var(--ui-muted);
 }
 .ex-cube__cbar-ramp {
   position: relative;
@@ -1801,7 +2054,7 @@ body {
 .ex-cube__cbar-clear {
   position: absolute;
   inset: 0 auto 0 0;
-  background: repeating-conic-gradient(#d5ddd9 0 25%, #fff 0 50%) 0 0 / 6px 6px;
+  background: repeating-conic-gradient(var(--ui-line-strong) 0 25%, var(--ui-surface) 0 50%) 0 0 / 6px 6px;
 }
 /* RH surfaces: one swatch per level, a button that hides or shows it. */
 .ex-cube__levels {
@@ -1818,12 +2071,12 @@ body {
   border-radius: 4px;
   background: transparent;
   font: inherit;
-  color: #47544e;
+  color: var(--ui-text-2);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
 .ex-cube__levels button:hover {
-  background: #eef2f0;
+  background: var(--ui-raised);
 }
 .ex-cube__levels i {
   width: 12px;
@@ -1831,7 +2084,7 @@ body {
   border-radius: 2px;
 }
 .ex-cube__levels button.is-off {
-  color: #aab5b0;
+  color: var(--ui-muted);
 }
 .ex-cube__levels button.is-off i {
   opacity: 0.2;
@@ -1848,15 +2101,15 @@ body {
   margin-right: 2px;
   font: inherit;
   padding: 0 0.15rem;
-  border: 1px solid #d5ddd9;
+  border: 1px solid var(--ui-line-strong);
   border-radius: 4px;
   text-align: right;
-  background: #fff;
+  background: var(--ui-surface);
 }
 
 .ex-cube__controls {
   font-size: 0.72rem;
-  color: #47544e;
+  color: var(--ui-text-2);
   container-type: inline-size;
 }
 /* Switches left (as wide as their buttons need), sliders right. One grid of
@@ -1926,7 +2179,7 @@ body {
   }
 }
 .ex-seg.is-disabled button {
-  color: #b5c0bb;
+  color: var(--ui-muted);
   cursor: default;
 }
 .ex-cube__controls .ex-seg button {
@@ -1944,7 +2197,7 @@ body {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #8b9993;
+  color: var(--ui-muted);
 }
 
 /* Segmented control: a pill track with the chosen option raised. */
@@ -1953,14 +2206,14 @@ body {
   gap: 2px;
   padding: 2px;
   border-radius: 8px;
-  background: #eef2f0;
+  background: var(--ui-raised);
 }
 .ex-seg button {
   flex: 1;
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #5d6c66;
+  color: var(--ui-text-2);
   padding: 0.28rem 0.5rem;
   font: inherit;
   font-size: 0.72rem;
@@ -1968,7 +2221,7 @@ body {
   cursor: pointer;
 }
 .ex-seg button:hover {
-  color: #1f2d27;
+  color: var(--ui-text);
 }
 .ex-seg--wrap {
   flex-wrap: wrap;
@@ -1977,8 +2230,8 @@ body {
   flex: 1 1 auto;
 }
 .ex-seg button.is-on {
-  background: #fff;
-  color: #10796a;
+  background: var(--ui-surface);
+  color: var(--accent-text);
   font-weight: 650;
   box-shadow: 0 1px 2px rgba(16, 40, 32, 0.14);
 }
@@ -2003,7 +2256,7 @@ body {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #8b9993;
+  color: var(--ui-muted);
 }
 .ex-cube__slider .ex-cube__axis {
   grid-area: axis;
@@ -2016,18 +2269,18 @@ body {
   align-self: center;
 }
 .ex-cube__axis {
-  color: #5d6c66;
+  color: var(--ui-text-2);
   white-space: nowrap;
 }
 /* The axis letter is set like the name (no badge); the axis the keys move
    (X / Y / Z) turns green. */
 .ex-cube__axis b {
   margin-right: 0.3rem;
-  color: #5d6c66;
+  color: var(--ui-text-2);
 }
 .ex-cube__slider.is-active .ex-cube__axis,
 .ex-cube__slider.is-active .ex-cube__axis b {
-  color: #10796a;
+  color: var(--accent-text);
 }
 /* Slim range inputs: a 3 px track and an 11 px thumb, instead of the
    browser's thick default. */
@@ -2043,17 +2296,17 @@ body {
 .ex-cube__controls input[type='range']::-webkit-slider-runnable-track {
   height: 3px;
   border-radius: 2px;
-  background: #d5ddd9;
+  background: var(--ui-line-strong);
 }
 .ex-cube__controls input[type='range']::-moz-range-track {
   height: 3px;
   border-radius: 2px;
-  background: #d5ddd9;
+  background: var(--ui-line-strong);
 }
 .ex-cube__controls input[type='range']::-moz-range-progress {
   height: 3px;
   border-radius: 2px;
-  background: #10796a;
+  background: var(--accent);
 }
 .ex-cube__controls input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -2062,27 +2315,28 @@ body {
   margin-top: -4px;
   border: 0;
   border-radius: 50%;
-  background: #10796a;
-  box-shadow: 0 0 0 2px #fff;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--ui-surface);
 }
 .ex-cube__controls input[type='range']::-moz-range-thumb {
   width: 11px;
   height: 11px;
   border: 0;
   border-radius: 50%;
-  background: #10796a;
-  box-shadow: 0 0 0 2px #fff;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--ui-surface);
 }
-/* Keyboard focus: a soft ring round the thumb, not a box round the track. */
+/* Keyboard focus: a ring round the thumb, not a box round the track. Solid
+   accent, so it reaches 3:1 against the panel (a 30 % tint did not). */
 .ex-cube__controls input[type='range']:focus-visible::-webkit-slider-thumb {
   box-shadow:
-    0 0 0 2px #fff,
-    0 0 0 4px rgba(16, 121, 106, 0.3);
+    0 0 0 2px var(--ui-surface),
+    0 0 0 4px var(--accent);
 }
 .ex-cube__controls input[type='range']:focus-visible::-moz-range-thumb {
   box-shadow:
-    0 0 0 2px #fff,
-    0 0 0 4px rgba(16, 121, 106, 0.3);
+    0 0 0 2px var(--ui-surface),
+    0 0 0 4px var(--accent);
 }
 .ex-cube__controls input[type='range']:focus-visible {
   outline: none;
@@ -2094,14 +2348,14 @@ body {
   cursor: default;
 }
 .ex-cube__slider.is-disabled input[type='range']::-webkit-slider-thumb {
-  background: #aab5b0;
+  background: var(--ui-line-strong);
 }
 .ex-cube__slider.is-disabled input[type='range']::-moz-range-thumb {
-  background: #aab5b0;
+  background: var(--ui-line-strong);
 }
 .ex-cube__slider output {
   text-align: right;
-  color: #8b9993;
+  color: var(--ui-muted);
   font-size: 0.66rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -2111,7 +2365,7 @@ body {
   margin: 0.35rem 0 0;
   font-size: 0.68rem;
   line-height: 1.4;
-  color: #47544e;
+  color: var(--ui-text-2);
 }
 
 /* Why the window moved: always shown in full, a pale note. */
@@ -2121,7 +2375,7 @@ body {
   border: 1px solid #f5ecd3;
   border-radius: 7px;
   background: #fffcf4;
-  color: #5d6c66;
+  color: var(--ui-text-2);
   font-size: 0.66rem;
   line-height: 1.4;
 }
@@ -2135,7 +2389,7 @@ body {
   max-height: calc(100% - 50px);
   overflow-y: auto;
   box-sizing: border-box;
-  border: 1px solid #dfe6e2;
+  border: 1px solid var(--ui-line-strong);
   border-radius: 8px;
   box-shadow: 0 6px 18px rgba(16, 40, 32, 0.16);
 }
@@ -2159,14 +2413,14 @@ body {
   display: grid;
   gap: 0.35rem;
   padding: 0.5rem 0.65rem 0.6rem;
-  background: #fff;
+  background: var(--ui-surface);
   font-size: 0.72rem;
-  color: #47544e;
+  color: var(--ui-text-2);
 }
 .ex-cube__tools button.is-on {
-  border-color: #cfe0d9;
-  background: #ecf7f3;
-  color: #10796a;
+  border-color: var(--ui-line-strong);
+  background: var(--ui-raised);
+  color: var(--accent-text);
 }
 /* The ground image's credit, in the cube's corner like a map attribution. */
 .ex-cube__attr {
@@ -2176,8 +2430,8 @@ body {
   max-width: calc(100% - 16px);
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.82);
-  color: #6b7a74;
+  background: var(--ui-surface);
+  color: var(--ui-muted);
   font-size: 0.6rem;
   white-space: nowrap;
   overflow: hidden;
@@ -2196,7 +2450,7 @@ body {
 .ex-reading--cube > .ex-profile,
 .ex-reading--cube > .ex-cube:not(.ex-cube--expanded) {
   margin-top: 0.85rem;
-  border-top: 1px solid #e3e8e5;
+  border-top: 1px solid var(--ui-line);
 }
 .ex-reading--cube > .ex-profile > .ex-sec__head,
 .ex-reading--cube > .ex-cube:not(.ex-cube--expanded) > .ex-sec__head {
@@ -2207,36 +2461,36 @@ body {
   align-items: center;
   gap: 0.4rem;
   font-size: 0.72rem;
-  color: #1f2d27;
+  color: var(--ui-text);
 }
 .ex-reading--cube .ex-sec__head h3::before {
   content: '';
   width: 3px;
   height: 0.85em;
   border-radius: 2px;
-  background: #10796a;
+  background: var(--accent);
 }
 .ex-profile__ymax {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
   font-size: 0.68rem;
-  color: #8b9993;
+  color: var(--ui-muted);
 }
 .ex-profile__ymax input {
   width: 3.2em;
   font: inherit;
   padding: 0.05rem 0.25rem;
-  border: 1px solid #d5ddd9;
+  border: 1px solid var(--ui-line-strong);
   border-radius: 5px;
   text-align: right;
-  color: #1f2d27;
+  color: var(--ui-text);
 }
 .ex-reading--cube .ex-profile__charts figure {
   padding: 0.35rem 0.4rem 0.15rem;
-  border: 1px solid #eef2f0;
+  border: 1px solid var(--ui-line);
   border-radius: 8px;
-  background: #fbfcfc;
+  background: var(--ui-raised);
 }
 
 /* The card is its own stacking context (z-index 10), so the fixed overlay
@@ -2253,14 +2507,14 @@ body {
   z-index: 1000;
   display: grid;
   /* Image column as wide as lets images + profile fit the overlay's height
-     (measured: ~1.38 x its width + 460 px; overlay = 100vh - 2rem minus a
+     (measured: ~1.38 x its width + 460 px; overlay = 100dvh - 2rem minus a
      ~50 px title). Narrower windows scroll the column. */
-  grid-template-columns: clamp(300px, calc((100vh - 550px) / 1.38), 40vw) minmax(0, 1fr) 260px;
+  grid-template-columns: clamp(300px, calc((100dvh - 550px) / 1.38), 40vw) minmax(0, 1fr) 260px;
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas: 'head head head' 'side view controls';
   gap: 0 1rem;
   padding: 0.4rem 0.9rem 0.9rem;
-  background: #fff;
+  background: var(--ui-surface);
   border-radius: 12px;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.28);
 }
@@ -2334,11 +2588,11 @@ body {
 /* A page written by "Save as page" (cube/standalone.tsx): the card's cube and
    profile side by side, nothing else. */
 .ex-static {
-  min-height: 100vh;
+  min-height: 100dvh;
   box-sizing: border-box;
   padding: 0.9rem clamp(0.8rem, 1.6vw, 1.6rem) 1.5rem;
-  background: #f4f7f6;
-  color: #1f2d27;
+  background: var(--ui-raised);
+  color: var(--ui-text);
   font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 .ex-static__head {
@@ -2356,30 +2610,30 @@ body {
 .ex-static__head p {
   margin: 0.2rem 0 0;
   font-size: 0.78rem;
-  color: #6b7a74;
+  color: var(--ui-muted);
   font-variant-numeric: tabular-nums;
 }
 .ex-static__open {
   font-size: 0.8rem;
   font-weight: 600;
-  color: #10796a;
+  color: var(--accent-text);
   text-decoration: none;
   padding: 0.35rem 0.75rem;
-  border: 1px solid #cfe0d9;
+  border: 1px solid var(--ui-line-strong);
   border-radius: 8px;
-  background: #fff;
+  background: var(--ui-surface);
 }
 .ex-static__open:hover {
-  background: #ecf7f3;
+  background: var(--ui-raised);
 }
 /* Docked (saved page): images | cube | controls, as in the sketch of 2026-10-29. */
 .ex-cube--docked {
   display: grid;
-  /* The image column grows until its content is as tall as the view (100vh -
+  /* The image column grows until its content is as tall as the view (100dvh -
      130px): measured, its height is 1.38 x its width + 140 px of captions, bars
      and profile labels. The cube takes what is left, so a taller window moves
      it right. */
-  grid-template-columns: clamp(420px, calc((100vh - 270px) / 1.38), 44vw) minmax(0, 1fr) 260px;
+  grid-template-columns: clamp(420px, calc((100dvh - 270px) / 1.38), 44vw) minmax(0, 1fr) 260px;
   grid-template-areas: 'head head head' 'side view controls';
   gap: 0 1rem;
 }
@@ -2389,7 +2643,7 @@ body {
 .ex-cube--docked .ex-cube__view {
   grid-area: view;
   /* The whole screen below the title: on a large display the cube is the page. */
-  height: max(560px, calc(100vh - 130px));
+  height: max(560px, calc(100dvh - 130px));
 }
 .ex-cube--docked .ex-cube__controls {
   grid-area: controls;
@@ -2417,7 +2671,7 @@ body {
   gap: 4px;
   margin-top: 2px;
   font-size: 0.6rem;
-  color: #6b7a74;
+  color: var(--ui-muted);
   font-variant-numeric: tabular-nums;
 }
 .ex-cube__overview-bar div {
@@ -2437,7 +2691,7 @@ body {
 
 /* Saved page: the profile at the pin, under the height maps. */
 .ex-static__profile {
-  border: 1px solid #e3e8e5;
+  border: 1px solid var(--ui-line);
   border-radius: 8px;
   padding: 0.45rem 0.6rem 0.5rem;
 }
@@ -2462,7 +2716,7 @@ body {
 .ex-static__charts figcaption {
   font-size: 0.7rem;
   font-weight: 600;
-  color: #47544e;
+  color: var(--ui-text-2);
 }
 .ex-static__profile .ex-profile__metrics {
   margin: 0.35rem 0 0.1rem;
@@ -2479,8 +2733,8 @@ body {
 }
 
 .ex-static__main {
-  background: #fff;
-  border: 1px solid #e3e8e5;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-line);
   border-radius: 12px;
   padding: 0 0.9rem 0.9rem;
   box-shadow: 0 2px 10px rgba(16, 40, 32, 0.06);
@@ -2489,7 +2743,7 @@ body {
 .ex-static__foot {
   margin-top: 1rem;
   font-size: 0.7rem;
-  color: #8b9993;
+  color: var(--ui-muted);
   max-width: 70ch;
 }
 @media (max-width: 1200px) {
@@ -2512,4 +2766,504 @@ body {
   .ex-cube__side {
     margin-top: 0.8rem;
   }
+}
+
+/* --------------------------------------------------------- guided tour ---- */
+
+/* The panel's way in to the tour, where the numbered steps used to be. */
+.ex-intro--tour {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.85rem 0.9rem 0.9rem;
+  border: 1px solid var(--ui-line-strong);
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--ui-raised) 0%, var(--ui-raised) 100%);
+}
+.ex-intro--tour p {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--ui-text);
+}
+.ex-tour-start {
+  align-self: flex-start;
+  padding: 0.45rem 0.95rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  box-shadow: 0 1px 2px rgba(16, 40, 32, 0.25);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.ex-tour-start:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 3px 8px rgba(16, 121, 106, 0.35);
+}
+.ex-tour-start:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Neither the dim nor the spotlight takes pointer events: the map stays usable
+   during the tour, so the reader can take over at any step. */
+.ex-tour__dim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(15, 21, 18, 0.35);
+  pointer-events: none;
+}
+.ex-tour__spot {
+  position: fixed;
+  z-index: 40;
+  border-radius: 10px;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px rgba(16, 121, 106, 0.25);
+  pointer-events: none;
+  transition: left 0.25s, top 0.25s, width 0.25s, height 0.25s;
+}
+/* The control a step pressed, inside the spotlight: a ring that pulses
+   twice to draw the eye, then stays. */
+.ex-tour__mark {
+  position: fixed;
+  z-index: 40;
+  border-radius: 9px;
+  box-shadow: 0 0 0 2px #f2a93b, 0 0 0 6px rgba(242, 169, 59, 0.3);
+  pointer-events: none;
+  animation: ex-tour-pulse 0.9s ease-out 2;
+}
+@keyframes ex-tour-pulse {
+  50% {
+    box-shadow: 0 0 0 2px #f2a93b, 0 0 0 12px rgba(242, 169, 59, 0);
+  }
+}
+/* The stands the side view talks about: bands on the heatmap with a label
+   above, and matching lettered points on the map. Above the cards (z 41+). */
+.ex-tour__band {
+  position: fixed;
+  z-index: 42;
+  box-sizing: border-box;
+  border: 2px solid var(--ui-surface);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.ex-tour__band span,
+.ex-tour__point {
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+.ex-tour__band span {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+.ex-tour__point {
+  position: fixed;
+  z-index: 42;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--ui-surface);
+  border-radius: 999px;
+  background: #ff3d7f;
+  color: var(--ui-text);
+  font-size: 0.7rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.ex-tour__spot.is-dim {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 9999px rgba(15, 21, 18, 0.35);
+}
+
+/* The card: flat surface, no border, lifted by a two-layer elevation shadow
+   (a tight key shadow plus a wide ambient one), Material-style. */
+.ex-tour {
+  position: fixed;
+  z-index: 41;
+  width: min(320px, calc(100vw - 32px));
+  background: var(--ui-surface);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow:
+    0 1px 3px rgba(16, 40, 32, 0.12),
+    0 12px 32px -4px rgba(16, 40, 32, 0.28);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--ui-text);
+  /* Within a step the card glides after its target; between steps it fades
+     (see is-out / is-place). Width never animates: a card tweening from 320
+     to 600 px while its height snapped was what made the swap look broken. */
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease,
+    left 0.25s cubic-bezier(0.2, 0, 0, 1),
+    top 0.25s cubic-bezier(0.2, 0, 0, 1);
+}
+.ex-tour.is-out,
+.ex-tour.is-place {
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+}
+/* Invisible while it takes the next step's size and place: no transition, so
+   it is already there when it fades in. */
+.ex-tour.is-place {
+  transition: none;
+}
+/* Wide enough for the RH figure's labels to stay readable. */
+.ex-tour.is-wide {
+  width: min(600px, calc(100vw - 32px));
+}
+
+
+/* Between the title and the text, inset like a card within the card. */
+.ex-tour__media {
+  margin: 0.15rem 1.1rem 0.7rem;
+  padding: 0.3rem;
+  border-radius: 12px;
+  background: var(--ui-raised);
+}
+.ex-tour__media button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  cursor: zoom-in;
+}
+.ex-tour__media img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+}
+
+/* A modal <dialog> (top layer, so no z-index), stretched over the page with
+   its UA box reset; the dim is the dialog's own background. */
+.ex-tour__zoom {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  overscroll-behavior: contain;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  padding: 24px;
+  background: rgba(15, 21, 18, 0.72);
+  cursor: zoom-out;
+  animation: ex-tour-fade 0.2s ease-out;
+}
+.ex-tour__zoom[open] {
+  display: flex;
+}
+.ex-tour__zoom::backdrop {
+  background: transparent;
+}
+.ex-tour__zoom img {
+  max-width: min(1600px, 100%);
+  max-height: calc(100% - 2.5rem);
+  border-radius: 12px;
+  background: var(--ui-surface);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+.ex-tour__zoom-hint {
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 0.8rem;
+  color: var(--ui-text);
+}
+@keyframes ex-tour-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.ex-tour__text {
+  padding: 0.85rem 1.1rem 0;
+}
+.ex-tour__text--desc {
+  padding-top: 0;
+}
+.ex-tour__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.55rem;
+}
+
+/* Progress: the current step is a stretched pill, done steps are filled. */
+.ex-tour__dots {
+  display: flex;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ex-tour__dots li {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ui-raised);
+  transition: width 0.25s, background 0.25s;
+}
+.ex-tour__dots li.is-done {
+  background: var(--ui-line-strong);
+}
+.ex-tour__dots li.is-on {
+  width: 18px;
+  background: var(--accent);
+}
+
+.ex-tour__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: -6px -8px -6px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--ui-muted);
+  cursor: pointer;
+}
+.ex-tour__close:hover {
+  background: var(--ui-raised);
+  color: var(--ui-text);
+}
+
+.ex-tour h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+.ex-tour__desc {
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: var(--ui-text-2);
+}
+.ex-tour__desc b {
+  color: var(--ui-text);
+}
+/* The RH cases: bulleted with small green dots, tight enough to stay a card. */
+.ex-tour__list {
+  margin: 0.45rem 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.ex-tour__list li {
+  position: relative;
+  padding-left: 0.95rem;
+}
+.ex-tour__list li::before {
+  content: '';
+  position: absolute;
+  left: 0.15rem;
+  top: 0.6em;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+/* Step numbers inside a card's text, matching the download panel's badges. */
+/* Numbered steps: discs in their own column joined by a thin rule, text in
+   the next column so wrapped lines align with the first. */
+.ex-tour__steps {
+  counter-reset: ex-tour-step;
+  list-style: none;
+  margin: 0.15rem 0 0;
+  padding: 0;
+}
+.ex-tour__steps li {
+  counter-increment: ex-tour-step;
+  position: relative;
+  padding: 0 0 0.75rem 2rem;
+  min-height: 1.35rem;
+}
+.ex-tour__steps li:last-child {
+  padding-bottom: 0;
+}
+.ex-tour__steps li::before {
+  content: counter(ex-tour-step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1.35rem;
+  height: 1.35rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--ui-raised);
+  color: var(--accent-text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+/* The rule between discs, from under one to the top of the next. */
+.ex-tour__steps li:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: calc(0.675rem - 1px);
+  top: 1.5rem;
+  bottom: 0.15rem;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--ui-raised);
+}
+.ex-tour__steps small {
+  display: block;
+  margin-top: 0.3rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: 7px;
+  background: var(--ui-raised);
+  color: var(--ui-text-2);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+/* "Showing now RH98": the map's current state, as chips. */
+.ex-tour__showing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.6rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--ui-muted);
+}
+.ex-tour__chip {
+  padding: 0.12rem 0.55rem;
+  border-radius: 999px;
+  background: var(--ui-raised);
+  color: var(--accent-text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.ex-tour__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.9rem 1.1rem 1rem;
+}
+.ex-tour button {
+  font: inherit;
+  cursor: pointer;
+}
+.ex-tour__text-btn {
+  padding: 0.45rem 0.7rem;
+  margin-left: -0.7rem;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--accent-text);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.ex-tour__text-btn:hover {
+  background: var(--ui-raised);
+}
+.ex-tour__next {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 1rem 0.5rem 1.15rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 0.84rem;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(16, 40, 32, 0.25);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.ex-tour__next:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 3px 8px rgba(16, 121, 106, 0.35);
+}
+/* Disabled only while the map flies to the step. A plain cursor: the busy
+   spinner read as the page having frozen. */
+.ex-tour__next:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.ex-tour button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ex-tour,
+  .ex-tour__spot,
+  .ex-tour__dots li {
+    transition: none;
+  }
+  .ex-tour__zoom,
+  .ex-tour__mark {
+    animation: none;
+  }
+  /* Busy indicators slow down rather than stop: a frozen one reads as a hang. */
+  .ex-spinner {
+    animation-duration: 3s;
+  }
+  .ex-locate__btn.is-busy svg {
+    animation-duration: 3s;
+  }
+}
+
+/* Windows high-contrast mode drops box-shadow, which is the only focus ring
+   on the cube canvas and the slider thumbs: give them a real outline there. */
+@media (forced-colors: active) {
+  .ex-cube__view canvas:focus-visible {
+    outline: 2px solid CanvasText;
+    outline-offset: -2px;
+  }
+  .ex-cube__controls input[type='range']:focus-visible {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+  }
+}
+
+/* Read by screen readers, not drawn: the page's h1 and the tour's step
+   announcements. */
+.ex-visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute !important;
+  clip-path: inset(50%) !important;
+  overflow: hidden !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  white-space: nowrap !important;
 }

@@ -35,6 +35,7 @@
 #    ./launch.sh stop         # tear everything down
 #    ./launch.sh status       # check running jobs
 #    ./launch.sh logs         # tail remote logs
+#    ./launch.sh local        # backend + frontend on this laptop (no cluster)
 #
 # ============================================================================
 
@@ -708,6 +709,102 @@ restart_service() {
   fi
 }
 
+# ======================== LOCAL (this laptop) ========================
+#
+#  ./scripts/launch.sh local
+#
+#  Backend and frontend on this machine, against the published data on
+#  source.coop (scripts/env.local.sh) — no cluster, no SSH. Both run in the
+#  foreground of this terminal with their output prefixed; Ctrl-C stops both.
+#
+#  Overrides: GIS_APP_PYTHON=/path/to/python, NODE_BIN=/path/to/node/bin.
+
+LOCAL_FRONTEND_PORT=5173  # vite.config.ts server.port
+
+# The gis_app env's python, called directly: `conda activate` is not available
+# in a non-interactive bash without `conda init` having been sourced.
+find_gis_app_python() {
+  if [[ -n "${GIS_APP_PYTHON:-}" ]]; then echo "$GIS_APP_PYTHON"; return; fi
+  local base
+  for base in "${CONDA_EXE:+$(dirname "$(dirname "$CONDA_EXE")")}" \
+              "$HOME/miniforge3" "$HOME/miniconda3" "$HOME/anaconda3" "$HOME/mambaforge"; do
+    [[ -n "$base" && -x "$base/envs/gis_app/bin/python" ]] && { echo "$base/envs/gis_app/bin/python"; return; }
+  done
+  return 1
+}
+
+# Vite 7 needs node >= 20; the default node here is 18 and fails with a
+# misleading `crypto.hash is not a function`. Take the newest nvm node >= 20.
+find_node_bin() {
+  if [[ -n "${NODE_BIN:-}" ]]; then echo "$NODE_BIN"; return; fi
+  local major
+  major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+  if (( major >= 20 )); then dirname "$(command -v node)"; return; fi
+  local dir best=""
+  for dir in "$HOME"/.nvm/versions/node/v*/bin; do
+    [[ -x "$dir/node" ]] || continue
+    major=$(basename "$(dirname "$dir")" | sed -E 's/^v([0-9]+).*/\1/')
+    (( major >= 20 )) && best="$dir"   # glob order is ascending, so the last match is newest
+  done
+  [[ -n "$best" ]] && { echo "$best"; return; }
+  return 1
+}
+
+port_busy() { lsof -iTCP:"$1" -sTCP:LISTEN -n -P >/dev/null 2>&1; }
+
+# Prefix each line, flushed per line (BSD and GNU alike).
+prefix() { awk -v p="$1" '{ print p $0; fflush() }'; }
+
+launch_local() {
+  local root py node_bin
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+  step "Local: checks"
+  py=$(find_gis_app_python) || die "gis_app conda env not found — build it with scripts/setup-local-backend.sh, or set GIS_APP_PYTHON"
+  ok "python  $py"
+  node_bin=$(find_node_bin) || die "no node >= 20 found (nvm install 22), or set NODE_BIN"
+  ok "node    $node_bin ($("$node_bin/node" -v))"
+  [[ -d "$root/node_modules" ]] || die "node_modules missing — run: npm install"
+  port_busy "$BACKEND_PORT" && die "port $BACKEND_PORT is in use (another backend?): lsof -iTCP:$BACKEND_PORT -sTCP:LISTEN"
+  port_busy "$LOCAL_FRONTEND_PORT" && die "port $LOCAL_FRONTEND_PORT is in use (another vite?): lsof -iTCP:$LOCAL_FRONTEND_PORT -sTCP:LISTEN"
+
+  # Ctrl-C or either service exiting takes down the whole process group:
+  # the script, uvicorn and its --reload child, vite.
+  trap 'trap - INT TERM EXIT; echo; log "stopping local backend and frontend"; kill 0 2>/dev/null' INT TERM EXIT
+
+  step "Local: backend (port $BACKEND_PORT)"
+  (
+    cd "$root" || exit 1
+    # shellcheck source=/dev/null
+    source scripts/env.local.sh || exit 1
+    cd backend && exec "$py" -m uvicorn app:app --reload --port "$BACKEND_PORT"
+  ) 2>&1 | prefix "$(printf "${CYAN}[backend]${RESET} ")" &
+
+  local i
+  for i in $(seq 1 60); do
+    curl -sf -o /dev/null "http://localhost:$BACKEND_PORT/docs" && break
+    sleep 1
+  done
+  if curl -sf -o /dev/null "http://localhost:$BACKEND_PORT/docs"; then
+    ok "backend up: http://localhost:$BACKEND_PORT"
+  else
+    warn "backend not answering after 60 s — see the [backend] lines above"
+  fi
+
+  step "Local: frontend (port $LOCAL_FRONTEND_PORT)"
+  echo -e "  Explorer → ${BOLD}http://localhost:${LOCAL_FRONTEND_PORT}/vsm/explorer/${RESET}"
+  echo -e "             ${DIM}http://localhost:${LOCAL_FRONTEND_PORT}/vsm/dev/  (full app)${RESET}"
+  echo -e "             ${DIM}http://localhost:${LOCAL_FRONTEND_PORT}/vsm/      (landing page)${RESET}"
+  echo -e "  ${DIM}Ctrl-C stops both.${RESET}\n"
+  (
+    cd "$root" || exit 1
+    PATH="$node_bin:$PATH" exec npx vite --port "$LOCAL_FRONTEND_PORT" --strictPort
+  ) 2>&1 | prefix "$(printf "${GREEN}[frontend]${RESET} ")" &
+
+  # Whichever exits first ends the session; the trap stops the other.
+  wait -n 2>/dev/null || wait
+}
+
 # ======================== MAIN ========================
 
 case "${1:-all}" in
@@ -746,8 +843,9 @@ case "${1:-all}" in
   status)   show_status ;;
   logs)     show_logs "$@" ;;
   connect)  open_master "$SSH_HOST"; ok "Ready" ;;
+  local)    launch_local ;;
   *)
-    echo "Usage: $0 [all|backend|frontend|restart [backend|frontend]|stop|status|logs|connect]"
+    echo "Usage: $0 [all|backend|frontend|restart [backend|frontend]|stop|status|logs|connect|local]"
     exit 1
     ;;
 esac

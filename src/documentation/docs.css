@@ -1,0 +1,365 @@
+/* The documentation page: one readable column with an "On this page" list
+   beside it on wide screens. Same palette as the explorer — white, the green
+   accent, quiet grey labels. */
+
+html,
+body {
+  margin: 0;
+}
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+.dc {
+  min-height: 100vh;
+  background: #fff;
+  color: #1f2d27;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+}
+/* The bar stays in view while the page scrolls. */
+.dc .tb {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.dc__layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 46rem);
+  justify-content: center;
+  gap: 3rem;
+  padding: 2.5rem 1.5rem 5rem;
+}
+
+.dc__toc {
+  position: sticky;
+  top: calc(48px + 2rem);
+  align-self: start;
+  font-size: 0.84rem;
+}
+.dc__toc-title {
+  display: block;
+  margin-bottom: 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6b7a74;
+}
+.dc__toc ol {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 0.75rem;
+  border-left: 2px solid #e3ece9;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.dc__toc a {
+  color: #4f5e58;
+  text-decoration: none;
+}
+.dc__toc a:hover {
+  color: #0d6459;
+}
+
+.dc__main {
+  font-size: 0.98rem;
+  line-height: 1.65;
+}
+.dc__main h1 {
+  margin: 0 0 0.5rem;
+  font-size: 2rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: #10241d;
+}
+.dc__lede {
+  margin: 0 0 2.5rem;
+  font-size: 1.1rem;
+  color: #6b7a74;
+}
+.dc__main section {
+  padding-top: 0.5rem;
+  margin-bottom: 2.75rem;
+  /* Anchor jumps land below the sticky bar, not under it. */
+  scroll-margin-top: 64px;
+}
+.dc__main h2 {
+  margin: 0 0 0.9rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid #eef2f0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #10241d;
+}
+.dc__main h3 {
+  margin: 1.5rem 0 0.4rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #10241d;
+}
+.dc__main p {
+  margin: 0 0 0.9rem;
+}
+.dc__main ul {
+  margin: 0 0 0.9rem;
+  padding-left: 1.2rem;
+}
+.dc__main li {
+  margin-bottom: 0.35rem;
+}
+.dc__main li::marker {
+  color: #10796a;
+}
+.dc__main a {
+  color: #0d6459;
+  text-underline-offset: 2px;
+}
+.dc__main code {
+  padding: 0.08rem 0.35rem;
+  border-radius: 5px;
+  background: #f1f5f3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.86em;
+}
+.dc__main pre {
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+  border-radius: 10px;
+  background: #10241d;
+  color: #e3f1ee;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+.dc__main pre code {
+  padding: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+}
+
+.dc__figure {
+  margin: 0 0 1rem;
+  padding: 0.5rem;
+  border-radius: 12px;
+  background: #f4f7fb;
+}
+.dc__figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+.dc__figure a {
+  cursor: zoom-in;
+}
+.dc__figure figcaption {
+  margin: 0.5rem 0.25rem 0.1rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #45524c;
+}
+
+/* Two figures side by side. */
+.dc__pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+@media (max-width: 600px) {
+  .dc__pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Three ways in, under the lede: small two-part badges, like a README's
+   shields (grey label, green value). */
+.dc__start {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  /* The lede's own 2.5rem bottom margin loses to `.dc__main p` (0.9rem), so
+     this sits 0.9rem + 0.35rem under the lede. */
+  margin: 0.35rem 0 2.5rem;
+}
+.dc__main .dc__start a {
+  display: inline-flex;
+  border-radius: 3px;
+  overflow: hidden;
+  font-family: Verdana, 'DejaVu Sans', ui-sans-serif, sans-serif;
+  font-size: 11px;
+  line-height: 20px;
+  color: #fff;
+  text-decoration: none;
+}
+.dc__start span {
+  padding: 0 6px;
+}
+.dc__start span:first-child {
+  background: #555;
+}
+.dc__start span:last-child {
+  background: #10796a;
+}
+.dc__main .dc__start a:hover {
+  filter: brightness(1.12);
+}
+
+/* What a reader must not miss: a light green wash, neutral text, no border. */
+.dc__note {
+  margin: 0 0 1.1rem;
+  padding: 0.85rem 1.1rem;
+  border-radius: 10px;
+  background: #eef6f4;
+  font-size: 0.92rem;
+}
+.dc__note ul {
+  margin: 0.4rem 0 0;
+}
+.dc__note li:last-child {
+  margin-bottom: 0;
+}
+
+/* Numbered like the download panel's own steps: green-tinted discs. */
+.dc__steps {
+  counter-reset: dc-step;
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+.dc__steps li {
+  counter-increment: dc-step;
+  position: relative;
+  margin-bottom: 0.7rem;
+  padding-left: 2.1rem;
+}
+.dc__steps li::before {
+  content: counter(dc-step);
+  position: absolute;
+  left: 0;
+  top: 0.15rem;
+  width: 1.45rem;
+  height: 1.45rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #e3f1ee;
+  color: #0d6459;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.dc__table {
+  width: 100%;
+  margin: 0 0 1rem;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.dc__table th,
+.dc__table td {
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid #eef2f0;
+  text-align: left;
+  vertical-align: top;
+}
+.dc__table thead th {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6b7a74;
+}
+.dc__table tbody th {
+  width: 9rem;
+  font-weight: 600;
+  color: #2c3a34;
+}
+
+.dc__cite {
+  margin: 0;
+  padding: 1rem 1.1rem;
+  border-left: 3px solid #10796a;
+  border-radius: 0 10px 10px 0;
+  background: #f6faf8;
+  font-size: 0.9rem;
+}
+.dc__cite-copy {
+  display: block;
+  margin-top: 0.7rem;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid #cfe3de;
+  border-radius: 999px;
+  background: #fff;
+  color: #0d6459;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dc__cite-copy:hover {
+  background: #eef6f4;
+}
+
+/* Tutorials: a card per notebook, two across. */
+.dc__tutorials {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+.dc__tutorial {
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 1.1rem;
+  border: 1px solid #e5ebe8;
+  border-radius: 12px;
+}
+.dc__tutorial h3 {
+  margin: 0 0 0.35rem;
+}
+.dc__tutorial p {
+  flex: 1;
+  font-size: 0.9rem;
+  color: #45524c;
+}
+.dc__tutorial-links {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+.dc__tutorial-links img {
+  display: block;
+}
+.dc__tutorial-src {
+  font-size: 0.85rem;
+}
+
+/* The partners, once, under everything. */
+.dc__foot {
+  padding: 2rem 1.5rem 2.5rem;
+  border-top: 1px solid #eef2f0;
+}
+
+/* One column on narrow screens: the contents list goes. */
+@media (max-width: 860px) {
+  .dc__layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 1.75rem 1rem 4rem;
+  }
+  .dc__toc {
+    display: none;
+  }
+  .dc__tutorials {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
