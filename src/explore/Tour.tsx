@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import type { GeoJSONSource, Map as MlMap } from 'maplibre-gl';
+import type { Map as MlMap } from 'maplibre-gl';
 import { openSite, pickTiles, takeCamera, useExploreMap } from './exploreMap';
 import { CloseIcon } from './icons';
 
@@ -209,12 +209,12 @@ export function Tour({ open, onClose, readAt, rhIndexes }: Props) {
         </>
       ),
       // Slow, so the switch from the ~1 km overview to the 10 m map can be seen
-      // on the way down. The line drawn is the transect of step 4.
+      // on the way down. The transect line is not drawn yet: it appears with
+      // the site card in the side-view step.
       enter: () => {
         const h = hero.current;
         if (!map || !h) return;
         ensureRh(98);
-        map.getSource<GeoJSONSource>('site-transect')?.setData(lineFeature(h.line));
         return flight(map, () =>
           map.fitBounds(bbox(h.line), {
             padding: { top: 220, right: 120, bottom: 120, left: 120 },
@@ -755,12 +755,6 @@ function standNotes(h: Hero | null, map: MlMap | null): Note[] {
   }
   return out;
 }
-
-const lineFeature = (line: [number, number][]): GeoJSON.Feature => ({
-  type: 'Feature',
-  properties: {},
-  geometry: { type: 'LineString', coordinates: line },
-});
 
 function bbox(line: [number, number][]): [number, number, number, number] {
   const xs = line.map((c) => c[0]);
